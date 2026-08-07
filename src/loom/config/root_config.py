@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, computed_field
 from loom import __version__
 
 from .base import RootConfigAware
+from .database_config import DatabaseConfig
 
 
 class RootConfig(BaseModel):
@@ -15,6 +16,8 @@ class RootConfig(BaseModel):
     """
 
     config_path: pathlib.Path = Field(description='The configuration file backing this object')
+
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     @computed_field
     @property
