@@ -1,4 +1,5 @@
 import argparse
+import importlib.resources
 import pathlib
 import sqlite3
 
@@ -50,8 +51,19 @@ async def test_db_current_and_history_do_not_raise(sqlite_root_config):
 @pytest.mark.asyncio
 async def test_db_revision_autogenerate_creates_new_file(sqlite_root_config):
     await db_upgrade(sqlite_root_config, argparse.Namespace())
-    result = await db_revision(
-        sqlite_root_config,
-        argparse.Namespace(message='add scratch table', autogenerate=False),
+    versions_dir = pathlib.Path(
+        str(importlib.resources.files('loom') / 'migrations' / 'versions')
     )
-    assert result == 0
+    before = set(versions_dir.glob('*.py'))
+    try:
+        result = await db_revision(
+            sqlite_root_config,
+            argparse.Namespace(message='add scratch table', autogenerate=False),
+        )
+        assert result == 0
+        after = set(versions_dir.glob('*.py'))
+        assert len(after - before) == 1
+    finally:
+        after = set(versions_dir.glob('*.py'))
+        for new_file in after - before:
+            new_file.unlink()
