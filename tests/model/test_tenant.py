@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+
 from loom.model.enums import PrincipalKind
 from loom.model.schemas.tenant import (
     PrincipalCreate,

@@ -72,10 +72,13 @@ log_cli_date_format="%Y-%m-%d %H:%M:%S"
 asyncio_default_fixture_loop_scope='session'
 
 [tool.ruff]
-src = ["src/loom"]
+src = ["src/loom", "tests"]
 line-length = 88
 indent-width = 4
 target-version = "py314"
+
+[tool.ruff.lint]
+isort = { known-first-party = ["loom"] }
 
 [tool.ruff.format]
 quote-style = "single"

@@ -2,8 +2,9 @@ import sqlite3
 
 import pytest
 import sqlalchemy as sa
-from loom.model.base import Base
 from sqlalchemy.orm import Session
+
+from loom.model.base import Base
 
 
 @sa.event.listens_for(sa.engine.Engine, 'connect')
