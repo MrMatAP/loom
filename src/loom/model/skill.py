@@ -1,6 +1,7 @@
 import uuid
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from loom.model.base import (
@@ -14,6 +15,10 @@ from loom.model.base import (
 )
 from loom.model.enums import GraphNodeType, Layer, SkillKind
 
+_atomic_content_type = sa.JSON(none_as_null=True).with_variant(
+    JSONB(none_as_null=True), 'postgresql'
+)
+
 
 class Skill(Base, VersionedEntityMixin):
     """Composable capability: atomic (prompt/code) or composite (graph)."""
@@ -23,7 +28,7 @@ class Skill(Base, VersionedEntityMixin):
         sa.UniqueConstraint('entity_id', 'version', name='uq_skill_entity_version'),
         current_version_index('skill'),
         sa.CheckConstraint(
-            "(kind = 'atomic' AND atomic_content IS NOT NULL AND json_type(atomic_content) != 'null') OR (kind = 'composite' AND (atomic_content IS NULL OR json_type(atomic_content) = 'null'))",
+            "(kind = 'atomic' AND atomic_content IS NOT NULL) OR (kind = 'composite' AND atomic_content IS NULL)",
             name='ck_skill_atomic_content_matches_kind',
         ),
     )
@@ -31,7 +36,9 @@ class Skill(Base, VersionedEntityMixin):
     layer: Mapped[Layer] = mapped_column(enum_column(Layer, 'layer'))
     kind: Mapped[SkillKind] = mapped_column(enum_column(SkillKind, 'skill_kind'))
     is_entry_point: Mapped[bool] = mapped_column(sa.Boolean(), default=False)
-    atomic_content: Mapped[dict | None] = mapped_column(PortableJSON, default=None)
+    atomic_content: Mapped[dict | None] = mapped_column(
+        _atomic_content_type, default=None
+    )
 
 
 class SkillGraphNode(Base, TimestampMixin):
