@@ -9,12 +9,7 @@ from loom.model.base import Base, TimestampMixin, exactly_one_of
 
 
 class Metric(Base, TimestampMixin):
-    """
-    An observable signal, pipeline-derived. Scopes to exactly one of Capability/
-    Agent/Skill/Tool. This is the rollup row only (e.g. `realization_score`) —
-    raw spans and time-series points live in the separate OTel-backed Trace/
-    Metrics store, not here.
-    """
+    """Pipeline-derived rollup signal; scopes to one of Capability/Agent/Skill/Tool."""
 
     __tablename__ = 'metric'
     __table_args__ = (
