@@ -15,3 +15,8 @@ def test_dsn_includes_password_when_set():
 def test_root_config_has_database_section(tmp_path):
     root = RootConfig(config_path=tmp_path / 'config.yaml')
     assert root.database.database == 'loom'
+
+
+def test_dsn_excluded_from_model_dump():
+    config = DatabaseConfig(password='secret')
+    assert 'dsn' not in config.model_dump()

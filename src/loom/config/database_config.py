@@ -1,4 +1,4 @@
-from pydantic import Field, SecretStr, computed_field
+from pydantic import Field, SecretStr
 
 from .base import RootConfigAware
 
@@ -12,7 +12,6 @@ class DatabaseConfig(RootConfigAware):
     username: str = Field(default='loom', description='Database username')
     password: SecretStr | None = Field(default=None, description='Database password')
 
-    @computed_field
     @property
     def dsn(self) -> str:
         """The SQLAlchemy connection string for this database."""
