@@ -1,4 +1,4 @@
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, SerializationInfo, field_serializer
 
 from .base import RootConfigAware
 
@@ -11,6 +11,17 @@ class DatabaseConfig(RootConfigAware):
     database: str = Field(default='loom', description='Database name')
     username: str = Field(default='loom', description='Database username')
     password: SecretStr | None = Field(default=None, description='Database password')
+
+    @field_serializer('password')
+    def _serialize_password(
+        self, value: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
+        """Reveal the real secret only when explicitly requested via context."""
+        if value is None:
+            return None
+        if info.context and info.context.get('reveal_secrets'):
+            return value.get_secret_value()
+        return '**********'
 
     @property
     def dsn(self) -> str:

@@ -8,7 +8,7 @@ from loom.model.enums import PrincipalKind
 
 
 class Tenant(Base, TimestampMixin):
-    """An isolated customer/organisation boundary; Environments and Principals scope to a Tenant."""
+    """Isolated org boundary that Environments and Principals scope to."""
 
     __tablename__ = 'tenant'
 

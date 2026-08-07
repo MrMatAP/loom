@@ -18,7 +18,7 @@ console = rich.console.Console()
 
 async def config_list(config: RootConfig, args: argparse.Namespace) -> int:
     del args
-    console.print(yaml.dump(config.model_dump()))
+    console.print(yaml.dump(config.model_dump(mode='json')))
     return 0
 
 
@@ -83,10 +83,20 @@ async def config_set(config: RootConfig, args: argparse.Namespace) -> int:
             setattr(parent, leaf, type(getattr(parent, leaf))(args.value))
     elif isinstance(getattr(parent, leaf), bool):
         setattr(parent, leaf, args.value.lower() == 'true')
+    elif _is_secret_str_field(type(parent), leaf):
+        setattr(parent, leaf, pydantic.SecretStr(args.value))
     else:
         setattr(parent, leaf, args.value)
     config.save()
     return 0
+
+
+def _is_secret_str_field(model: type[pydantic.BaseModel], field_name: str) -> bool:
+    """Whether the field is typed `SecretStr` (optionally `SecretStr | None`)."""
+    annotation = model.model_fields[field_name].annotation
+    if annotation is pydantic.SecretStr:
+        return True
+    return pydantic.SecretStr in typing.get_args(annotation)
 
 
 def _set_nested_value(target: dict, path: list[str], value: typing.Any) -> None:

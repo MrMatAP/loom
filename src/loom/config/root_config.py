@@ -15,7 +15,9 @@ class RootConfig(BaseModel):
     Configuration of the kube-eng cluster
     """
 
-    config_path: pathlib.Path = Field(description='The configuration file backing this object')
+    config_path: pathlib.Path = Field(
+        description='The configuration file backing this object'
+    )
 
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
@@ -36,10 +38,15 @@ class RootConfig(BaseModel):
         Returns:
             Nothing
         """
-        yaml.dump(self.model_dump(mode='json',
-                                  exclude_none=True,
-                                  exclude_computed_fields=True),
-                  self.config_path.open('w'))
+        yaml.dump(
+            self.model_dump(
+                mode='json',
+                exclude_none=True,
+                exclude_computed_fields=True,
+                context={'reveal_secrets': True},
+            ),
+            self.config_path.open('w'),
+        )
 
     @classmethod
     def load(cls, config_path: pathlib.Path) -> 'RootConfig':

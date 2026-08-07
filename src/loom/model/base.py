@@ -30,7 +30,7 @@ PortableJSON = sa.JSON().with_variant(JSONB(), 'postgresql')
 
 
 def enum_column(enum_cls: type[enum.Enum], name: str) -> sa.Enum:
-    """SQLAlchemy Enum type persisting member values (not names) to match wire schema."""
+    """SQLAlchemy Enum persisting member values (not names) to match wire schema."""
     return sa.Enum(
         enum_cls, name=name, values_callable=lambda obj: [e.value for e in obj]
     )
