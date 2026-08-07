@@ -1,0 +1,43 @@
+import uuid
+
+from pydantic import BaseModel, ConfigDict
+
+from loom.model.enums import PrincipalKind
+
+
+class TenantCreate(BaseModel):
+    slug: str
+    name: str
+
+
+class TenantRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    name: str
+
+
+class TenantUpdate(BaseModel):
+    name: str | None = None
+
+
+class PrincipalCreate(BaseModel):
+    tenant_id: uuid.UUID
+    kind: PrincipalKind
+    display_name: str
+    external_id: str
+
+
+class PrincipalRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    kind: PrincipalKind
+    display_name: str
+    external_id: str
+
+
+class PrincipalUpdate(BaseModel):
+    display_name: str | None = None
