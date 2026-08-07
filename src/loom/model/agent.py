@@ -12,7 +12,7 @@ from loom.model.enums import Layer, MemoryScope
 
 
 class Agent(Base, VersionedEntityMixin):
-    """Autonomous reasoning unit: model config, prompt, memory scope, permission boundary."""
+    """Autonomous reasoning unit: model, prompt, memory scope, permission boundary."""
 
     __tablename__ = 'agent'
     __table_args__ = (
