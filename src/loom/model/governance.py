@@ -2,10 +2,16 @@ import datetime
 import uuid
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from loom.model.base import Base, PortableJSON, TimestampMixin, enum_column
 from loom.model.enums import AuditDecision, PolicyEffect, PolicyScopeType
+
+# Column-local JSON type for permission_subset that properly handles None as SQL NULL
+_permission_subset_type = sa.JSON(none_as_null=True).with_variant(
+    JSONB(none_as_null=True), 'postgresql'
+)
 
 
 class Policy(Base, TimestampMixin):
@@ -39,7 +45,7 @@ class RoleBinding(Base, TimestampMixin):
     __tablename__ = 'role_binding'
     __table_args__ = (
         sa.CheckConstraint(
-            "delegated_from_principal_id IS NULL OR (permission_subset IS NOT NULL AND permission_subset != 'null')",
+            'delegated_from_principal_id IS NULL OR permission_subset IS NOT NULL',
             name='ck_role_binding_delegation_requires_subset',
         ),
     )
@@ -64,7 +70,9 @@ class RoleBinding(Base, TimestampMixin):
     delegated_from_principal_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(), sa.ForeignKey('principal.id'), default=None
     )
-    permission_subset: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    permission_subset: Mapped[dict | None] = mapped_column(
+        _permission_subset_type, default=None
+    )
     created_by_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(), sa.ForeignKey('principal.id')
     )
