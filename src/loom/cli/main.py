@@ -10,9 +10,11 @@ import rich.console
 import yaml
 
 from loom import __default_config_path__, __version__
+from loom.cli.db import db_current, db_downgrade, db_history, db_revision, db_upgrade
 from loom.config import RootConfig
 
 console = rich.console.Console()
+
 
 async def config_list(config: RootConfig, args: argparse.Namespace) -> int:
     del args
@@ -108,6 +110,7 @@ def _collect_overrides(args: argparse.Namespace) -> dict:
 
     return overrides
 
+
 async def main() -> int:
     try:
         parser = argparse.ArgumentParser(f'Loom {__version__}')
@@ -147,6 +150,50 @@ async def main() -> int:
         config_set_parser.add_argument('value', help='Value to set for the key')
         config_set_parser.set_defaults(func=config_set)
 
+        db_parser = subparsers.add_parser('db', help='Database migration commands')
+        db_subparser = db_parser.add_subparsers(required=True)
+
+        db_upgrade_parser = db_subparser.add_parser(
+            'upgrade', help='Upgrade the database to a revision'
+        )
+        db_upgrade_parser.add_argument(
+            'revision',
+            nargs='?',
+            default='head',
+            help='Target revision, defaults to head',
+        )
+        db_upgrade_parser.set_defaults(func=db_upgrade)
+
+        db_downgrade_parser = db_subparser.add_parser(
+            'downgrade', help='Downgrade the database to a revision'
+        )
+        db_downgrade_parser.add_argument('revision', help='Target revision')
+        db_downgrade_parser.set_defaults(func=db_downgrade)
+
+        db_current_parser = db_subparser.add_parser(
+            'current', help='Show the current database revision'
+        )
+        db_current_parser.set_defaults(func=db_current)
+
+        db_history_parser = db_subparser.add_parser(
+            'history', help='Show migration history'
+        )
+        db_history_parser.set_defaults(func=db_history)
+
+        db_revision_parser = db_subparser.add_parser(
+            'revision', help='Create a new migration revision'
+        )
+        db_revision_parser.add_argument(
+            '-m', '--message', required=True, help='Revision message'
+        )
+        db_revision_parser.add_argument(
+            '--autogenerate',
+            action='store_true',
+            default=False,
+            help='Autogenerate from model changes',
+        )
+        db_revision_parser.set_defaults(func=db_revision)
+
         args = parser.parse_args()
         config = RootConfig.load(config_path=args.config_path)
         config.save()
@@ -160,6 +207,7 @@ async def main() -> int:
 
 def run() -> int:
     return asyncio.run(main())
+
 
 if __name__ == '__main__':
     sys.exit(run())
