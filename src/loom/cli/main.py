@@ -14,6 +14,7 @@ from loom.config import RootConfig
 
 console = rich.console.Console()
 
+
 async def config_list(config: RootConfig, args: argparse.Namespace) -> int:
     del args
     console.print(yaml.dump(config.model_dump()))
@@ -108,6 +109,7 @@ def _collect_overrides(args: argparse.Namespace) -> dict:
 
     return overrides
 
+
 async def main() -> int:
     try:
         parser = argparse.ArgumentParser(f'Loom {__version__}')
@@ -160,6 +162,7 @@ async def main() -> int:
 
 def run() -> int:
     return asyncio.run(main())
+
 
 if __name__ == '__main__':
     sys.exit(run())
