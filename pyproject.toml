@@ -53,7 +53,7 @@ where = ["src"]
 exclude = ["ci"]
 
 [tool.setuptools.package-data]
-"*" = ["*.py", "*.yml", "*.yaml", ".j2", "*.md", "inventory", "*.json", ".helmignore", "*.lock", "*.tpl", "*.txt", "*.tcss"]
+"*" = ["*.py", "*.yml", "*.yaml", ".j2", "*.md", "inventory", "*.json", ".helmignore", "*.lock", "*.tpl", "*.txt", "*.tcss", "*.mako"]
 
 [project.scripts]
 loom = "loom.cli.main:run"
