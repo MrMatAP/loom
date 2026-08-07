@@ -5,6 +5,13 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from loom.model.base import Base
+from loom.model.agent import Agent
+from loom.model.datasource import DataSource
+from loom.model.dataproduct import DataProduct, DataProductLineage
+from loom.model.environment import Environment
+from loom.model.skill import Skill, SkillGraphEdge, SkillGraphNode
+from loom.model.tenant import Principal, Tenant
+from loom.model.tool import Tool, ToolDataBinding
 
 
 @sa.event.listens_for(sa.engine.Engine, 'connect')
