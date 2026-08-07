@@ -6,11 +6,13 @@ from sqlalchemy.orm import Session
 
 from loom.model.agent import Agent  # noqa: F401
 from loom.model.base import Base
+from loom.model.capability import Capability  # noqa: F401
 from loom.model.dataproduct import (  # noqa: F401
     DataProduct,
     DataProductLineage,
 )
 from loom.model.datasource import DataSource  # noqa: F401
+from loom.model.observability import Metric  # noqa: F401
 from loom.model.skill import (  # noqa: F401
     Skill,
     SkillGraphEdge,
