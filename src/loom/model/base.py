@@ -30,7 +30,7 @@ PortableJSON = sa.JSON().with_variant(JSONB(), 'postgresql')
 
 
 def enum_column(enum_cls: type[enum.Enum], name: str) -> sa.Enum:
-    """A SQLAlchemy Enum type that persists the member *value* (matches the wire schema), not its name."""
+    """SQLAlchemy Enum type persisting member values (not names) to match wire schema."""
     return sa.Enum(
         enum_cls, name=name, values_callable=lambda obj: [e.value for e in obj]
     )
@@ -48,7 +48,7 @@ def current_version_index(table_name: str) -> sa.Index:
 
 
 def exactly_one_of(*columns: str) -> str:
-    """SQL CHECK expression requiring exactly one of the given columns to be non-null."""
+    """SQL CHECK expression for exactly one of the given columns being non-null."""
     clauses = []
     for chosen in columns:
         others = [c for c in columns if c != chosen]
@@ -60,13 +60,7 @@ def exactly_one_of(*columns: str) -> str:
 
 
 class VersionedEntityMixin:
-    """
-    Shared columns for every versioned entity (Agent, Skill, Tool, Capability,
-    DataSource, DataProduct). Versioning is row-per-version and immutable: a
-    content or lifecycle change always inserts a new row. `is_current` is the
-    one field that legitimately mutates on the prior row, as bookkeeping when
-    a new version is inserted — it is not a content or lifecycle edit.
-    """
+    """Shared columns for every versioned entity using row-per-version immutability."""
 
     id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(), primary_key=True, default=uuid.uuid4
@@ -75,6 +69,8 @@ class VersionedEntityMixin:
         sa.Uuid(), default=uuid.uuid4, index=True
     )
     version: Mapped[int] = mapped_column(sa.Integer(), default=1)
+    # is_current is the one field that mutates on prior row as bookkeeping when
+    # a new version is inserted (not a content or lifecycle edit).
     is_current: Mapped[bool] = mapped_column(sa.Boolean(), default=True)
     slug: Mapped[str] = mapped_column(sa.String(255), index=True)
     name: Mapped[str] = mapped_column(sa.String(255))
