@@ -5,6 +5,7 @@ from loom.api.catalog.exceptions import EntityNotFoundError, IllegalTransitionEr
 from loom.api.catalog.lifecycle import is_legal_transition
 from loom.model.agent import Agent
 from loom.model.enums import LifecycleState
+from loom.model.tenant import Principal
 
 from .repository import AgentRepository
 from .schemas import AgentCreateRequest
@@ -16,6 +17,14 @@ class AgentService:
     def __init__(self, repository: AgentRepository) -> None:
         self._repository = repository
 
+    async def _resolve_owner_id(
+        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
+    ) -> uuid.UUID:
+        if owner_id is None:
+            return fallback
+        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
+        return owner_id
+
     async def create(
         self,
         *,
@@ -23,9 +32,10 @@ class AgentService:
         created_by_id: uuid.UUID,
         data: AgentCreateRequest,
     ) -> Agent:
+        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         agent = Agent(
             tenant_id=tenant_id,
-            owner_id=data.owner_id or created_by_id,
+            owner_id=owner_id,
             created_by_id=created_by_id,
             slug=data.slug,
             name=data.name,
@@ -86,6 +96,9 @@ class AgentService:
         data: AgentCreateRequest,
     ) -> Agent:
         current = await self.get_current(tenant_id, entity_id)
+        owner_id = await self._resolve_owner_id(
+            tenant_id, data.owner_id, current.owner_id
+        )
         current.is_current = False
         await self._repository.save(current)
         new_version = Agent(
@@ -93,7 +106,7 @@ class AgentService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=data.owner_id or current.owner_id,
+            owner_id=owner_id,
             created_by_id=created_by_id,
             slug=data.slug,
             name=data.name,

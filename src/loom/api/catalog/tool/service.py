@@ -3,7 +3,10 @@ import uuid
 
 from loom.api.catalog.exceptions import EntityNotFoundError, IllegalTransitionError
 from loom.api.catalog.lifecycle import is_legal_transition
+from loom.model.dataproduct import DataProduct
+from loom.model.datasource import DataSource
 from loom.model.enums import LifecycleState
+from loom.model.tenant import Principal
 from loom.model.tool import Tool, ToolDataBinding
 
 from .repository import ToolRepository
@@ -16,12 +19,21 @@ class ToolService:
     def __init__(self, repository: ToolRepository) -> None:
         self._repository = repository
 
+    async def _resolve_owner_id(
+        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
+    ) -> uuid.UUID:
+        if owner_id is None:
+            return fallback
+        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
+        return owner_id
+
     async def create(
         self, *, tenant_id: uuid.UUID, created_by_id: uuid.UUID, data: ToolCreateRequest
     ) -> Tool:
+        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         tool = Tool(
             tenant_id=tenant_id,
-            owner_id=data.owner_id or created_by_id,
+            owner_id=owner_id,
             created_by_id=created_by_id,
             slug=data.slug,
             name=data.name,
@@ -79,6 +91,9 @@ class ToolService:
         data: ToolCreateRequest,
     ) -> Tool:
         current = await self.get_current(tenant_id, entity_id)
+        owner_id = await self._resolve_owner_id(
+            tenant_id, data.owner_id, current.owner_id
+        )
         current.is_current = False
         await self._repository.save(current)
         new_version = Tool(
@@ -86,7 +101,7 @@ class ToolService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=data.owner_id or current.owner_id,
+            owner_id=owner_id,
             created_by_id=created_by_id,
             slug=data.slug,
             name=data.name,
@@ -129,6 +144,14 @@ class ToolService:
         data: ToolDataBindingCreateRequest,
     ) -> ToolDataBinding:
         tool = await self.get_version(tenant_id, entity_id, version)
+        for model, referenced_id in (
+            (DataSource, data.datasource_id),
+            (DataProduct, data.dataproduct_id),
+        ):
+            if referenced_id is not None:
+                await self._repository.assert_same_tenant(
+                    tenant_id, model, referenced_id
+                )
         binding = ToolDataBinding(
             tool_id=tool.id,
             datasource_id=data.datasource_id,

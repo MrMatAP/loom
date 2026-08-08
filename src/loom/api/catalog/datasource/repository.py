@@ -3,7 +3,7 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.api.catalog.db import flush_or_raise
+from loom.api.catalog.db import assert_same_tenant, flush_or_raise
 from loom.model.datasource import DataSource
 from loom.model.enums import LifecycleState
 
@@ -13,6 +13,12 @@ class DataSourceRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def assert_same_tenant(
+        self, tenant_id: uuid.UUID, model: type, entity_id: uuid.UUID
+    ) -> None:
+        """Raise unless the referenced entity resolves inside this tenant."""
+        await assert_same_tenant(self._session, tenant_id, model, entity_id)
 
     async def get_current(
         self, tenant_id: uuid.UUID, entity_id: uuid.UUID
