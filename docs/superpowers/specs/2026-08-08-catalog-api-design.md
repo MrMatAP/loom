@@ -23,12 +23,15 @@ adapter both call the same Services).
 `Agent`, `Skill` (+`SkillGraphNode`/`SkillGraphEdge`), `Tool`
 (+`ToolDataBinding`), `DataSource`, `DataProduct` (+`DataProductLineage`).
 
+**In scope — platform bootstrap**: `Tenant`, `Principal`, `Environment` —
+plain CRUD (no `DELETE`, consistent with the rest of this API), gated
+behind a distinct, higher-privilege scope tier (see Authentication &
+Authorization) rather than deferred to a future component. This is the
+mechanism by which a platform admin provisions a Tenant, its
+Environment(s), and the Principals who are then granted entitlements (via
+IDP-side role assignment) to work with catalog content.
+
 **Out of scope**:
-- `Tenant`/`Principal`/`Environment` lifecycle endpoints — owned by a
-  future platform/identity component. This component has **read-only**
-  access to `principal` (to resolve an authenticated caller to a
-  `principal_id`) and otherwise treats `tenant_id`/`owner_id` as foreign
-  UUIDs, relying on the existing DB-level FK constraints.
 - `Policy`/`RoleBinding`/`AuditEvent`/`EvalSuite`/`EvalRun` — future
   Governance and Eval components.
 - Eval-gating of lifecycle transitions and RoleBinding/Policy evaluation.
@@ -106,8 +109,22 @@ src/loom/api/
     dataproduct/
       router.py / service.py / repository.py / schemas.py
       # lineage sub-resource endpoints live in the same router
+    tenant/
+      router.py / service.py / repository.py     # platform-tier, plain CRUD
+    principal/
+      router.py / service.py / repository.py     # platform-tier, plain CRUD
+    environment/
+      router.py / service.py / repository.py     # platform-tier, plain CRUD
 
 src/loom/config/auth_config.py   # AuthConfig, wired into RootConfig
+
+src/loom/idp/                      # IDP-agnostic admin-operations abstraction
+  __init__.py
+  client.py                        # IdpAdminClient protocol, ClientRegistrationResult, RoleDefinition
+  keycloak.py                       # KeycloakAdminClient(IdpAdminClient)
+  catalog_roles.py                   # the 24 scopes + 5 composite roles as data (single source of truth)
+
+src/loom/cli/idp.py                # loom idp register-client
 ```
 
 Runnable via `uvicorn loom.api.catalog.main:app`, or the new
@@ -141,6 +158,32 @@ accept `tenant_id` or `created_by_id`; those are always the resolved
 assigning ownership to someone else is a legitimate action distinct from
 "who actually performed this write."
 
+`principal_id` is deliberately **not** set equal to the `sub` claim
+itself — `sub` is only unique within its issuer, isn't guaranteed to be a
+UUID, and rotates if the org ever migrates/federates IDPs, which would
+otherwise force rewriting every historical `created_by_id`/`approved_by_id`
+FK across the registry. Keeping our own stable internal UUID (with
+`Principal.external_id` holding the current `sub`, already uniquely
+constrained per-tenant by `uq_principal_tenant_external_id`) also makes
+the lookup itself a real authorization gate: a valid, correctly-scoped
+token from the trusted issuer is not sufficient to act as a principal
+unless a `Principal` row was deliberately provisioned for that identity.
+`AuthConfig` assumes a single trusted issuer for this pass; a future
+multi-IDP-per-tenant setup would need the natural key widened to
+`(tenant_id, issuer, external_id)` to rule out cross-issuer `sub`
+collisions — noted as an explicit out-of-scope assumption, not solved here.
+
+**Platform-tier auth dependency split.** `Tenant`/`Principal`/`Environment`
+carry no `owner_id`/`created_by_id` FK, so their endpoints depend on
+`get_current_token` + `require_scopes(...)` only — no principal resolution.
+This is a deliberate design choice, not an oversight: `get_current_principal`
+401s when no matching `Principal` row exists yet, which would otherwise
+deadlock the very first admin on a fresh deployment. Bootstrapping proceeds
+top-down: a platform-admin token creates the `Tenant`, its `Environment`(s),
+and the `Principal` row(s) for the humans/agents who'll actually author
+catalog content — only once those `Principal` rows exist do *their* tokens
+resolve, letting them use content-tier (`catalog:{resource}:*`) endpoints.
+
 **Scopes** — `catalog:{resource}:{action}`, three actions per aggregate:
 
 ```
@@ -152,12 +195,30 @@ catalog:datasource:{read,write,transition}
 catalog:dataproduct:{read,write,transition}
 ```
 
-18 scopes. `write` covers create-entity and create-new-version.
+18 content scopes. `write` covers create-entity and create-new-version.
 `transition` covers lifecycle-state changes — kept separate from `write`
 since approval is often a distinct responsibility from authoring
 (separation of duties). Sub-resources (graph nodes/edges, data bindings,
 lineage, realizations) inherit their owning aggregate's `write` scope
 rather than getting their own scope, to avoid scope explosion.
+
+**Platform scopes** — same `catalog:{resource}:{action}` shape, no
+`transition` action (these aren't versioned):
+
+```
+catalog:tenant:{read,write}
+catalog:principal:{read,write}
+catalog:environment:{read,write}
+```
+
+6 more scopes, 24 total. `catalog:principal:write`/`catalog:environment:write`
+accept a client-specified `tenant_id` in the request body — the one place
+in this API where `tenant_id` is trusted from the client rather than
+derived from the token, since a platform admin may provision across
+tenants. This makes issuing those two scopes a meaningfully more sensitive
+IDP-side decision than any content scope. `catalog:tenant:*` has no
+per-request tenant to scope against at all (`Tenant` has no `tenant_id`
+column — it *is* the tenant); the scope itself is the authorization.
 
 **Roles** (IDP-side bundles; read from a space-separated `scope` claim per
 OAuth2 convention, or a `roles` claim expanded via a static server-side
@@ -165,10 +226,11 @@ role→scope table — support both):
 
 | Role | Scopes |
 |---|---|
-| `catalog-viewer` | all `:read` |
-| `catalog-editor` | all `:read` + `:write` |
-| `catalog-approver` | all `:read` + `:transition` |
-| `catalog-admin` | everything |
+| `catalog-viewer` | all content `:read` |
+| `catalog-editor` | all content `:read` + `:write` |
+| `catalog-approver` | all content `:read` + `:transition` |
+| `catalog-admin` | all content scopes (read+write+transition) |
+| `catalog-platform-admin` | `catalog-admin` + all platform scopes |
 
 **Enforcement**: `require_scopes(*scopes)` dependency factory applied
 per-route. Missing/invalid token → 401. Valid token, insufficient scope →
@@ -219,7 +281,24 @@ specific owning version row via FK):
 - `POST /tools/{entity_id}/versions/{version}/data-bindings`, `GET .../data-bindings`
 - `POST /dataproducts/{entity_id}/versions/{version}/lineage`, `GET .../lineage`
 
-All routes are mounted under an `/api/v1` prefix.
+## Platform bootstrap endpoints
+
+Plain CRUD, not versioned (`Tenant`/`Principal`/`Environment` already have
+`Update` schemas from the physical-model work); no `DELETE`, consistent
+with the rest of this API. Auth per the platform-tier dependency split
+above (`get_current_token` + `require_scopes(...)`, no principal
+resolution):
+
+- `POST /tenants`, `GET /tenants`, `GET /tenants/{id}`, `PATCH /tenants/{id}`
+  — requires `catalog:tenant:{read,write}`.
+- `POST /principals`, `GET /principals`, `GET /principals/{id}`, `PATCH /principals/{id}`
+  — requires `catalog:principal:{read,write}`; `tenant_id` is
+  client-specified in the body (see Authentication & Authorization).
+- `POST /environments`, `GET /environments`, `GET /environments/{id}`, `PATCH /environments/{id}`
+  — requires `catalog:environment:{read,write}`; `tenant_id`
+  client-specified likewise.
+
+All routes (content and platform) are mounted under an `/api/v1` prefix.
 
 ## Error handling
 
@@ -254,12 +333,90 @@ real JWT validation. `security.py`'s JWT-decoding logic itself gets a
 narrow, separate unit test with a stubbed JWKS response — the only place
 real token validation is exercised.
 
+## IDP client & role bootstrap (`loom idp register-client`)
+
+A single trusted IDP for this pass, assumed to be Keycloak — but the
+integration is written behind a provider-agnostic interface so a
+different IDP can be substituted later without touching the CLI command
+or the role-vocabulary definitions.
+
+**Caveat, stated plainly rather than glossed over**: Keycloak's "Initial
+Access Token" (generated under Client Registration settings) is scoped
+narrowly to Dynamic Client Registration (RFC 7591) — creating the OAuth
+client itself. It does not inherently carry realm-role-management rights.
+Declaring the role vocabulary needs the Admin REST API, which needs a
+realm-management-scoped token. In practice the token supplied to this
+command must be capable of both — typically an access token from a
+realm-admin service account via `client_credentials`, not strictly the
+narrow DCR-only token — and the CLI's `--help` text and docs say so
+explicitly rather than assuming a bare Initial Access Token suffices.
+
+**Provider abstraction** (`src/loom/idp/`):
+
+```python
+class IdpAdminClient(Protocol):
+    async def register_client(
+        self, *, client_id: str, client_name: str, service_account: bool
+    ) -> ClientRegistrationResult: ...
+
+    async def declare_client_roles(
+        self, client_ref: str, roles: list[RoleDefinition]
+    ) -> None: ...
+
+@dataclass
+class ClientRegistrationResult:
+    client_id: str
+    internal_ref: str                       # provider-specific handle for follow-up calls
+    registration_access_token: str | None    # DCR follow-up management token, if supported
+
+@dataclass
+class RoleDefinition:
+    name: str
+    description: str
+    composite_of: list[str] = field(default_factory=list)
+```
+
+`KeycloakAdminClient(IdpAdminClient)` is the concrete implementation:
+`register_client` POSTs to `{issuer}/clients-registrations/openid-connect`
+(Keycloak's OIDC Dynamic Client Registration endpoint) with the supplied
+token as Bearer auth; `declare_client_roles` uses the Admin REST API
+(`/admin/realms/{realm}/clients/{id}/roles`) to create the role vocabulary
+under the newly-registered client, using Keycloak's native composite-role
+feature for the 5 bundle roles. A future `Auth0AdminClient`/
+`OktaAdminClient` would implement the same `IdpAdminClient` protocol.
+
+**Role vocabulary as client roles, not realm roles.** The 24 leaf scopes +
+5 composite roles from the Authentication & Authorization section are
+declared as roles namespaced under the newly-registered client (Keycloak's
+idiomatic pattern for "this app defines these roles"), defined once as
+data in `src/loom/idp/catalog_roles.py` — the single source of truth for
+the role graph, consumed by this command. The command's job stops at
+declaring the vocabulary; assigning roles to actual end-user/service
+accounts is a separate, later action a Keycloak admin performs, outside
+this command's scope.
+
+**Command**:
+
+```
+loom idp register-client \
+  --issuer-url https://keycloak.example/realms/loom \
+  --token <initial-access-token> \
+  --client-id loom-catalog-api \
+  [--client-name "Loom Catalog API"]
+```
+
+Registers the client via DCR, declares all 24+5 roles under it, and
+prints a summary including the DCR `registration_access_token` (needed
+for future client updates — shown once, flagged to store securely).
+`--issuer-url` defaults to `config.auth.issuer` if already set.
+
 ## New dependencies
 
 - `fastapi>=0.115` — core
 - `uvicorn[standard]>=0.32` — core (also the component's runtime server)
 - `pyjwt[crypto]>=2.9` — core
-- `httpx>=0.27` — dev (test client)
+- `httpx>=0.27` — core (used by `loom idp register-client` at runtime,
+  and as the test client in `tests/`)
 
 ## Out of scope / open items carried forward
 
@@ -267,9 +424,13 @@ real token validation is exercised.
   spec's original "no in-place UPDATE" wording (flagged above) —
   reconsider if a future audit requirement wants every governance-state
   change to also be a distinct content version.
-- Cross-tenant admin/superuser access (e.g. a support role that can see
-  all tenants) is not modeled; every request is scoped to exactly one
-  tenant from the token.
+- Cross-tenant access to catalog *content* is not modeled — content-tier
+  requests are always scoped to exactly one tenant, derived from the
+  token. Platform-tier scopes (`catalog:tenant:*`, and
+  `catalog:principal:write`/`catalog:environment:write` with their
+  client-specified `tenant_id`) are the one deliberate exception, by
+  design (see Authentication & Authorization) — not an oversight to
+  revisit, but worth remembering when deciding who holds those scopes.
 - Rate limiting, request-size limits, and other API-gateway-shaped
   concerns are assumed to be handled by infrastructure in front of this
   component (matches `CLAUDE.md`'s "gateway enforces the same RBAC/Policy
