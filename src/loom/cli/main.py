@@ -11,6 +11,7 @@ import yaml
 
 from loom import __default_config_path__, __version__
 from loom.cli.db import db_current, db_downgrade, db_history, db_revision, db_upgrade
+from loom.cli.idp import idp_register_client
 from loom.config import RootConfig
 
 console = rich.console.Console()
@@ -203,6 +204,38 @@ async def main() -> int:
             help='Autogenerate from model changes',
         )
         db_revision_parser.set_defaults(func=db_revision)
+
+        idp_parser = subparsers.add_parser(
+            'idp', help='Identity provider bootstrap commands'
+        )
+        idp_subparser = idp_parser.add_subparsers(required=True)
+
+        idp_register_parser = idp_subparser.add_parser(
+            'register-client',
+            help='Register the Catalog OAuth client and declare its roles',
+        )
+        idp_register_parser.add_argument(
+            '--issuer-url',
+            dest='issuer_url',
+            default=None,
+            help='OIDC realm issuer URL, defaults to config.auth.issuer',
+        )
+        idp_register_parser.add_argument(
+            '--token', required=True, help='IDP admin/initial access token'
+        )
+        idp_register_parser.add_argument(
+            '--client-id',
+            dest='client_id',
+            required=True,
+            help='OAuth client ID to register',
+        )
+        idp_register_parser.add_argument(
+            '--client-name',
+            dest='client_name',
+            default=None,
+            help='Human-readable client name, defaults to --client-id',
+        )
+        idp_register_parser.set_defaults(func=idp_register_client)
 
         args = parser.parse_args()
         config = RootConfig.load(config_path=args.config_path)

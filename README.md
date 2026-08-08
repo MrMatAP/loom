@@ -41,3 +41,20 @@ scopes) or a `roles` claim (`catalog-viewer`, `catalog-editor`,
 `catalog-approver`, `catalog-admin`, `catalog-platform-admin`). See
 `docs/superpowers/specs/2026-08-08-catalog-api-design.md` for the full
 access-rights model.
+
+### Registering the client with your IDP
+
+For Keycloak: generate a token capable of both Dynamic Client Registration
+and realm role management (a plain "Initial Access Token" from Client
+Registration settings is DCR-only and typically insufficient — use an
+access token from a realm-admin service account via `client_credentials`),
+then:
+
+    loom idp register-client --issuer-url https://idp.example/realms/loom \
+      --token <token> --client-id loom-catalog-api
+
+This registers the OAuth client and declares all 24 leaf scopes plus the 5
+composite roles (`catalog-viewer`, `catalog-editor`, `catalog-approver`,
+`catalog-admin`, `catalog-platform-admin`) as roles under that client.
+Assigning those roles to actual users/service accounts is a separate step
+performed in the Keycloak admin console.
