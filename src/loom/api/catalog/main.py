@@ -36,6 +36,10 @@ def create_app(config: RootConfig) -> FastAPI:
 
     app.include_router(skill_router, prefix='/api/v1')
 
+    from .tool.router import router as tool_router
+
+    app.include_router(tool_router, prefix='/api/v1')
+
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
