@@ -1509,7 +1509,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_agent_full_lifecycle(api_client):
     create_resp = await api_client.post(
-        '/agents',
+        '/api/v1/agents',
         json={
             'slug': 'triage-agent',
             'name': 'Triage Agent',
@@ -1525,14 +1525,14 @@ async def test_agent_full_lifecycle(api_client):
     assert created['version'] == 1
     assert created['permission_boundary'] == {}
 
-    get_resp = await api_client.get(f'/agents/{entity_id}')
+    get_resp = await api_client.get(f'/api/v1/agents/{entity_id}')
     assert get_resp.status_code == 200
 
-    list_resp = await api_client.get('/agents')
+    list_resp = await api_client.get('/api/v1/agents')
     assert list_resp.json()['total'] == 1
 
     version_resp = await api_client.post(
-        f'/agents/{entity_id}/versions',
+        f'/api/v1/agents/{entity_id}/versions',
         json={
             'slug': 'triage-agent',
             'name': 'Triage Agent v2',
@@ -1546,7 +1546,7 @@ async def test_agent_full_lifecycle(api_client):
     assert version_resp.json()['version'] == 2
 
     transition_resp = await api_client.post(
-        f'/agents/{entity_id}/versions/2/transitions', json={'to_state': 'in_review'}
+        f'/api/v1/agents/{entity_id}/versions/2/transitions', json={'to_state': 'in_review'}
     )
     assert transition_resp.status_code == 200
     assert transition_resp.json()['lifecycle_state'] == 'in_review'
@@ -1554,7 +1554,7 @@ async def test_agent_full_lifecycle(api_client):
 
 @pytest.mark.asyncio
 async def test_agent_not_found_returns_404(api_client):
-    resp = await api_client.get('/agents/00000000-0000-0000-0000-000000000000')
+    resp = await api_client.get('/api/v1/agents/00000000-0000-0000-0000-000000000000')
     assert resp.status_code == 404
 ```
 
@@ -1973,7 +1973,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_atomic_skill_requires_content_returns_422(api_client):
     resp = await api_client.post(
-        '/skills',
+        '/api/v1/skills',
         json={
             'slug': 'draft-reply',
             'name': 'Draft Reply',
@@ -1988,7 +1988,7 @@ async def test_atomic_skill_requires_content_returns_422(api_client):
 @pytest.mark.asyncio
 async def test_composite_skill_graph_lifecycle(api_client):
     create_resp = await api_client.post(
-        '/skills',
+        '/api/v1/skills',
         json={
             'slug': 'triage-flow',
             'name': 'Triage Flow',
@@ -2001,7 +2001,7 @@ async def test_composite_skill_graph_lifecycle(api_client):
     entity_id = create_resp.json()['entity_id']
 
     agent_resp = await api_client.post(
-        '/agents',
+        '/api/v1/agents',
         json={
             'slug': 'triage-agent',
             'name': 'Triage Agent',
@@ -2014,26 +2014,26 @@ async def test_composite_skill_graph_lifecycle(api_client):
     agent_version_id = agent_resp.json()['id']
 
     node_resp = await api_client.post(
-        '/skills/' + entity_id + '/versions/1/nodes',
+        '/api/v1/skills/' + entity_id + '/versions/1/nodes',
         json={'node_key': 'start', 'node_type': 'agent', 'agent_id': agent_version_id},
     )
     assert node_resp.status_code == 201
     node_id = node_resp.json()['id']
 
-    nodes_resp = await api_client.get('/skills/' + entity_id + '/versions/1/nodes')
+    nodes_resp = await api_client.get('/api/v1/skills/' + entity_id + '/versions/1/nodes')
     assert len(nodes_resp.json()) == 1
 
     edge_resp = await api_client.post(
-        '/skills/' + entity_id + '/versions/1/edges',
+        '/api/v1/skills/' + entity_id + '/versions/1/edges',
         json={'from_node_id': node_id, 'to_node_id': node_id},
     )
     assert edge_resp.status_code == 201
 
-    edges_resp = await api_client.get('/skills/' + entity_id + '/versions/1/edges')
+    edges_resp = await api_client.get('/api/v1/skills/' + entity_id + '/versions/1/edges')
     assert len(edges_resp.json()) == 1
 
     transition_resp = await api_client.post(
-        '/skills/' + entity_id + '/versions/1/transitions', json={'to_state': 'in_review'}
+        '/api/v1/skills/' + entity_id + '/versions/1/transitions', json={'to_state': 'in_review'}
     )
     assert transition_resp.status_code == 200
 ```
@@ -2585,7 +2585,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_tool_full_lifecycle(api_client):
     create_resp = await api_client.post(
-        '/tools',
+        '/api/v1/tools',
         json={
             'slug': 'send-email',
             'name': 'Send Email',
@@ -2595,12 +2595,12 @@ async def test_tool_full_lifecycle(api_client):
     assert create_resp.status_code == 201
     entity_id = create_resp.json()['entity_id']
 
-    get_resp = await api_client.get(f'/tools/{entity_id}')
+    get_resp = await api_client.get(f'/api/v1/tools/{entity_id}')
     assert get_resp.status_code == 200
     assert get_resp.json()['auth_binding_id'] is None
 
     version_resp = await api_client.post(
-        f'/tools/{entity_id}/versions',
+        f'/api/v1/tools/{entity_id}/versions',
         json={
             'slug': 'send-email',
             'name': 'Send Email v2',
@@ -2628,17 +2628,17 @@ async def test_tool_data_binding_is_version_scoped(api_client, fake_principal, a
     await async_session.commit()
 
     create_resp = await api_client.post(
-        '/tools', json={'slug': 'query-orders', 'name': 'Query Orders', 'invocation_spec': {}}
+        '/api/v1/tools', json={'slug': 'query-orders', 'name': 'Query Orders', 'invocation_spec': {}}
     )
     entity_id = create_resp.json()['entity_id']
 
     binding_resp = await api_client.post(
-        f'/tools/{entity_id}/versions/1/data-bindings',
+        f'/api/v1/tools/{entity_id}/versions/1/data-bindings',
         json={'datasource_id': str(datasource.id), 'access_mode': 'read'},
     )
     assert binding_resp.status_code == 201
 
-    list_resp = await api_client.get(f'/tools/{entity_id}/versions/1/data-bindings')
+    list_resp = await api_client.get(f'/api/v1/tools/{entity_id}/versions/1/data-bindings')
     assert list_resp.status_code == 200
     assert len(list_resp.json()) == 1
 ```
@@ -3116,31 +3116,31 @@ import pytest
 @pytest.mark.asyncio
 async def test_datasource_full_lifecycle(api_client):
     create_resp = await api_client.post(
-        '/datasources', json={'slug': 'orders-db', 'name': 'Orders DB', 'kind': 'database'}
+        '/api/v1/datasources', json={'slug': 'orders-db', 'name': 'Orders DB', 'kind': 'database'}
     )
     assert create_resp.status_code == 201
     entity_id = create_resp.json()['entity_id']
 
-    get_resp = await api_client.get(f'/datasources/{entity_id}')
+    get_resp = await api_client.get(f'/api/v1/datasources/{entity_id}')
     assert get_resp.status_code == 200
     assert get_resp.json()['kind'] == 'database'
 
     version_resp = await api_client.post(
-        f'/datasources/{entity_id}/versions',
+        f'/api/v1/datasources/{entity_id}/versions',
         json={'slug': 'orders-db', 'name': 'Orders DB v2', 'kind': 'database'},
     )
     assert version_resp.status_code == 201
     assert version_resp.json()['version'] == 2
 
     transition_resp = await api_client.post(
-        f'/datasources/{entity_id}/versions/2/transitions', json={'to_state': 'in_review'}
+        f'/api/v1/datasources/{entity_id}/versions/2/transitions', json={'to_state': 'in_review'}
     )
     assert transition_resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_datasource_not_found_returns_404(api_client):
-    resp = await api_client.get('/datasources/00000000-0000-0000-0000-000000000000')
+    resp = await api_client.get('/api/v1/datasources/00000000-0000-0000-0000-000000000000')
     assert resp.status_code == 404
 ```
 
@@ -3557,17 +3557,17 @@ import pytest
 @pytest.mark.asyncio
 async def test_dataproduct_full_lifecycle(api_client):
     create_resp = await api_client.post(
-        '/dataproducts',
+        '/api/v1/dataproducts',
         json={'slug': 'orders-curated', 'name': 'Curated Orders', 'contract': {}},
     )
     assert create_resp.status_code == 201
     entity_id = create_resp.json()['entity_id']
 
-    get_resp = await api_client.get(f'/dataproducts/{entity_id}')
+    get_resp = await api_client.get(f'/api/v1/dataproducts/{entity_id}')
     assert get_resp.status_code == 200
 
     version_resp = await api_client.post(
-        f'/dataproducts/{entity_id}/versions',
+        f'/api/v1/dataproducts/{entity_id}/versions',
         json={'slug': 'orders-curated', 'name': 'Curated Orders v2', 'contract': {}},
     )
     assert version_resp.status_code == 201
@@ -3591,17 +3591,17 @@ async def test_lineage_is_version_scoped(api_client, fake_principal, async_sessi
     await async_session.commit()
 
     create_resp = await api_client.post(
-        '/dataproducts', json={'slug': 'orders-curated', 'name': 'Curated Orders', 'contract': {}}
+        '/api/v1/dataproducts', json={'slug': 'orders-curated', 'name': 'Curated Orders', 'contract': {}}
     )
     entity_id = create_resp.json()['entity_id']
 
     lineage_resp = await api_client.post(
-        f'/dataproducts/{entity_id}/versions/1/lineage',
+        f'/api/v1/dataproducts/{entity_id}/versions/1/lineage',
         json={'source_datasource_id': str(datasource.id)},
     )
     assert lineage_resp.status_code == 201
 
-    list_resp = await api_client.get(f'/dataproducts/{entity_id}/versions/1/lineage')
+    list_resp = await api_client.get(f'/api/v1/dataproducts/{entity_id}/versions/1/lineage')
     assert list_resp.status_code == 200
     assert len(list_resp.json()) == 1
 ```
@@ -4106,20 +4106,20 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_tenant_crud(api_client):
-    create_resp = await api_client.post('/tenants', json={'slug': 'acme', 'name': 'Acme Corp'})
+    create_resp = await api_client.post('/api/v1/tenants', json={'slug': 'acme', 'name': 'Acme Corp'})
     assert create_resp.status_code == 201
     tenant_id = create_resp.json()['id']
 
-    get_resp = await api_client.get(f'/tenants/{tenant_id}')
+    get_resp = await api_client.get(f'/api/v1/tenants/{tenant_id}')
     assert get_resp.status_code == 200
     assert get_resp.json()['slug'] == 'acme'
 
-    list_resp = await api_client.get('/tenants')
+    list_resp = await api_client.get('/api/v1/tenants')
     assert list_resp.status_code == 200
     assert list_resp.json()['total'] >= 1
 
     update_resp = await api_client.patch(
-        f'/tenants/{tenant_id}', json={'name': 'Acme Corp Inc'}
+        f'/api/v1/tenants/{tenant_id}', json={'name': 'Acme Corp Inc'}
     )
     assert update_resp.status_code == 200
     assert update_resp.json()['name'] == 'Acme Corp Inc'
@@ -4127,11 +4127,11 @@ async def test_tenant_crud(api_client):
 
 @pytest.mark.asyncio
 async def test_principal_crud(api_client):
-    tenant_resp = await api_client.post('/tenants', json={'slug': 'globex', 'name': 'Globex'})
+    tenant_resp = await api_client.post('/api/v1/tenants', json={'slug': 'globex', 'name': 'Globex'})
     tenant_id = tenant_resp.json()['id']
 
     create_resp = await api_client.post(
-        '/principals',
+        '/api/v1/principals',
         json={
             'tenant_id': tenant_id,
             'kind': 'user',
@@ -4142,15 +4142,15 @@ async def test_principal_crud(api_client):
     assert create_resp.status_code == 201
     principal_id = create_resp.json()['id']
 
-    get_resp = await api_client.get(f'/principals/{principal_id}')
+    get_resp = await api_client.get(f'/api/v1/principals/{principal_id}')
     assert get_resp.status_code == 200
 
-    list_resp = await api_client.get('/principals', params={'tenant_id': tenant_id})
+    list_resp = await api_client.get('/api/v1/principals', params={'tenant_id': tenant_id})
     assert list_resp.status_code == 200
     assert list_resp.json()['total'] == 1
 
     update_resp = await api_client.patch(
-        f'/principals/{principal_id}', json={'display_name': 'Ada Lovelace'}
+        f'/api/v1/principals/{principal_id}', json={'display_name': 'Ada Lovelace'}
     )
     assert update_resp.status_code == 200
     assert update_resp.json()['display_name'] == 'Ada Lovelace'
@@ -4158,11 +4158,11 @@ async def test_principal_crud(api_client):
 
 @pytest.mark.asyncio
 async def test_environment_crud(api_client):
-    tenant_resp = await api_client.post('/tenants', json={'slug': 'initech', 'name': 'Initech'})
+    tenant_resp = await api_client.post('/api/v1/tenants', json={'slug': 'initech', 'name': 'Initech'})
     tenant_id = tenant_resp.json()['id']
 
     create_resp = await api_client.post(
-        '/environments',
+        '/api/v1/environments',
         json={
             'tenant_id': tenant_id,
             'name': 'prod',
@@ -4174,12 +4174,12 @@ async def test_environment_crud(api_client):
     assert create_resp.status_code == 201
     environment_id = create_resp.json()['id']
 
-    list_resp = await api_client.get('/environments', params={'tenant_id': tenant_id})
+    list_resp = await api_client.get('/api/v1/environments', params={'tenant_id': tenant_id})
     assert list_resp.status_code == 200
     assert list_resp.json()['total'] == 1
 
     update_resp = await api_client.patch(
-        f'/environments/{environment_id}',
+        f'/api/v1/environments/{environment_id}',
         json={'compute_boundary_ref': 'vpc-prod-compute-v2'},
     )
     assert update_resp.status_code == 200
