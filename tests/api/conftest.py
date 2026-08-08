@@ -92,7 +92,12 @@ async def api_client(
 
     async def _override_session() -> AsyncGenerator[AsyncSession]:
         async with async_session_factory() as session:
-            yield session
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_session] = _override_session
     app.dependency_overrides[get_current_token] = lambda: {
