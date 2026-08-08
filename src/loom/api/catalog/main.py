@@ -44,6 +44,10 @@ def create_app(config: RootConfig) -> FastAPI:
 
     app.include_router(datasource_router, prefix='/api/v1')
 
+    from .dataproduct.router import router as dataproduct_router
+
+    app.include_router(dataproduct_router, prefix='/api/v1')
+
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
