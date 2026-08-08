@@ -69,12 +69,11 @@ async def get_current_principal(
 
 
 def require_scopes(*required: str):
-    """Dependency factory: 403s unless the principal's scopes cover all required."""
+    """Dependency factory: 403s unless the token's scopes cover all required."""
 
-    async def _check(
-        principal: AuthenticatedPrincipal = Depends(get_current_principal),
-    ) -> None:
-        missing = set(required) - principal.scopes
+    async def _check(claims: dict = Depends(get_current_token)) -> None:
+        scopes = expand_claims_to_scopes(claims)
+        missing = set(required) - scopes
         if missing:
             joined = ', '.join(sorted(missing))
             detail = f'Missing required scope(s): {joined}'

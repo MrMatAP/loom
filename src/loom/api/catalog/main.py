@@ -26,7 +26,7 @@ def create_app(config: RootConfig) -> FastAPI:
 
     from .capability.router import router as capability_router
 
-    app.include_router(capability_router)
+    app.include_router(capability_router, prefix='/api/v1')
 
     @app.get('/healthz')
     async def healthz() -> dict:

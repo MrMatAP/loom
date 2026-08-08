@@ -103,6 +103,7 @@ async def api_client(
     app.dependency_overrides[get_current_token] = lambda: {
         'sub': 'test-user',
         'tenant_id': str(fake_principal.tenant_id),
+        'scope': ' '.join(sorted(ALL_SCOPES)),
     }
     app.dependency_overrides[get_current_principal] = lambda: fake_principal
 
