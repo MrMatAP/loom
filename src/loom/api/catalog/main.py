@@ -24,6 +24,10 @@ def create_app(config: RootConfig) -> FastAPI:
     app = FastAPI(title='Loom Catalog Service', lifespan=lifespan)
     register_exception_handlers(app)
 
+    from .capability.router import router as capability_router
+
+    app.include_router(capability_router)
+
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
