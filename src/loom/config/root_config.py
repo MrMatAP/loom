@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, computed_field
 
 from loom import __version__
 
+from .auth_config import AuthConfig
 from .base import RootConfigAware
 from .database_config import DatabaseConfig
 
@@ -20,6 +21,7 @@ class RootConfig(BaseModel):
     )
 
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
     @computed_field
     @property
@@ -49,7 +51,7 @@ class RootConfig(BaseModel):
         )
 
     @classmethod
-    def load(cls, config_path: pathlib.Path) -> 'RootConfig':
+    def load(cls, config_path: pathlib.Path) -> RootConfig:
         """
         Load the configuration from disk.
         Args:
