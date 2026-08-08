@@ -40,6 +40,10 @@ def create_app(config: RootConfig) -> FastAPI:
 
     app.include_router(tool_router, prefix='/api/v1')
 
+    from .datasource.router import router as datasource_router
+
+    app.include_router(datasource_router, prefix='/api/v1')
+
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
