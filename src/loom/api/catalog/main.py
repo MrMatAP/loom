@@ -28,6 +28,10 @@ def create_app(config: RootConfig) -> FastAPI:
 
     app.include_router(capability_router, prefix='/api/v1')
 
+    from .agent.router import router as agent_router
+
+    app.include_router(agent_router, prefix='/api/v1')
+
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
