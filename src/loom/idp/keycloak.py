@@ -27,6 +27,13 @@ class KeycloakAdminClient:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=self._transport)
 
+    @staticmethod
+    def _raise_unless_already_exists(response: httpx.Response) -> None:
+        """Treat Keycloak's 409 as success so bootstrap stays re-runnable."""
+        if response.status_code == httpx.codes.CONFLICT:
+            return
+        response.raise_for_status()
+
     async def register_client(
         self, *, client_id: str, client_name: str, service_account: bool
     ) -> ClientRegistrationResult:
@@ -72,7 +79,7 @@ class KeycloakAdminClient:
     async def declare_client_roles(
         self, client_ref: str, roles: list[RoleDefinition]
     ) -> None:
-        """Create leaf roles, then composite roles with their associations."""
+        """Create leaf then composite roles; idempotent across bootstrap re-runs."""
         leaf_roles = [role for role in roles if not role.composite_of]
         composite_roles = [role for role in roles if role.composite_of]
         headers = {'Authorization': f'Bearer {self._token}'}
@@ -86,7 +93,7 @@ class KeycloakAdminClient:
                     headers=headers,
                     timeout=30.0,
                 )
-                response.raise_for_status()
+                self._raise_unless_already_exists(response)
 
             for role in composite_roles:
                 response = await http.post(
@@ -95,7 +102,7 @@ class KeycloakAdminClient:
                     headers=headers,
                     timeout=30.0,
                 )
-                response.raise_for_status()
+                self._raise_unless_already_exists(response)
 
                 resolved_sub_roles = []
                 for sub_role_name in role.composite_of:
@@ -111,4 +118,4 @@ class KeycloakAdminClient:
                     headers=headers,
                     timeout=30.0,
                 )
-                composite_response.raise_for_status()
+                self._raise_unless_already_exists(composite_response)

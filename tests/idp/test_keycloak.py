@@ -62,3 +62,59 @@ async def test_register_client_and_declare_roles():
     all_scopes = content_scopes() | platform_scopes()
     assert all_scopes <= set(created_roles)
     assert 'catalog-viewer' in created_roles
+
+
+@pytest.mark.asyncio
+async def test_declare_client_roles_is_idempotent_on_409():
+    attempted_roles: list[str] = []
+    attempted_composites: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if (
+            path == '/admin/realms/loom/clients/internal-uuid-123/roles'
+            and request.method == 'POST'
+        ):
+            attempted_roles.append(json.loads(request.read())['name'])
+            return httpx.Response(409, json={'errorMessage': 'Role already exists'})
+        if path.endswith('/composites') and request.method == 'POST':
+            attempted_composites.append(path)
+            return httpx.Response(409, json={'errorMessage': 'Already associated'})
+        if (
+            path.startswith('/admin/realms/loom/clients/internal-uuid-123/roles/')
+            and request.method == 'GET'
+        ):
+            role_name = path.rsplit('/', 1)[-1]
+            return httpx.Response(
+                200, json={'id': f'id-{role_name}', 'name': role_name}
+            )
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.declare_client_roles('internal-uuid-123', catalog_role_definitions())
+
+    all_scopes = content_scopes() | platform_scopes()
+    assert all_scopes <= set(attempted_roles)
+    assert attempted_composites
+
+
+@pytest.mark.asyncio
+async def test_declare_client_roles_still_raises_on_server_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={'errorMessage': 'boom'})
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.declare_client_roles(
+            'internal-uuid-123', catalog_role_definitions()
+        )
