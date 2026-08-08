@@ -63,6 +63,7 @@ exclude = ["ci"]
 
 [project.scripts]
 loom = "loom.cli.main:run"
+loom-catalog-api = "loom.api.catalog.main:run"
 
 # If you are debugging your tests using PyCharm then comment out the coverage options
 # in addopts

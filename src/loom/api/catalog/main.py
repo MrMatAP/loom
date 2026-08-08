@@ -7,8 +7,29 @@ from loom import __default_config_path__
 from loom.config import RootConfig
 from loom.model.engine import get_async_session_factory
 
+from .agent.router import router as agent_router
+from .capability.router import router as capability_router
+from .dataproduct.router import router as dataproduct_router
+from .datasource.router import router as datasource_router
+from .environment.router import router as environment_router
 from .exceptions import register_exception_handlers
+from .principal.router import router as principal_router
 from .security import TokenValidator
+from .skill.router import router as skill_router
+from .tenant.router import router as tenant_router
+from .tool.router import router as tool_router
+
+ROUTERS = (
+    capability_router,
+    agent_router,
+    skill_router,
+    tool_router,
+    datasource_router,
+    dataproduct_router,
+    tenant_router,
+    principal_router,
+    environment_router,
+)
 
 
 def create_app(config: RootConfig) -> FastAPI:
@@ -24,41 +45,12 @@ def create_app(config: RootConfig) -> FastAPI:
     app = FastAPI(title='Loom Catalog Service', lifespan=lifespan)
     register_exception_handlers(app)
 
-    from .capability.router import router as capability_router
-
-    app.include_router(capability_router, prefix='/api/v1')
-
-    from .agent.router import router as agent_router
-
-    app.include_router(agent_router, prefix='/api/v1')
-
-    from .skill.router import router as skill_router
-
-    app.include_router(skill_router, prefix='/api/v1')
-
-    from .tool.router import router as tool_router
-
-    app.include_router(tool_router, prefix='/api/v1')
-
-    from .datasource.router import router as datasource_router
-
-    app.include_router(datasource_router, prefix='/api/v1')
-
-    from .dataproduct.router import router as dataproduct_router
-
-    app.include_router(dataproduct_router, prefix='/api/v1')
-
-    from .environment.router import router as environment_router
-    from .principal.router import router as principal_router
-    from .tenant.router import router as tenant_router
-
-    app.include_router(tenant_router, prefix='/api/v1')
-    app.include_router(principal_router, prefix='/api/v1')
-    app.include_router(environment_router, prefix='/api/v1')
-
     @app.get('/healthz')
     async def healthz() -> dict:
         return {'status': 'ok'}
+
+    for router in ROUTERS:
+        app.include_router(router, prefix='/api/v1')
 
     return app
 
