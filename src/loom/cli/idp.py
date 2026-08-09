@@ -1,8 +1,30 @@
 import argparse
+import getpass
+import os
 
 from loom.config import RootConfig
 from loom.idp.client import catalog_role_definitions
 from loom.idp.keycloak import KeycloakAdminClient
+
+
+def _resolve_admin_username(args: argparse.Namespace) -> str:
+    """Resolve the admin username from flag, env var, or an interactive prompt."""
+    if args.admin_username:
+        return args.admin_username
+    env_value = os.environ.get('LOOM_IDP_ADMIN_USERNAME')
+    if env_value:
+        return env_value
+    return input('Keycloak admin username: ')
+
+
+def _resolve_admin_password(args: argparse.Namespace) -> str:
+    """Resolve the admin password from flag, env var, or a hidden prompt."""
+    if args.admin_password:
+        return args.admin_password
+    env_value = os.environ.get('LOOM_IDP_ADMIN_PASSWORD')
+    if env_value:
+        return env_value
+    return getpass.getpass('Keycloak admin password: ')
 
 
 async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> int:
@@ -12,8 +34,17 @@ async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> i
         print('No --issuer-url given and config.auth.issuer is unset.')
         return 1
 
+    username = _resolve_admin_username(args)
+    password = _resolve_admin_password(args)
+    client = await KeycloakAdminClient.login(
+        issuer_url,
+        username=username,
+        password=password,
+        admin_realm=args.admin_realm,
+        admin_client_id=args.admin_client_id,
+    )
+
     client_name = args.client_name or args.client_id
-    client = KeycloakAdminClient(issuer=issuer_url, token=args.token)
     result = await client.register_client(
         client_id=args.client_id, client_name=client_name, service_account=True
     )
@@ -24,8 +55,8 @@ async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> i
     print(
         f'Registered client: {result.client_id} (internal ref: {result.internal_ref})'
     )
-    if result.registration_access_token:
-        print('Registration access token (store securely, shown once):')
-        print(result.registration_access_token)
+    if result.client_secret:
+        print('Client secret (store securely, shown once):')
+        print(result.client_secret)
     print(f'Declared {len(roles)} roles under the client.')
     return 0

@@ -44,17 +44,23 @@ access-rights model.
 
 ### Registering the client with your IDP
 
-For Keycloak: generate a token capable of both Dynamic Client Registration
-and realm role management (a plain "Initial Access Token" from Client
-Registration settings is DCR-only and typically insufficient — use an
-access token from a realm-admin service account via `client_credentials`),
-then:
+For Keycloak, authenticate as an admin (the standard Keycloak superadmin
+realm is `master`):
 
     loom idp register-client --issuer-url https://idp.example/realms/loom \
-      --token <token> --client-id loom-catalog-api
+      --client-id loom-catalog-api
 
-This registers the OAuth client and declares all 24 leaf scopes plus the 5
-composite roles (`catalog-viewer`, `catalog-editor`, `catalog-approver`,
-`catalog-admin`, `catalog-platform-admin`) as roles under that client.
-Assigning those roles to actual users/service accounts is a separate step
-performed in the Keycloak admin console.
+You'll be prompted for the admin username and password. To avoid the
+prompt, set `LOOM_IDP_ADMIN_USERNAME`/`LOOM_IDP_ADMIN_PASSWORD`, or pass
+`--admin-username`/`--admin-password` directly (flags take precedence over
+env vars, which take precedence over the prompt). If the admin account
+lives in a different realm, or the deployment uses a different admin
+client than the default `admin-cli`, pass `--admin-realm`/`--admin-client-id`.
+
+This registers the OAuth client via the Keycloak Admin REST API and
+declares all 24 leaf scopes plus the 5 composite roles (`catalog-viewer`,
+`catalog-editor`, `catalog-approver`, `catalog-admin`,
+`catalog-platform-admin`) as roles under that client, printing the
+generated client secret (store it securely — it is shown once). Assigning
+those roles to actual users/service accounts is a separate step performed
+in the Keycloak admin console.

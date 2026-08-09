@@ -221,7 +221,28 @@ async def main() -> int:
             help='OIDC realm issuer URL, defaults to config.auth.issuer',
         )
         idp_register_parser.add_argument(
-            '--token', required=True, help='IDP admin/initial access token'
+            '--admin-username',
+            dest='admin_username',
+            default=None,
+            help='Keycloak admin username, else LOOM_IDP_ADMIN_USERNAME or a prompt',
+        )
+        idp_register_parser.add_argument(
+            '--admin-password',
+            dest='admin_password',
+            default=None,
+            help='Keycloak admin password, else LOOM_IDP_ADMIN_PASSWORD or a prompt',
+        )
+        idp_register_parser.add_argument(
+            '--admin-realm',
+            dest='admin_realm',
+            default='master',
+            help='Realm to authenticate the admin user against',
+        )
+        idp_register_parser.add_argument(
+            '--admin-client-id',
+            dest='admin_client_id',
+            default='admin-cli',
+            help='Public client used for the admin login grant',
         )
         idp_register_parser.add_argument(
             '--client-id',
