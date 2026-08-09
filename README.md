@@ -61,6 +61,12 @@ This registers the OAuth client via the Keycloak Admin REST API and
 declares all 24 leaf scopes plus the 5 composite roles (`catalog-viewer`,
 `catalog-editor`, `catalog-approver`, `catalog-admin`,
 `catalog-platform-admin`) as roles under that client, printing the
-generated client secret (store it securely — it is shown once). Assigning
-those roles to actual users/service accounts is a separate step performed
-in the Keycloak admin console.
+generated client secret (store it securely — it is shown once). It also
+sets `auth.issuer`/`auth.audience` in the local config to the values it
+just registered (overwriting whatever was there before), so the manual
+`loom config set auth.issuer`/`auth.audience` step above isn't needed when
+you run this command. It also resets `auth.jwks_uri` to unset so it
+re-derives from the new issuer — if you had pinned it (e.g. an internal
+issuer URL behind a proxy with a different external JWKS endpoint),
+re-pin it after running this command. Assigning those roles to actual users/service
+accounts is a separate step performed in the Keycloak admin console.

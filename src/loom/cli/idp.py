@@ -59,4 +59,13 @@ async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> i
         print('Client secret (store securely, shown once):')
         print(result.client_secret)
     print(f'Declared {len(roles)} roles under the client.')
+
+    config.auth.issuer = issuer_url
+    config.auth.audience = result.client_id
+    config.auth.jwks_uri = None
+    config.save()
+    print(
+        f'Updated local config: auth.issuer={issuer_url}, '
+        f'auth.audience={result.client_id} (auth.jwks_uri reset to re-derive)'
+    )
     return 0

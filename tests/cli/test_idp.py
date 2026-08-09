@@ -61,9 +61,79 @@ async def test_idp_register_client_wires_arguments(monkeypatch, tmp_path, capsys
 
 @pytest.mark.asyncio
 async def test_idp_register_client_requires_issuer(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config_path = tmp_path / 'config.yaml'
+    config = RootConfig(config_path=config_path)
     result = await idp_register_client(config, _base_args(issuer_url=None))
     assert result == 1
+    assert not config_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_idp_register_client_updates_and_saves_auth_config(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _FakeKeycloakAdminClient)
+
+    config_path = tmp_path / 'config.yaml'
+    config = RootConfig(config_path=config_path)
+    result = await idp_register_client(config, _base_args())
+    assert result == 0
+
+    assert config.auth.issuer == 'https://idp.example/realms/loom'
+    assert config.auth.audience == 'loom-catalog-api'
+    assert config.auth.jwks_uri is None
+
+    reloaded = RootConfig.load(config_path=config_path)
+    assert reloaded.auth.issuer == 'https://idp.example/realms/loom'
+    assert reloaded.auth.audience == 'loom-catalog-api'
+    assert reloaded.auth.jwks_uri is None
+
+    output = capsys.readouterr().out
+    assert 'Updated local config' in output
+    assert 'auth.issuer=https://idp.example/realms/loom' in output
+    assert 'auth.audience=loom-catalog-api' in output
+
+
+@pytest.mark.asyncio
+async def test_idp_register_client_overwrites_existing_auth_config(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _FakeKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config.auth.issuer = 'https://old-idp.example/realms/old'
+    config.auth.audience = 'old-client-id'
+
+    await idp_register_client(config, _base_args())
+
+    assert config.auth.issuer == 'https://idp.example/realms/loom'
+    assert config.auth.audience == 'loom-catalog-api'
+
+
+@pytest.mark.asyncio
+async def test_idp_register_client_resets_stale_jwks_uri(monkeypatch, tmp_path):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _FakeKeycloakAdminClient)
+
+    # Seed a config file on disk carrying a stale jwks_uri, mimicking an
+    # operator who previously pinned it against a different issuer/proxy.
+    config_path = tmp_path / 'config.yaml'
+    seed = RootConfig(config_path=config_path)
+    seed.auth.jwks_uri = (
+        'https://old-idp.example/realms/old/protocol/openid-connect/certs'
+    )
+    seed.save()
+
+    config = RootConfig.load(config_path=config_path)
+    assert config.auth.jwks_uri is not None
+
+    await idp_register_client(config, _base_args())
+
+    assert config.auth.jwks_uri is None
+
+    # If the on-disk file were never rewritten, this reload would still
+    # carry the seeded stale value rather than falling back to the default.
+    reloaded = RootConfig.load(config_path=config_path)
+    assert reloaded.auth.jwks_uri is None
 
 
 @pytest.mark.asyncio
