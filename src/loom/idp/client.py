@@ -11,6 +11,7 @@ class ClientRegistrationResult:
     client_id: str
     internal_ref: str
     registration_access_token: str | None
+    client_secret: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)

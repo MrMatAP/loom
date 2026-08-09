@@ -11,19 +11,165 @@ from loom.idp.keycloak import KeycloakAdminClient
 def test_derive_realm_admin_base():
     client = KeycloakAdminClient(issuer='https://idp.example/realms/loom', token='t')
     assert client._realm_admin_base == 'https://idp.example/admin/realms/loom'
+    assert client._base == 'https://idp.example'
 
 
 @pytest.mark.asyncio
-async def test_register_client_and_declare_roles():
+async def test_login_posts_password_grant_and_returns_ready_client():
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == '/realms/master/protocol/openid-connect/token'
+        captured.update(dict(httpx.QueryParams(request.read().decode())))
+        return httpx.Response(200, json={'access_token': 'admin-token-xyz'})
+
+    client = await KeycloakAdminClient.login(
+        'https://idp.example/realms/loom',
+        username='admin',
+        password='hunter2',
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert captured['grant_type'] == 'password'
+    assert captured['client_id'] == 'admin-cli'
+    assert captured['username'] == 'admin'
+    assert captured['password'] == 'hunter2'
+    assert client._token == 'admin-token-xyz'
+    assert client._issuer == 'https://idp.example/realms/loom'
+
+
+@pytest.mark.asyncio
+async def test_login_honors_admin_realm_and_client_id_overrides():
+    seen_paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        body = dict(httpx.QueryParams(request.read().decode()))
+        assert body['client_id'] == 'custom-admin-cli'
+        return httpx.Response(200, json={'access_token': 't'})
+
+    await KeycloakAdminClient.login(
+        'https://idp.example/realms/loom',
+        username='admin',
+        password='hunter2',
+        admin_realm='internal-admins',
+        admin_client_id='custom-admin-cli',
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert seen_paths == ['/realms/internal-admins/protocol/openid-connect/token']
+
+
+@pytest.mark.asyncio
+async def test_register_client_creates_and_fetches_secret():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            return httpx.Response(
+                201,
+                headers={
+                    'Location': (
+                        'https://idp.example/admin/realms/loom/clients/'
+                        'internal-uuid-123'
+                    )
+                },
+            )
+        if (
+            path == '/admin/realms/loom/clients/internal-uuid-123/client-secret'
+            and request.method == 'GET'
+        ):
+            return httpx.Response(200, json={'type': 'secret', 'value': 'shh-secret'})
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_client(
+        client_id='loom-catalog-api',
+        client_name='Loom Catalog API',
+        service_account=True,
+    )
+
+    assert result.client_id == 'loom-catalog-api'
+    assert result.internal_ref == 'internal-uuid-123'
+    assert result.client_secret == 'shh-secret'
+    assert result.registration_access_token is None
+
+
+@pytest.mark.asyncio
+async def test_register_client_is_idempotent_on_409():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            return httpx.Response(409, json={'errorMessage': 'Client already exists'})
+        if path == '/admin/realms/loom/clients' and request.method == 'GET':
+            assert dict(request.url.params) == {'clientId': 'loom-catalog-api'}
+            return httpx.Response(200, json=[{'id': 'internal-uuid-123'}])
+        if (
+            path == '/admin/realms/loom/clients/internal-uuid-123/client-secret'
+            and request.method == 'GET'
+        ):
+            return httpx.Response(200, json={'value': 'shh-secret'})
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_client(
+        client_id='loom-catalog-api',
+        client_name='Loom Catalog API',
+        service_account=True,
+    )
+    assert result.internal_ref == 'internal-uuid-123'
+
+
+@pytest.mark.asyncio
+async def test_register_client_tolerates_missing_secret():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            return httpx.Response(
+                201,
+                headers={
+                    'Location': (
+                        'https://idp.example/admin/realms/loom/clients/'
+                        'internal-uuid-123'
+                    )
+                },
+            )
+        if (
+            path == '/admin/realms/loom/clients/internal-uuid-123/client-secret'
+            and request.method == 'GET'
+        ):
+            return httpx.Response(404)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_client(
+        client_id='loom-catalog-api',
+        client_name='Loom Catalog API',
+        service_account=False,
+    )
+    assert result.client_secret is None
+
+
+@pytest.mark.asyncio
+async def test_declare_client_roles_creates_leaf_then_composite_roles():
     created_roles: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path == '/realms/loom/clients-registrations/openid-connect':
-            body = {'client_id': 'loom-catalog-api', 'registration_access_token': 'rat'}
-            return httpx.Response(201, json=body)
-        if path == '/admin/realms/loom/clients' and request.method == 'GET':
-            return httpx.Response(200, json=[{'id': 'internal-uuid-123'}])
         if (
             path == '/admin/realms/loom/clients/internal-uuid-123/roles'
             and request.method == 'POST'
@@ -43,21 +189,13 @@ async def test_register_client_and_declare_roles():
             return httpx.Response(204)
         raise AssertionError(f'Unexpected request: {request.method} {path}')
 
-    transport = httpx.MockTransport(handler)
     client = KeycloakAdminClient(
-        issuer='https://idp.example/realms/loom', token='t', transport=transport
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
     )
 
-    result = await client.register_client(
-        client_id='loom-catalog-api',
-        client_name='Loom Catalog API',
-        service_account=True,
-    )
-    assert result.client_id == 'loom-catalog-api'
-    assert result.internal_ref == 'internal-uuid-123'
-    assert result.registration_access_token == 'rat'
-
-    await client.declare_client_roles(result.internal_ref, catalog_role_definitions())
+    await client.declare_client_roles('internal-uuid-123', catalog_role_definitions())
 
     all_scopes = content_scopes() | platform_scopes()
     assert all_scopes <= set(created_roles)
