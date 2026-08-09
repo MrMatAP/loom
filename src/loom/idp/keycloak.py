@@ -69,7 +69,14 @@ class KeycloakAdminClient:
         async with httpx.AsyncClient(transport=transport, verify=ctx) as http:
             response = await http.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
-            access_token = response.json()['access_token']
+            body = response.json()
+            if 'access_token' not in body:
+                detail = (
+                    f'Keycloak token response had no access_token '
+                    f'(HTTP {response.status_code})'
+                )
+                raise RuntimeError(detail)
+            access_token = body['access_token']
 
         return cls(issuer=issuer, token=access_token, transport=transport)
 
@@ -97,6 +104,12 @@ class KeycloakAdminClient:
                 internal_ref = await self._lookup_client_id(http, client_id, headers)
             else:
                 response.raise_for_status()
+                if 'Location' not in response.headers:
+                    detail = (
+                        f'Keycloak client creation response had no Location '
+                        f'header (HTTP {response.status_code})'
+                    )
+                    raise RuntimeError(detail)
                 location = response.headers['Location']
                 internal_ref = location.rstrip('/').rsplit('/', 1)[-1]
 
