@@ -61,10 +61,37 @@ async def test_login_honors_admin_realm_and_client_id_overrides():
 
 
 @pytest.mark.asyncio
+async def test_login_raises_runtime_error_when_access_token_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json={'token_type': 'bearer'})
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await KeycloakAdminClient.login(
+            'https://idp.example/realms/loom',
+            username='admin',
+            password='hunter2',
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert 'access_token' in str(exc_info.value)
+    assert 'HTTP 200' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_register_client_creates_and_fetches_secret():
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            assert request.headers['Authorization'] == 'Bearer t'
+            assert json.loads(request.read()) == {
+                'clientId': 'loom-catalog-api',
+                'name': 'Loom Catalog API',
+                'serviceAccountsEnabled': True,
+                'standardFlowEnabled': False,
+                'publicClient': False,
+                'directAccessGrantsEnabled': False,
+            }
             return httpx.Response(
                 201,
                 headers={
@@ -165,6 +192,31 @@ async def test_register_client_tolerates_missing_secret():
 
 
 @pytest.mark.asyncio
+async def test_register_client_raises_runtime_error_when_location_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            return httpx.Response(201)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.register_client(
+            client_id='loom-catalog-api',
+            client_name='Loom Catalog API',
+            service_account=True,
+        )
+
+    assert 'Location' in str(exc_info.value)
+    assert 'HTTP 201' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_declare_client_roles_creates_leaf_then_composite_roles():
     created_roles: list[str] = []
 
@@ -174,6 +226,7 @@ async def test_declare_client_roles_creates_leaf_then_composite_roles():
             path == '/admin/realms/loom/clients/internal-uuid-123/roles'
             and request.method == 'POST'
         ):
+            assert request.headers['Authorization'] == 'Bearer t'
             created_roles.append(json.loads(request.read())['name'])
             return httpx.Response(201)
         if (

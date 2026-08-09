@@ -73,8 +73,10 @@ async def test_admin_username_env_var_fallback(monkeypatch, tmp_path):
     class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
         @classmethod
         async def login(cls, issuer, *, username, password, **kwargs):
-            del kwargs
+            del password
             captured['username'] = username
+            captured['admin_realm'] = kwargs['admin_realm']
+            captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
@@ -84,6 +86,8 @@ async def test_admin_username_env_var_fallback(monkeypatch, tmp_path):
     config = RootConfig(config_path=tmp_path / 'config.yaml')
     await idp_register_client(config, _base_args(admin_username=None))
     assert captured['username'] == 'env-admin'
+    assert captured['admin_realm'] == 'master'
+    assert captured['admin_client_id'] == 'admin-cli'
 
 
 @pytest.mark.asyncio
@@ -95,8 +99,10 @@ async def test_admin_password_prompted_when_flag_and_env_both_absent(
     class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
         @classmethod
         async def login(cls, issuer, *, username, password, **kwargs):
-            del kwargs
+            del username
             captured['password'] = password
+            captured['admin_realm'] = kwargs['admin_realm']
+            captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
@@ -106,3 +112,92 @@ async def test_admin_password_prompted_when_flag_and_env_both_absent(
     config = RootConfig(config_path=tmp_path / 'config.yaml')
     await idp_register_client(config, _base_args(admin_password=None))
     assert captured['password'] == 'prompted-pw'
+    assert captured['admin_realm'] == 'master'
+    assert captured['admin_client_id'] == 'admin-cli'
+
+
+@pytest.mark.asyncio
+async def test_admin_username_flag_beats_env(monkeypatch, tmp_path):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, *, username, password, **kwargs):
+            del password, kwargs
+            captured['username'] = username
+            return cls(issuer, 'fake-admin-token')
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+    monkeypatch.setenv('LOOM_IDP_ADMIN_USERNAME', 'env-admin')
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register_client(config, _base_args(admin_username='flag-admin'))
+    assert captured['username'] == 'flag-admin'
+
+
+@pytest.mark.asyncio
+async def test_admin_password_flag_beats_env(monkeypatch, tmp_path):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, *, username, password, **kwargs):
+            del username, kwargs
+            captured['password'] = password
+            return cls(issuer, 'fake-admin-token')
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+    monkeypatch.setenv('LOOM_IDP_ADMIN_PASSWORD', 'env-pw')
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register_client(config, _base_args(admin_password='flag-pw'))
+    assert captured['password'] == 'flag-pw'
+
+
+@pytest.mark.asyncio
+async def test_idp_register_client_wires_admin_realm_and_client_id(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, *, username, password, **kwargs):
+            del username, password
+            captured['admin_realm'] = kwargs['admin_realm']
+            captured['admin_client_id'] = kwargs['admin_client_id']
+            return cls(issuer, 'fake-admin-token')
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register_client(config, _base_args())
+
+    assert captured['admin_realm'] == 'master'
+    assert captured['admin_client_id'] == 'admin-cli'
+
+
+@pytest.mark.asyncio
+async def test_idp_register_client_wires_custom_admin_realm_and_client_id(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, *, username, password, **kwargs):
+            del username, password
+            captured['admin_realm'] = kwargs['admin_realm']
+            captured['admin_client_id'] = kwargs['admin_client_id']
+            return cls(issuer, 'fake-admin-token')
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register_client(
+        config,
+        _base_args(admin_realm='internal-admins', admin_client_id='custom-admin-cli'),
+    )
+
+    assert captured['admin_realm'] == 'internal-admins'
+    assert captured['admin_client_id'] == 'custom-admin-cli'
