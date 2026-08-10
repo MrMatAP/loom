@@ -72,6 +72,9 @@ loom-catalog-api = "loom.api.catalog.main:run"
 minversion = "6.0"
 addopts = "--cov=loom --cov-branch --cov-report=term --cov-report=xml:build/coverage.xml --junit-xml=build/junit.xml"
 testpaths = ["tests"]
+markers = [
+    "live_idp: exercises a real Keycloak instance over the network; requires LOOM_IDP_ISSUER_URL, LOOM_IDP_ISSUER_ADMIN_USERNAME, LOOM_IDP_ISSUER_ADMIN_PASSWORD (self-skips otherwise).",
+]
 junit_family = "xunit2"
 log_cli = 1
 log_cli_level = "INFO"

@@ -117,6 +117,17 @@ class KeycloakAdminClient:
     ) -> ClientRegistrationResult:
         """Create a secret-less public client (browser PKCE and/or device
         flow) via the Admin API; idempotent on 409."""
+        attributes = {
+            'oauth2.device.authorization.grant.enabled': str(device_flow).lower(),
+        }
+        if standard_flow:
+            # PKCE only applies to the Authorization Code flow. Setting it
+            # unconditionally also affects the Device Authorization
+            # endpoint on some Keycloak versions -- a device-flow-only
+            # client (no `standard_flow`) then gets rejected with
+            # `invalid_request: Missing parameter: code_challenge_method`,
+            # since `DeviceCodeClient` never sends PKCE parameters.
+            attributes['pkce.code.challenge.method'] = 'S256'
         payload = {
             'clientId': client_id,
             'name': client_name,
@@ -126,10 +137,7 @@ class KeycloakAdminClient:
             'directAccessGrantsEnabled': False,
             'redirectUris': list(redirect_uris),
             'webOrigins': list(web_origins),
-            'attributes': {
-                'pkce.code.challenge.method': 'S256',
-                'oauth2.device.authorization.grant.enabled': str(device_flow).lower(),
-            },
+            'attributes': attributes,
         }
         headers = {'Authorization': f'Bearer {self._token}'}
         async with self._client() as http:

@@ -353,6 +353,11 @@ async def test_register_public_client_creates_device_flow_client():
             assert body['attributes']['oauth2.device.authorization.grant.enabled'] == (
                 'true'
             )
+            # A device-flow-only client never sends PKCE parameters
+            # (`DeviceCodeClient` doesn't), so it must not carry the PKCE
+            # attribute -- some Keycloak versions enforce it on the device
+            # authorization endpoint too, not just Authorization Code.
+            assert 'pkce.code.challenge.method' not in body['attributes']
             assert body['redirectUris'] == []
             assert body['webOrigins'] == []
             return httpx.Response(
