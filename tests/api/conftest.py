@@ -20,6 +20,7 @@ from loom.model import (
     environment,  # noqa: F401
     evaluation,  # noqa: F401
     governance,  # noqa: F401
+    model_endpoint,  # noqa: F401
     observability,  # noqa: F401
     skill,  # noqa: F401
     tool,  # noqa: F401

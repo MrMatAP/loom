@@ -10,8 +10,13 @@ import rich.console
 import yaml
 
 from loom import __default_config_path__, __version__
+from loom.cli.auth import auth_login, auth_logout, auth_status
 from loom.cli.db import db_current, db_downgrade, db_history, db_revision, db_upgrade
-from loom.cli.idp import idp_register_client
+from loom.cli.idp import (
+    idp_register_cli_client,
+    idp_register_client,
+    idp_register_docs_client,
+)
 from loom.config import RootConfig
 
 console = rich.console.Console()
@@ -98,6 +103,40 @@ def _is_secret_str_field(model: type[pydantic.BaseModel], field_name: str) -> bo
     if annotation is pydantic.SecretStr:
         return True
     return pydantic.SecretStr in typing.get_args(annotation)
+
+
+def _add_admin_login_args(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by every `idp register-*` command's admin login."""
+    parser.add_argument(
+        '--issuer-url',
+        dest='issuer_url',
+        default=None,
+        help='OIDC realm issuer URL, defaults to config.auth.issuer',
+    )
+    parser.add_argument(
+        '--admin-username',
+        dest='admin_username',
+        default=None,
+        help='Keycloak admin username, else LOOM_IDP_ADMIN_USERNAME or a prompt',
+    )
+    parser.add_argument(
+        '--admin-password',
+        dest='admin_password',
+        default=None,
+        help='Keycloak admin password, else LOOM_IDP_ADMIN_PASSWORD or a prompt',
+    )
+    parser.add_argument(
+        '--admin-realm',
+        dest='admin_realm',
+        default='master',
+        help='Realm to authenticate the admin user against',
+    )
+    parser.add_argument(
+        '--admin-client-id',
+        dest='admin_client_id',
+        default='admin-cli',
+        help='Public client used for the admin login grant',
+    )
 
 
 def _set_nested_value(target: dict, path: list[str], value: typing.Any) -> None:
@@ -214,36 +253,7 @@ async def main() -> int:
             'register-client',
             help='Register the Catalog OAuth client and declare its roles',
         )
-        idp_register_parser.add_argument(
-            '--issuer-url',
-            dest='issuer_url',
-            default=None,
-            help='OIDC realm issuer URL, defaults to config.auth.issuer',
-        )
-        idp_register_parser.add_argument(
-            '--admin-username',
-            dest='admin_username',
-            default=None,
-            help='Keycloak admin username, else LOOM_IDP_ADMIN_USERNAME or a prompt',
-        )
-        idp_register_parser.add_argument(
-            '--admin-password',
-            dest='admin_password',
-            default=None,
-            help='Keycloak admin password, else LOOM_IDP_ADMIN_PASSWORD or a prompt',
-        )
-        idp_register_parser.add_argument(
-            '--admin-realm',
-            dest='admin_realm',
-            default='master',
-            help='Realm to authenticate the admin user against',
-        )
-        idp_register_parser.add_argument(
-            '--admin-client-id',
-            dest='admin_client_id',
-            default='admin-cli',
-            help='Public client used for the admin login grant',
-        )
+        _add_admin_login_args(idp_register_parser)
         idp_register_parser.add_argument(
             '--client-id',
             dest='client_id',
@@ -257,6 +267,90 @@ async def main() -> int:
             help='Human-readable client name, defaults to --client-id',
         )
         idp_register_parser.set_defaults(func=idp_register_client)
+
+        idp_register_docs_parser = idp_subparser.add_parser(
+            'register-docs-client',
+            help=(
+                'Register the public Swagger UI client (Authorization Code + '
+                'PKCE) for interactive login from /docs'
+            ),
+        )
+        _add_admin_login_args(idp_register_docs_parser)
+        idp_register_docs_parser.add_argument(
+            '--client-id',
+            dest='client_id',
+            required=True,
+            help='OAuth client ID to register',
+        )
+        idp_register_docs_parser.add_argument(
+            '--client-name',
+            dest='client_name',
+            default=None,
+            help='Human-readable client name, defaults to --client-id',
+        )
+        idp_register_docs_parser.add_argument(
+            '--api-base-url',
+            dest='api_base_url',
+            required=True,
+            help=(
+                'Public base URL the Catalog API is served from, e.g. '
+                'https://catalog.example.com (redirect URI is '
+                '{api-base-url}/docs/oauth2-redirect)'
+            ),
+        )
+        idp_register_docs_parser.set_defaults(func=idp_register_docs_client)
+
+        idp_register_cli_parser = idp_subparser.add_parser(
+            'register-cli-client',
+            help=('Register the public device-flow client used by `loom auth login`'),
+        )
+        _add_admin_login_args(idp_register_cli_parser)
+        idp_register_cli_parser.add_argument(
+            '--client-id',
+            dest='client_id',
+            required=True,
+            help='OAuth client ID to register',
+        )
+        idp_register_cli_parser.add_argument(
+            '--client-name',
+            dest='client_name',
+            default=None,
+            help='Human-readable client name, defaults to --client-id',
+        )
+        idp_register_cli_parser.set_defaults(func=idp_register_cli_client)
+
+        auth_parser = subparsers.add_parser('auth', help='CLI login/session commands')
+        auth_subparser = auth_parser.add_subparsers(required=True)
+
+        auth_login_parser = auth_subparser.add_parser(
+            'login', help="Log in interactively via the IDP's device-code flow"
+        )
+        auth_login_parser.add_argument(
+            '--issuer-url',
+            dest='issuer_url',
+            default=None,
+            help='OIDC realm issuer URL, defaults to config.auth.issuer',
+        )
+        auth_login_parser.add_argument(
+            '--client-id',
+            dest='client_id',
+            default=None,
+            help=(
+                'Public device-flow OAuth client ID, defaults to '
+                'config.auth.cli_client_id'
+            ),
+        )
+        auth_login_parser.set_defaults(func=auth_login)
+
+        auth_logout_parser = auth_subparser.add_parser(
+            'logout', help='Clear the cached CLI session'
+        )
+        auth_logout_parser.set_defaults(func=auth_logout)
+
+        auth_status_parser = auth_subparser.add_parser(
+            'status', help='Show the current CLI session status'
+        )
+        auth_status_parser.set_defaults(func=auth_status)
 
         args = parser.parse_args()
         config = RootConfig.load(config_path=args.config_path)

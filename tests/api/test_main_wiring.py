@@ -31,13 +31,63 @@ async def test_missing_token_returns_401(api_client):
 
     config = RootConfig(config_path='/dev/null')
     real_app = create_app(config)
-    # Populate only what an unauthenticated request path touches: HTTPBearer
-    # rejects the missing Authorization header before token_validator is ever
-    # used, so running the full lifespan (which eagerly resolves the JWKS
-    # URI over the network) is unnecessary and would fail against the
+    # Populate only what an unauthenticated request path touches: the OAuth2
+    # scheme rejects the missing Authorization header before token_validator
+    # is ever used, so running the full lifespan (which eagerly resolves the
+    # JWKS URI over the network) is unnecessary and would fail against the
     # default empty issuer.
     real_app.state.session_factory = get_async_session_factory(config.database)
     transport = ASGITransport(app=real_app)
     async with AsyncClient(transport=transport, base_url='http://test') as client:
         response = await client.get('/api/v1/capabilities')
     assert response.status_code in (401, 403)
+
+
+def test_openapi_advertises_interactive_idp_login():
+    """Swagger's Authorize flow points at the configured IDP, per-op locked."""
+    from loom.api.catalog.main import create_app
+    from loom.config import RootConfig
+
+    config = RootConfig(config_path='/dev/null')
+    config.auth.issuer = 'https://idp.example/realms/loom'
+    config.auth.docs_client_id = 'loom-catalog-docs'
+    app = create_app(config)
+
+    assert app.swagger_ui_init_oauth == {
+        'clientId': 'loom-catalog-docs',
+        'usePkceWithAuthorizationCodeGrant': True,
+    }
+
+    schema = app.openapi()
+    scheme = schema['components']['securitySchemes']['OAuth2AuthorizationCodeBearer']
+    flow = scheme['flows']['authorizationCode']
+    assert flow['authorizationUrl'] == (
+        'https://idp.example/realms/loom/protocol/openid-connect/auth'
+    )
+    assert flow['tokenUrl'] == (
+        'https://idp.example/realms/loom/protocol/openid-connect/token'
+    )
+
+    capabilities_get = schema['paths']['/api/v1/capabilities']['get']
+    assert capabilities_get['security'] == [{'OAuth2AuthorizationCodeBearer': []}]
+
+
+def test_openapi_omits_swagger_login_when_docs_client_unset():
+    """An unconfigured docs client disables the button rather than breaking it."""
+    from loom.api.catalog.main import create_app
+    from loom.config import RootConfig
+
+    app = create_app(RootConfig(config_path='/dev/null'))
+    assert app.swagger_ui_init_oauth is None
+
+
+def test_docs_redirect_path_matches_what_the_cli_registers():
+    """`idp register-docs-client` builds `{api_base_url}/docs/oauth2-redirect`
+    as the Keycloak redirect URI -- pin it against FastAPI's own served path
+    so the two can't silently drift and fail as `invalid_redirect_uri` at
+    the IDP instead of a caught test."""
+    from loom.api.catalog.main import create_app
+    from loom.config import RootConfig
+
+    app = create_app(RootConfig(config_path='/dev/null'))
+    assert app.swagger_ui_oauth2_redirect_url == '/docs/oauth2-redirect'

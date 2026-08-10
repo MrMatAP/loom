@@ -56,7 +56,7 @@ async def test_idp_register_client_wires_arguments(monkeypatch, tmp_path, capsys
     output = capsys.readouterr().out
     assert 'loom-catalog-api' in output
     assert 'fake-secret' in output
-    assert 'Declared 29 roles' in output
+    assert 'Declared 32 roles' in output
 
 
 @pytest.mark.asyncio

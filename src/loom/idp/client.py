@@ -30,6 +30,27 @@ class IdpAdminClient(Protocol):
         self, *, client_id: str, client_name: str, service_account: bool
     ) -> ClientRegistrationResult: ...
 
+    async def register_public_client(
+        self,
+        *,
+        client_id: str,
+        client_name: str,
+        standard_flow: bool = False,
+        device_flow: bool = False,
+        redirect_uris: tuple[str, ...] = (),
+        web_origins: tuple[str, ...] = (),
+    ) -> ClientRegistrationResult: ...
+
+    async def add_audience_mapper(
+        self, client_ref: str, *, target_client_id: str
+    ) -> None: ...
+
+    async def add_client_roles_mapper(
+        self, client_ref: str, *, source_client_id: str
+    ) -> None: ...
+
+    async def add_tenant_id_mapper(self, client_ref: str) -> None: ...
+
     async def declare_client_roles(
         self, client_ref: str, roles: list[RoleDefinition]
     ) -> None: ...

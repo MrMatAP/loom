@@ -4,14 +4,24 @@ from collections.abc import AsyncGenerator
 import jwt
 import sqlalchemy as sa
 from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import OAuth2AuthorizationCodeBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.model.tenant import Principal
 
 from .security import AuthenticatedPrincipal, expand_claims_to_scopes
 
-bearer_scheme = HTTPBearer(auto_error=True)
+# Authorization/token URLs are placeholders filled in by create_app() from the
+# running config, since this scheme is a module-level singleton shared by
+# every route's dependency tree (see main.py). Request-time token extraction
+# doesn't depend on those URLs at all -- only the OpenAPI doc / Swagger UI's
+# interactive login flow does.
+oauth2_scheme = OAuth2AuthorizationCodeBearer(
+    authorizationUrl='',
+    tokenUrl='',
+    scopes={'openid': 'OpenID Connect', 'profile': 'Basic profile information'},
+    auto_error=True,
+)
 
 
 async def get_session(request: Request) -> AsyncGenerator[AsyncSession]:
@@ -28,12 +38,12 @@ async def get_session(request: Request) -> AsyncGenerator[AsyncSession]:
 
 async def get_current_token(
     request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    token: str = Depends(oauth2_scheme),
 ) -> dict:
     """Validate the bearer token and return its decoded claims."""
     validator = request.app.state.token_validator
     try:
-        return validator.decode(credentials.credentials)
+        return validator.decode(token)
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail=f'Invalid token: {exc}') from exc
 

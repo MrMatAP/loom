@@ -37,6 +37,11 @@ class RootConfig(BaseModel):
     def save(self) -> None:
         """
         Save the current in-memory configuration to disk.
+
+        The file carries cleartext secrets (database password, cached CLI
+        session tokens) once `reveal_secrets` is set below, so it's
+        restricted to owner-only access same as any credentials file.
+
         Returns:
             Nothing
         """
@@ -49,6 +54,7 @@ class RootConfig(BaseModel):
             ),
             self.config_path.open('w'),
         )
+        self.config_path.chmod(0o600)
 
     @classmethod
     def load(cls, config_path: pathlib.Path) -> RootConfig:

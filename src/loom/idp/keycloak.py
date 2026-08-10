@@ -1,7 +1,6 @@
-import ssl
-
 import httpx
-import truststore
+
+from loom.tls import build_ssl_context
 
 from .client import ClientRegistrationResult, RoleDefinition
 
@@ -35,7 +34,7 @@ class KeycloakAdminClient:
         return f'{base}/admin/realms/{realm}'
 
     def _client(self) -> httpx.AsyncClient:
-        ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx = build_ssl_context()
         return httpx.AsyncClient(transport=self._transport, verify=ctx)
 
     @staticmethod
@@ -65,7 +64,7 @@ class KeycloakAdminClient:
             'username': username,
             'password': password,
         }
-        ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx = build_ssl_context()
         async with httpx.AsyncClient(transport=transport, verify=ctx) as http:
             response = await http.post(token_url, data=data, timeout=30.0)
             response.raise_for_status()
@@ -83,7 +82,7 @@ class KeycloakAdminClient:
     async def register_client(
         self, *, client_id: str, client_name: str, service_account: bool
     ) -> ClientRegistrationResult:
-        """Create the client via the Admin API; idempotent on 409."""
+        """Create a confidential client via the Admin API; idempotent on 409."""
         payload = {
             'clientId': client_id,
             'name': client_name,
@@ -94,25 +93,9 @@ class KeycloakAdminClient:
         }
         headers = {'Authorization': f'Bearer {self._token}'}
         async with self._client() as http:
-            response = await http.post(
-                f'{self._realm_admin_base}/clients',
-                json=payload,
-                headers=headers,
-                timeout=30.0,
+            internal_ref = await self._create_or_reuse_client(
+                http, payload, client_id, headers
             )
-            if response.status_code == httpx.codes.CONFLICT:
-                internal_ref = await self._lookup_client_id(http, client_id, headers)
-            else:
-                response.raise_for_status()
-                if 'Location' not in response.headers:
-                    detail = (
-                        f'Keycloak client creation response had no Location '
-                        f'header (HTTP {response.status_code})'
-                    )
-                    raise RuntimeError(detail)
-                location = response.headers['Location']
-                internal_ref = location.rstrip('/').rsplit('/', 1)[-1]
-
             secret = await self._fetch_client_secret(http, internal_ref, headers)
 
         return ClientRegistrationResult(
@@ -121,6 +104,154 @@ class KeycloakAdminClient:
             registration_access_token=None,
             client_secret=secret,
         )
+
+    async def register_public_client(
+        self,
+        *,
+        client_id: str,
+        client_name: str,
+        standard_flow: bool = False,
+        device_flow: bool = False,
+        redirect_uris: tuple[str, ...] = (),
+        web_origins: tuple[str, ...] = (),
+    ) -> ClientRegistrationResult:
+        """Create a secret-less public client (browser PKCE and/or device
+        flow) via the Admin API; idempotent on 409."""
+        payload = {
+            'clientId': client_id,
+            'name': client_name,
+            'publicClient': True,
+            'serviceAccountsEnabled': False,
+            'standardFlowEnabled': standard_flow,
+            'directAccessGrantsEnabled': False,
+            'redirectUris': list(redirect_uris),
+            'webOrigins': list(web_origins),
+            'attributes': {
+                'pkce.code.challenge.method': 'S256',
+                'oauth2.device.authorization.grant.enabled': str(device_flow).lower(),
+            },
+        }
+        headers = {'Authorization': f'Bearer {self._token}'}
+        async with self._client() as http:
+            internal_ref = await self._create_or_reuse_client(
+                http, payload, client_id, headers
+            )
+
+        return ClientRegistrationResult(
+            client_id=client_id,
+            internal_ref=internal_ref,
+            registration_access_token=None,
+            client_secret=None,
+        )
+
+    async def add_audience_mapper(
+        self, client_ref: str, *, target_client_id: str
+    ) -> None:
+        """Add a protocol mapper so tokens issued to this client also carry
+        `target_client_id` in `aud`, satisfying the resource server's audience
+        check. Idempotent on 409."""
+        await self._add_protocol_mapper(
+            client_ref,
+            payload={
+                'name': f'audience-{target_client_id}',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-audience-mapper',
+                'consentRequired': False,
+                'config': {
+                    'included.client.audience': target_client_id,
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            },
+        )
+
+    async def add_client_roles_mapper(
+        self, client_ref: str, *, source_client_id: str
+    ) -> None:
+        """Add a protocol mapper that flattens `source_client_id`'s client
+        roles into a top-level `roles` claim -- the shape
+        `security.expand_claims_to_scopes` reads. Without this, a token
+        carries roles nested under `resource_access.{client}.roles` instead,
+        and every scope check on it fails closed. Idempotent on 409."""
+        await self._add_protocol_mapper(
+            client_ref,
+            payload={
+                'name': f'client-roles-{source_client_id}',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-usermodel-client-role-mapper',
+                'consentRequired': False,
+                'config': {
+                    'usermodel.clientRoleMapping.clientId': source_client_id,
+                    'claim.name': 'roles',
+                    'jsonType.label': 'String',
+                    'multivalued': 'true',
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            },
+        )
+
+    async def add_tenant_id_mapper(self, client_ref: str) -> None:
+        """Add a protocol mapper that surfaces a user's `tenant_id` account
+        attribute as a `tenant_id` claim -- required by
+        `dependencies.get_current_principal`, which 401s without it. This
+        only wires the client side; each user still needs a `tenant_id`
+        attribute set on their Keycloak account, which is separate per-user
+        admin work. Idempotent on 409."""
+        await self._add_protocol_mapper(
+            client_ref,
+            payload={
+                'name': 'tenant-id',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-usermodel-attribute-mapper',
+                'consentRequired': False,
+                'config': {
+                    'user.attribute': 'tenant_id',
+                    'claim.name': 'tenant_id',
+                    'jsonType.label': 'String',
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            },
+        )
+
+    async def _add_protocol_mapper(self, client_ref: str, *, payload: dict) -> None:
+        """POST a protocol mapper definition to a client; idempotent on 409."""
+        headers = {'Authorization': f'Bearer {self._token}'}
+        async with self._client() as http:
+            response = await http.post(
+                f'{self._realm_admin_base}/clients/{client_ref}/protocol-mappers/models',
+                json=payload,
+                headers=headers,
+                timeout=30.0,
+            )
+            self._raise_unless_already_exists(response)
+
+    async def _create_or_reuse_client(
+        self,
+        http: httpx.AsyncClient,
+        payload: dict,
+        client_id: str,
+        headers: dict[str, str],
+    ) -> str:
+        """POST a client creation payload; resolve the existing one on 409."""
+        response = await http.post(
+            f'{self._realm_admin_base}/clients',
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+        )
+        if response.status_code == httpx.codes.CONFLICT:
+            return await self._lookup_client_id(http, client_id, headers)
+        response.raise_for_status()
+        if 'Location' not in response.headers:
+            detail = (
+                f'Keycloak client creation response had no Location '
+                f'header (HTTP {response.status_code})'
+            )
+            raise RuntimeError(detail)
+        location = response.headers['Location']
+        return location.rstrip('/').rsplit('/', 1)[-1]
 
     async def _lookup_client_id(
         self, http: httpx.AsyncClient, client_id: str, headers: dict[str, str]

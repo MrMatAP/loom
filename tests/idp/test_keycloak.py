@@ -295,6 +295,265 @@ async def test_declare_client_roles_is_idempotent_on_409():
 
 
 @pytest.mark.asyncio
+async def test_register_public_client_creates_pkce_standard_flow_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            assert request.headers['Authorization'] == 'Bearer t'
+            assert json.loads(request.read()) == {
+                'clientId': 'loom-catalog-docs',
+                'name': 'Loom Catalog Docs',
+                'publicClient': True,
+                'serviceAccountsEnabled': False,
+                'standardFlowEnabled': True,
+                'directAccessGrantsEnabled': False,
+                'redirectUris': ['https://catalog.example.com/docs/oauth2-redirect'],
+                'webOrigins': ['https://catalog.example.com'],
+                'attributes': {
+                    'pkce.code.challenge.method': 'S256',
+                    'oauth2.device.authorization.grant.enabled': 'false',
+                },
+            }
+            return httpx.Response(
+                201,
+                headers={
+                    'Location': (
+                        'https://idp.example/admin/realms/loom/clients/docs-internal-id'
+                    )
+                },
+            )
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_public_client(
+        client_id='loom-catalog-docs',
+        client_name='Loom Catalog Docs',
+        standard_flow=True,
+        redirect_uris=('https://catalog.example.com/docs/oauth2-redirect',),
+        web_origins=('https://catalog.example.com',),
+    )
+
+    assert result.client_id == 'loom-catalog-docs'
+    assert result.internal_ref == 'docs-internal-id'
+    assert result.client_secret is None
+
+
+@pytest.mark.asyncio
+async def test_register_public_client_creates_device_flow_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            body = json.loads(request.read())
+            assert body['standardFlowEnabled'] is False
+            assert body['attributes']['oauth2.device.authorization.grant.enabled'] == (
+                'true'
+            )
+            assert body['redirectUris'] == []
+            assert body['webOrigins'] == []
+            return httpx.Response(
+                201,
+                headers={
+                    'Location': (
+                        'https://idp.example/admin/realms/loom/clients/cli-internal-id'
+                    )
+                },
+            )
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_public_client(
+        client_id='loom-cli', client_name='Loom CLI', device_flow=True
+    )
+
+    assert result.internal_ref == 'cli-internal-id'
+    assert result.client_secret is None
+
+
+@pytest.mark.asyncio
+async def test_register_public_client_is_idempotent_on_409():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'POST':
+            return httpx.Response(409, json={'errorMessage': 'Client already exists'})
+        if path == '/admin/realms/loom/clients' and request.method == 'GET':
+            assert dict(request.url.params) == {'clientId': 'loom-cli'}
+            return httpx.Response(200, json=[{'id': 'cli-internal-id'}])
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.register_public_client(
+        client_id='loom-cli', client_name='Loom CLI', device_flow=True
+    )
+    assert result.internal_ref == 'cli-internal-id'
+
+
+@pytest.mark.asyncio
+async def test_add_audience_mapper_posts_protocol_mapper():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        expected_path = (
+            '/admin/realms/loom/clients/cli-internal-id/protocol-mappers/models'
+        )
+        if path == expected_path and request.method == 'POST':
+            assert request.headers['Authorization'] == 'Bearer t'
+            assert json.loads(request.read()) == {
+                'name': 'audience-loom-catalog-api',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-audience-mapper',
+                'consentRequired': False,
+                'config': {
+                    'included.client.audience': 'loom-catalog-api',
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            }
+            return httpx.Response(201)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_audience_mapper(
+        'cli-internal-id', target_client_id='loom-catalog-api'
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_audience_mapper_is_idempotent_on_409():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={'errorMessage': 'Mapper already exists'})
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_audience_mapper(
+        'cli-internal-id', target_client_id='loom-catalog-api'
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_client_roles_mapper_posts_protocol_mapper():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        expected_path = (
+            '/admin/realms/loom/clients/cli-internal-id/protocol-mappers/models'
+        )
+        if path == expected_path and request.method == 'POST':
+            assert request.headers['Authorization'] == 'Bearer t'
+            assert json.loads(request.read()) == {
+                'name': 'client-roles-loom-catalog-api',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-usermodel-client-role-mapper',
+                'consentRequired': False,
+                'config': {
+                    'usermodel.clientRoleMapping.clientId': 'loom-catalog-api',
+                    'claim.name': 'roles',
+                    'jsonType.label': 'String',
+                    'multivalued': 'true',
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            }
+            return httpx.Response(201)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_client_roles_mapper(
+        'cli-internal-id', source_client_id='loom-catalog-api'
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_client_roles_mapper_is_idempotent_on_409():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={'errorMessage': 'Mapper already exists'})
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_client_roles_mapper(
+        'cli-internal-id', source_client_id='loom-catalog-api'
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_tenant_id_mapper_posts_protocol_mapper():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        expected_path = (
+            '/admin/realms/loom/clients/cli-internal-id/protocol-mappers/models'
+        )
+        if path == expected_path and request.method == 'POST':
+            assert request.headers['Authorization'] == 'Bearer t'
+            assert json.loads(request.read()) == {
+                'name': 'tenant-id',
+                'protocol': 'openid-connect',
+                'protocolMapper': 'oidc-usermodel-attribute-mapper',
+                'consentRequired': False,
+                'config': {
+                    'user.attribute': 'tenant_id',
+                    'claim.name': 'tenant_id',
+                    'jsonType.label': 'String',
+                    'id.token.claim': 'false',
+                    'access.token.claim': 'true',
+                },
+            }
+            return httpx.Response(201)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_tenant_id_mapper('cli-internal-id')
+
+
+@pytest.mark.asyncio
+async def test_add_tenant_id_mapper_is_idempotent_on_409():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={'errorMessage': 'Mapper already exists'})
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.add_tenant_id_mapper('cli-internal-id')
+
+
+@pytest.mark.asyncio
 async def test_declare_client_roles_still_raises_on_server_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={'errorMessage': 'boom'})

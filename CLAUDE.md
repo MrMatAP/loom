@@ -26,6 +26,7 @@ is expected to enforce.
 | `Agent` | Non-deterministic, autonomous reasoning unit — model config, versioned prompt, memory scope, permission boundary |
 | `Skill` | Composable capability unit — either atomic (prompt/code) or composite (a graph of Agent/Skill/Tool nodes). A deployable workflow is just a Composite Skill with `is_entry_point = true`. There is no separate "Topology" entity. |
 | `Tool` | Deterministic automation — static, design-time-bound external action interface |
+| `ModelEndpoint` | Governed LLM inference connection (hosted provider or a generic OpenAI-compatible server) — protocol, base URL, model identifier, credential-vault binding. An `Agent` may bind to one via `Agent.model_binding_id` (nullable — a Draft agent can exist before a model is chosen). Deliberately **floating**, not pinned: it holds the ModelEndpoint's `entity_id` and always resolves to whichever version is currently `is_current`, diverging from `Tool.data_bindings[]`'s pinned leaning below since `entity_id` alone can't back a DB-level FK |
 | `DataSource` | Governed raw data connection (DB, API, vector store, stream) |
 | `DataProduct` | Curated, contract-bearing, versioned publication over one or more DataSources |
 | `Trace` / `TraceStep` | Execution record of a Skill invocation. `TraceStep` maps 1:1 to an OpenTelemetry Span |
@@ -60,7 +61,11 @@ is expected to enforce.
    This turns an unenforceable "might the model read something it
    shouldn't" into a checkable per-call authorization decision. This
    invariant must not be weakened (e.g. do not add a `data_bindings` field
-   to `Agent`).
+   to `Agent`). `Agent.model_binding_id` (→ `ModelEndpoint`) does **not**
+   fall under this rule — it selects the Agent's own reasoning substrate,
+   not governed business data, so it stays a direct field on `Agent`
+   (floating against `ModelEndpoint.entity_id`, see the entity table above)
+   rather than being routed through a `Tool` call.
 
 3. **Capability realization is measured, not asserted.**
    Every `Agent`/`Skill`/`Tool` that realizes a `Capability` does so via a
@@ -71,10 +76,13 @@ is expected to enforce.
 
 4. **Shared entity attributes.**
    Every versioned entity (`Agent`, `Skill`, `Tool`, `Capability`,
-   `DataSource`, `DataProduct`) carries: `lifecycle_state`, `maturity`,
-   `owner`, `classification`, `created_by/at`, `approved_by/at`. Lifecycle
-   transitions are gated by eval suites and RBAC-governed approval — do not
-   allow a direct write to `lifecycle_state` that bypasses the gate.
+   `DataSource`, `DataProduct`, `ModelEndpoint`) carries: `lifecycle_state`,
+   `maturity`, `owner`, `classification`, `created_by/at`, `approved_by/at`.
+   Lifecycle transitions are gated by eval suites and RBAC-governed
+   approval — do not allow a direct write to `lifecycle_state` that
+   bypasses the gate. `ModelEndpoint` is not yet a valid `EvalSuite`/
+   `EvalRun` target (`VersionedEntityKind` deliberately excludes it until
+   `EvalRun` gets a matching `target_model_endpoint_id` column).
 
 ## Enterprise governance
 
@@ -139,7 +147,7 @@ multiplex both channels rather than opening one connection per subsystem.
 | **Execution** | Orchestration/Execution Engine; Simulation/Chaos Service; Environment Manager — physically isolated per environment (Sandbox/Staging/Production are separate compute + network boundaries, not a config flag) |
 | **Observability** | OTel Collector → Trace Store + Metrics backend; Capability Rollup Processor — event-bus-decoupled from Execution so telemetry never blocks execution latency |
 | **Governance** | Policy Engine (RBAC + data segregation, evaluated at every runtime call); Audit/Lineage Service (separate store from Trace Store — compliance retention ≠ operational retention); Eval/Regression Runner |
-| **Data plane** | DataSource connectors; DataProduct pipeline runner (separate process from Execution Engine — different retry/failure semantics); credential vault (shared by `Tool.auth_binding_id` and `DataSource.connection_binding_id`) |
+| **Data plane** | DataSource connectors; DataProduct pipeline runner (separate process from Execution Engine — different retry/failure semantics); credential vault (shared by `Tool.auth_binding_id`, `DataSource.connection_binding_id`, and `ModelEndpoint.auth_binding_id`) |
 | **Integration** | Notification/Webhook Layer |
 
 **Hard boundary**: the plugin never talks to internal services directly —
@@ -152,6 +160,11 @@ reach the Registry DB, Trace Store, or Data plane directly.
 - Whether `Tool.data_bindings[]` should be version-pinned or floating
   against `DataSource`/`DataProduct` (leaning pinned, for the same reason
   `Agent.skill_bindings[]`/`tool_bindings[]` pinning was flagged).
+  `Agent.model_binding_id` → `ModelEndpoint` settled the other way
+  (floating) for its own case — `entity_id` isn't a candidate key, so a
+  pinned binding there can't be a DB-level FK and isn't resolvable through
+  the read API by row id. That resolution doesn't settle this open
+  question for `Tool.data_bindings[]`, which is a distinct binding shape.
 - Whether `CapabilityRealization.contribution_weight` should be
   hand-authored or empirically derived from production call-frequency.
 - How much Skill Graph Validator logic is duplicated client-side for

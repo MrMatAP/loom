@@ -13,6 +13,7 @@ from loom.model.dataproduct import (  # noqa: F401
 )
 from loom.model.datasource import DataSource  # noqa: F401
 from loom.model.environment import Environment  # noqa: F401
+from loom.model.model_endpoint import ModelEndpoint  # noqa: F401
 from loom.model.observability import Metric  # noqa: F401
 from loom.model.skill import (  # noqa: F401
     Skill,

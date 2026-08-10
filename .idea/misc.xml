@@ -4,7 +4,7 @@
     <exe-path>/usr/local/bin/bower</exe-path>
     <config-path />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="/opt/dyn/python/loom" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" />
   <component name="VagrantProjectSettings">
     <option name="instanceFolder" value="" />
     <option name="provider" value="" />

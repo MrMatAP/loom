@@ -1,11 +1,12 @@
 from loom.idp.catalog_roles import ROLE_BUNDLES, content_scopes, platform_scopes
 
 
-def test_content_scopes_has_18_entries():
+def test_content_scopes_has_21_entries():
     scopes = content_scopes()
-    assert len(scopes) == 18
+    assert len(scopes) == 21
     assert 'catalog:capability:read' in scopes
     assert 'catalog:agent:transition' in scopes
+    assert 'catalog:model_endpoint:write' in scopes
 
 
 def test_platform_scopes_has_6_entries():

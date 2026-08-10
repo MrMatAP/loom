@@ -5,12 +5,12 @@ from loom.idp.client import (
 )
 
 
-def test_catalog_role_definitions_has_29_entries():
+def test_catalog_role_definitions_has_32_entries():
     roles = catalog_role_definitions()
-    assert len(roles) == 29
+    assert len(roles) == 32
     leaf = [r for r in roles if not r.composite_of]
     composite = [r for r in roles if r.composite_of]
-    assert len(leaf) == 24
+    assert len(leaf) == 27
     assert len(composite) == 5
 
 
@@ -30,6 +30,33 @@ class _FakeIdpAdminClient:
             internal_ref='test-ref',
             registration_access_token=None,
         )
+
+    async def register_public_client(
+        self,
+        *,
+        client_id,
+        client_name,
+        standard_flow=False,
+        device_flow=False,
+        redirect_uris=(),
+        web_origins=(),
+    ):
+        del client_id, client_name, standard_flow, device_flow
+        del redirect_uris, web_origins
+        return ClientRegistrationResult(
+            client_id='test-id',
+            internal_ref='test-ref',
+            registration_access_token=None,
+        )
+
+    async def add_audience_mapper(self, client_ref, *, target_client_id):
+        del client_ref, target_client_id
+
+    async def add_client_roles_mapper(self, client_ref, *, source_client_id):
+        del client_ref, source_client_id
+
+    async def add_tenant_id_mapper(self, client_ref):
+        del client_ref
 
     async def declare_client_roles(self, client_ref, roles):
         del client_ref, roles
