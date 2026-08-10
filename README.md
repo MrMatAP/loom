@@ -92,7 +92,7 @@ reason the login redirect fails.
 
 ### CLI device-code login
 
-`loom` commands that need to call the Catalog API as a user (e.g. a future
+`loom` commands that need to call the Catalog API as a user (e.g.
 `loom capability create`) authenticate via the OAuth2 Device Authorization
 Grant (RFC 8628) — no local browser redirect target needed, so it also
 works over SSH. Register the device-flow client once (same prerequisite as
@@ -112,6 +112,35 @@ any browser — including on a different device — and approve the login.
 access/refresh tokens in the local config (file permissions hardened to
 `0600`, tokens masked whenever the config is printed). Check status with
 `loom auth status`, and clear the session with `loom auth logout`.
+
+### Creating Catalog entities from the CLI
+
+Once logged in (see above), `loom capability create`, `loom model create`,
+and `loom agent create` POST straight to the running Catalog API using the
+cached session token. Point them at it once (defaults to
+`http://localhost:8000`):
+
+    loom config set catalog.api_base_url https://api.example.com
+
+Examples:
+
+    loom capability create latency-slo "Latency SLO" \
+      --target-metrics '[{"name": "p99_latency_ms", "target": 200}]'
+
+    loom model create claude-opus "Claude Opus" \
+      --protocol anthropic_messages --model claude-opus-4
+
+    loom agent create triage-bot "Triage Bot" \
+      --layer business_tech --memory-scope session \
+      --model-binding-id <entity_id from `loom model create` above> \
+      --prompt "You triage incoming support tickets."
+
+Every `create` prints the created entity (including its `entity_id`) as
+YAML on success. `--owner-id` defaults to the caller; JSON-shaped flags
+(`--target-metrics`, `--llm-config`, `--permission-boundary`) default to an
+empty array/object. This is create-only for now — no `list`/`get`/`update`
+yet, so scripting a chain (e.g. an Agent's `--model-binding-id`) means
+reading the `entity_id` back out of the previous command's YAML output.
 
 ### TLS trust for the IDP connection
 

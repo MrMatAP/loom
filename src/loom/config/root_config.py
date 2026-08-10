@@ -8,6 +8,7 @@ from loom import __version__
 
 from .auth_config import AuthConfig
 from .base import RootConfigAware
+from .catalog_config import CatalogConfig
 from .database_config import DatabaseConfig
 
 
@@ -22,6 +23,7 @@ class RootConfig(BaseModel):
 
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    catalog: CatalogConfig = Field(default_factory=CatalogConfig)
 
     @computed_field
     @property
