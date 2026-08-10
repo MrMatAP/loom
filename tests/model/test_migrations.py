@@ -7,6 +7,7 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 
 def _alembic_config(db_path: pathlib.Path) -> Config:
@@ -88,3 +89,46 @@ def test_upgrade_downgrade_enum_types_match_on_postgresql():
 
     assert created == dropped
     assert len(created) == 18
+
+
+def test_no_migration_redeclares_an_earlier_migrations_postgresql_enum_type():
+    """Each migration is normally applied to a real database in its own
+    `loom db upgrade` invocation (one per release), not chained together in
+    a single `command.upgrade(..., 'head')` call like the test above. That
+    matters: alembic only memoizes "this enum type was already CREATE
+    TYPE'd" *within a single upgrade invocation's connection*, so a shared
+    enum (e.g. `lifecycle_state`, reused by many versioned-entity tables)
+    silently renders fine when every migration is applied together in one
+    shot -- the earlier migration's CREATE TYPE satisfies the memo for the
+    later one -- but 500s a real database with `DuplicateObject` once the
+    two migrations run as separate invocations against a database that
+    already has the type from the first.
+
+    Render each migration's own delta as its own offline `command.upgrade`
+    call to reproduce that reality, and assert no enum type name is
+    CREATE TYPE'd by more than one migration in the whole history. A
+    migration that legitimately reuses an earlier one's enum (as opposed to
+    introducing a new one) must mark that column
+    `postgresql.ENUM(..., create_type=False)`.
+    """
+    config = _alembic_config_for_url('postgresql://u:p@localhost/db')
+    script = ScriptDirectory.from_config(config)
+
+    revisions = list(script.walk_revisions(base='base', head='head'))
+    revisions.reverse()  # walk_revisions yields head-first; we want oldest-first
+
+    first_creator: dict[str, str] = {}
+    for rev in revisions:
+        down = rev.down_revision or 'base'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            command.upgrade(config, f'{down}:{rev.revision}', sql=True)
+        for name in re.findall(r'CREATE TYPE (\w+)', buf.getvalue()):
+            assert name not in first_creator, (
+                f'{rev.revision} re-declares CREATE TYPE {name}, first created by '
+                f'{first_creator[name]} -- would fail with DuplicateObject against '
+                f'a database that already ran {first_creator[name]} in a separate '
+                f'`loom db upgrade`. Mark that column postgresql.ENUM(..., '
+                f'create_type=False) in {rev.revision}.'
+            )
+            first_creator[name] = rev.revision

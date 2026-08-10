@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = '0ba8c681a027'
 down_revision: str | None = 'f911815a8772'
@@ -38,7 +39,14 @@ def upgrade() -> None:
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column(
             'lifecycle_state',
-            sa.Enum(
+            # create_type=False: this ENUM type already exists -- every
+            # other versioned entity table (0001_initial_schema.py) shares
+            # it. Alembic's automatic per-table CREATE TYPE only memoizes
+            # names it has already emitted *within this same upgrade run*
+            # (see postgresql.ENUM._check_for_name_in_memos), so without
+            # this it re-attempts CREATE TYPE here and fails with
+            # `DuplicateObject` against a database that already ran 0001.
+            postgresql.ENUM(
                 'draft',
                 'in_review',
                 'approved',
@@ -46,24 +54,31 @@ def upgrade() -> None:
                 'deprecated',
                 'retired',
                 name='lifecycle_state',
+                create_type=False,
             ),
             nullable=False,
         ),
         sa.Column(
             'maturity',
-            sa.Enum(
-                'experimental', 'beta', 'stable', 'deprecated', name='maturity_level'
+            postgresql.ENUM(
+                'experimental',
+                'beta',
+                'stable',
+                'deprecated',
+                name='maturity_level',
+                create_type=False,
             ),
             nullable=False,
         ),
         sa.Column(
             'classification',
-            sa.Enum(
+            postgresql.ENUM(
                 'public',
                 'internal',
                 'confidential',
                 'restricted',
                 name='classification',
+                create_type=False,
             ),
             nullable=False,
         ),
