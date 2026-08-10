@@ -3,7 +3,11 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.api.catalog.db import assert_same_tenant, flush_or_raise
+from loom.api.catalog.db import (
+    assert_current_version_in_tenant,
+    assert_same_tenant,
+    flush_or_raise,
+)
 from loom.model.agent import Agent
 from loom.model.enums import LifecycleState
 
@@ -19,6 +23,15 @@ class AgentRepository:
     ) -> None:
         """Raise unless the referenced entity resolves inside this tenant."""
         await assert_same_tenant(self._session, tenant_id, model, entity_id)
+
+    async def assert_current_version_in_tenant(
+        self, tenant_id: uuid.UUID, model: type, entity_id: uuid.UUID
+    ) -> None:
+        """Raise unless `entity_id` resolves to `model`'s current version
+        inside this tenant. For floating bindings keyed by entity_id."""
+        await assert_current_version_in_tenant(
+            self._session, tenant_id, model, entity_id
+        )
 
     async def get_current(
         self, tenant_id: uuid.UUID, entity_id: uuid.UUID

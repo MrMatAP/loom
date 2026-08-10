@@ -1,6 +1,8 @@
 from loom.model.agent import Agent
-from loom.model.enums import Layer, MemoryScope
+from loom.model.enums import Layer, MemoryScope, ModelProtocol
+from loom.model.model_endpoint import ModelEndpoint
 from loom.model.schemas.agent import AgentCreate, AgentRead
+from loom.model.schemas.model_endpoint import ModelEndpointCreate
 from loom.model.tenant import Principal, Tenant
 
 
@@ -18,6 +20,19 @@ def _tenant_and_principal(session) -> tuple[Tenant, Principal]:
 
 def test_agent_round_trip(session):
     tenant, principal = _tenant_and_principal(session)
+    endpoint_payload = ModelEndpointCreate(
+        slug='claude',
+        name='Claude',
+        tenant_id=tenant.id,
+        owner_id=principal.id,
+        created_by_id=principal.id,
+        protocol=ModelProtocol.ANTHROPIC_MESSAGES,
+        model='claude-opus-5',
+    )
+    model_endpoint = ModelEndpoint(**endpoint_payload.model_dump())
+    session.add(model_endpoint)
+    session.commit()
+
     payload = AgentCreate(
         slug='triage-agent',
         name='Triage Agent',
@@ -25,7 +40,11 @@ def test_agent_round_trip(session):
         owner_id=principal.id,
         created_by_id=principal.id,
         layer=Layer.BUSINESS_OPS,
-        llm_config={'provider': 'anthropic', 'model': 'claude-opus-5'},
+        model_binding_id=model_endpoint.entity_id,
+        # Per-agent invocation overrides for whatever model_binding_id
+        # points at -- not the endpoint's identity, which lives on
+        # ModelEndpoint itself.
+        llm_config={'temperature': 0.2},
         prompt='You triage incoming tickets.',
         memory_scope=MemoryScope.SESSION,
     )
@@ -35,5 +54,28 @@ def test_agent_round_trip(session):
 
     read = AgentRead.model_validate(agent)
     assert read.layer == Layer.BUSINESS_OPS
-    assert read.llm_config['model'] == 'claude-opus-5'
+    assert read.model_binding_id == model_endpoint.entity_id
+    assert read.llm_config['temperature'] == 0.2
     assert read.permission_boundary == {}
+
+
+def test_agent_can_exist_without_a_model_binding(session):
+    """A Draft agent can exist before a model is chosen."""
+    tenant, principal = _tenant_and_principal(session)
+    payload = AgentCreate(
+        slug='unbound-agent',
+        name='Unbound Agent',
+        tenant_id=tenant.id,
+        owner_id=principal.id,
+        created_by_id=principal.id,
+        layer=Layer.BUSINESS_OPS,
+        llm_config={},
+        prompt='Draft prompt.',
+        memory_scope=MemoryScope.SESSION,
+    )
+    agent = Agent(**payload.model_dump())
+    session.add(agent)
+    session.commit()
+
+    read = AgentRead.model_validate(agent)
+    assert read.model_binding_id is None

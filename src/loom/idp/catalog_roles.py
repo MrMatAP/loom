@@ -7,6 +7,7 @@ CONTENT_RESOURCES = (
     'tool',
     'datasource',
     'dataproduct',
+    'model_endpoint',
 )
 CONTENT_ACTIONS = ('read', 'write', 'transition')
 PLATFORM_RESOURCES = ('tenant', 'principal', 'environment')

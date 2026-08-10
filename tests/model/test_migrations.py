@@ -44,6 +44,7 @@ def test_upgrade_then_downgrade_round_trip(tmp_path):
         'tool',
         'datasource',
         'dataproduct',
+        'model_endpoint',
         'dataproduct_lineage',
         'tool_data_binding',
         'skill',
@@ -86,4 +87,4 @@ def test_upgrade_downgrade_enum_types_match_on_postgresql():
     dropped = set(re.findall(r'DROP TYPE (\w+)', downgrade_sql.getvalue()))
 
     assert created == dropped
-    assert len(created) == 17
+    assert len(created) == 18

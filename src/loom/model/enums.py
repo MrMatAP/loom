@@ -50,6 +50,14 @@ class DataSourceKind(enum.StrEnum):
     STREAM = 'stream'
 
 
+class ModelProtocol(enum.StrEnum):
+    """Wire protocol a ModelEndpoint speaks -- how the Execution Engine
+    calls it, independent of which vendor/instance it is."""
+
+    OPENAI_COMPATIBLE = 'openai_compatible'
+    ANTHROPIC_MESSAGES = 'anthropic_messages'
+
+
 class SkillKind(enum.StrEnum):
     ATOMIC = 'atomic'
     COMPOSITE = 'composite'
@@ -99,6 +107,12 @@ class RealizingEntityType(enum.StrEnum):
 
 
 class VersionedEntityKind(enum.StrEnum):
+    """Entity kinds an EvalSuite/EvalRun can target. ModelEndpoint is
+    deliberately not a member yet -- EvalRun's target_* columns and its
+    one-target CHECK constraint would need a matching
+    target_model_endpoint_id column to make this a real, gated target
+    rather than an enum value nothing resolves."""
+
     AGENT = 'agent'
     SKILL = 'skill'
     TOOL = 'tool'

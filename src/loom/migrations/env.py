@@ -11,6 +11,7 @@ from loom.model import (  # noqa: F401  (imported for side effect: table registr
     environment,
     evaluation,
     governance,
+    model_endpoint,
     observability,
     skill,
     tenant,

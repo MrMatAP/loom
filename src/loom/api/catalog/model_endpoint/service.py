@@ -3,19 +3,18 @@ import uuid
 
 from loom.api.catalog.exceptions import EntityNotFoundError, IllegalTransitionError
 from loom.api.catalog.lifecycle import is_legal_transition
-from loom.model.agent import Agent
 from loom.model.enums import LifecycleState
 from loom.model.model_endpoint import ModelEndpoint
 from loom.model.tenant import Principal
 
-from .repository import AgentRepository
-from .schemas import AgentCreateRequest
+from .repository import ModelEndpointRepository
+from .schemas import ModelEndpointCreateRequest
 
 
-class AgentService:
-    """Use-cases for the Agent aggregate."""
+class ModelEndpointService:
+    """Use-cases for the ModelEndpoint aggregate."""
 
-    def __init__(self, repository: AgentRepository) -> None:
+    def __init__(self, repository: ModelEndpointRepository) -> None:
         self._repository = repository
 
     async def _resolve_owner_id(
@@ -26,63 +25,53 @@ class AgentService:
         await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
         return owner_id
 
-    async def _validate_model_binding(
-        self, tenant_id: uuid.UUID, model_binding_id: uuid.UUID | None
-    ) -> None:
-        """model_binding_id holds a ModelEndpoint.entity_id (floating, not a
-        specific version row), so it resolves via the current-version check,
-        not the by-row-id one used for owner_id -> Principal."""
-        if model_binding_id is None:
-            return
-        await self._repository.assert_current_version_in_tenant(
-            tenant_id, ModelEndpoint, model_binding_id
-        )
-
     async def create(
         self,
         *,
         tenant_id: uuid.UUID,
         created_by_id: uuid.UUID,
-        data: AgentCreateRequest,
-    ) -> Agent:
+        data: ModelEndpointCreateRequest,
+    ) -> ModelEndpoint:
         owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
-        await self._validate_model_binding(tenant_id, data.model_binding_id)
-        agent = Agent(
+        model_endpoint = ModelEndpoint(
             tenant_id=tenant_id,
             owner_id=owner_id,
             created_by_id=created_by_id,
             slug=data.slug,
             name=data.name,
             description=data.description,
-            layer=data.layer,
-            model_binding_id=data.model_binding_id,
-            llm_config=data.llm_config,
-            prompt=data.prompt,
-            memory_scope=data.memory_scope,
-            permission_boundary=data.permission_boundary,
+            protocol=data.protocol,
+            base_url=data.base_url,
+            model=data.model,
+            auth_binding_id=data.auth_binding_id,
         )
-        return await self._repository.add(agent)
+        return await self._repository.add(model_endpoint)
 
-    async def get_current(self, tenant_id: uuid.UUID, entity_id: uuid.UUID) -> Agent:
-        agent = await self._repository.get_current(tenant_id, entity_id)
-        if agent is None:
-            raise EntityNotFoundError(f'Agent {entity_id} not found')
-        return agent
+    async def get_current(
+        self, tenant_id: uuid.UUID, entity_id: uuid.UUID
+    ) -> ModelEndpoint:
+        model_endpoint = await self._repository.get_current(tenant_id, entity_id)
+        if model_endpoint is None:
+            raise EntityNotFoundError(f'ModelEndpoint {entity_id} not found')
+        return model_endpoint
 
     async def get_version(
         self, tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
-    ) -> Agent:
-        agent = await self._repository.get_version(tenant_id, entity_id, version)
-        if agent is None:
-            raise EntityNotFoundError(f'Agent {entity_id} version {version} not found')
-        return agent
+    ) -> ModelEndpoint:
+        model_endpoint = await self._repository.get_version(
+            tenant_id, entity_id, version
+        )
+        if model_endpoint is None:
+            detail = f'ModelEndpoint {entity_id} version {version} not found'
+            raise EntityNotFoundError(detail)
+        return model_endpoint
 
     async def list_versions(
         self, tenant_id: uuid.UUID, entity_id: uuid.UUID
-    ) -> list[Agent]:
+    ) -> list[ModelEndpoint]:
         versions = await self._repository.list_versions(tenant_id, entity_id)
         if not versions:
-            raise EntityNotFoundError(f'Agent {entity_id} not found')
+            raise EntityNotFoundError(f'ModelEndpoint {entity_id} not found')
         return versions
 
     async def list_current(
@@ -93,7 +82,7 @@ class AgentService:
         slug: str | None,
         limit: int,
         offset: int,
-    ) -> tuple[list[Agent], int]:
+    ) -> tuple[list[ModelEndpoint], int]:
         return await self._repository.list_current(
             tenant_id,
             lifecycle_state=lifecycle_state,
@@ -108,16 +97,15 @@ class AgentService:
         tenant_id: uuid.UUID,
         created_by_id: uuid.UUID,
         entity_id: uuid.UUID,
-        data: AgentCreateRequest,
-    ) -> Agent:
+        data: ModelEndpointCreateRequest,
+    ) -> ModelEndpoint:
         current = await self.get_current(tenant_id, entity_id)
         owner_id = await self._resolve_owner_id(
             tenant_id, data.owner_id, current.owner_id
         )
-        await self._validate_model_binding(tenant_id, data.model_binding_id)
         current.is_current = False
         await self._repository.save(current)
-        new_version = Agent(
+        new_version = ModelEndpoint(
             entity_id=entity_id,
             version=current.version + 1,
             is_current=True,
@@ -127,12 +115,10 @@ class AgentService:
             slug=data.slug,
             name=data.name,
             description=data.description,
-            layer=data.layer,
-            model_binding_id=data.model_binding_id,
-            llm_config=data.llm_config,
-            prompt=data.prompt,
-            memory_scope=data.memory_scope,
-            permission_boundary=data.permission_boundary,
+            protocol=data.protocol,
+            base_url=data.base_url,
+            model=data.model,
+            auth_binding_id=data.auth_binding_id,
         )
         return await self._repository.add(new_version)
 
@@ -144,7 +130,7 @@ class AgentService:
         version: int,
         to_state: LifecycleState,
         actor_id: uuid.UUID,
-    ) -> Agent:
+    ) -> ModelEndpoint:
         current = await self.get_current(tenant_id, entity_id)
         if current.version != version:
             detail = f'Version {version} is not the current version of {entity_id}'

@@ -10,6 +10,7 @@ async def test_all_routers_are_mounted(api_client):
         '/api/v1/tools',
         '/api/v1/datasources',
         '/api/v1/dataproducts',
+        '/api/v1/model-endpoints',
         '/api/v1/tenants',
         '/api/v1/principals',
         '/api/v1/environments',

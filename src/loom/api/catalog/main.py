@@ -13,6 +13,7 @@ from .dataproduct.router import router as dataproduct_router
 from .datasource.router import router as datasource_router
 from .environment.router import router as environment_router
 from .exceptions import register_exception_handlers
+from .model_endpoint.router import router as model_endpoint_router
 from .principal.router import router as principal_router
 from .security import TokenValidator
 from .skill.router import router as skill_router
@@ -26,6 +27,7 @@ ROUTERS = (
     tool_router,
     datasource_router,
     dataproduct_router,
+    model_endpoint_router,
     tenant_router,
     principal_router,
     environment_router,
