@@ -113,16 +113,27 @@ access/refresh tokens in the local config (file permissions hardened to
 `0600`, tokens masked whenever the config is printed). Check status with
 `loom auth status`, and clear the session with `loom auth logout`.
 
-### Creating Catalog entities from the CLI
+### Managing Catalog entities from the CLI
 
-Once logged in (see above), `loom capability create`, `loom model create`,
-and `loom agent create` POST straight to the running Catalog API using the
-cached session token. Point them at it once (defaults to
-`http://localhost:8000`):
+Once logged in (see above), `loom capability`, `loom model`, and
+`loom agent` talk straight to the running Catalog API using the cached
+session token, rendered as `rich` tables (an `openstack`/`ipa`-style feel:
+a Field/Value table for a single entity, a columnar table for a list).
+Point them at the API once (defaults to `http://localhost:8000`):
 
     loom config set catalog.api_base_url https://api.example.com
 
-Examples:
+Each of the three resources gets the same six verbs:
+
+    loom capability create <slug> <name> [--description ...] [--target-metrics '[...]'] [--owner-id ...]
+    loom capability list [--lifecycle-state ...] [--slug ...] [--limit N] [--offset N]
+    loom capability show <entity_id> [--version N]
+    loom capability update <entity_id> <slug> <name> [same flags as create]
+    loom capability versions <entity_id>
+    loom capability transition <entity_id> <version> <to_state>
+
+`model`/`agent` take the same six verbs with their own resource-specific
+`create`/`update` flags (see `--help` on each). Examples:
 
     loom capability create latency-slo "Latency SLO" \
       --target-metrics '[{"name": "p99_latency_ms", "target": 200}]'
@@ -135,12 +146,20 @@ Examples:
       --model-binding-id <entity_id from `loom model create` above> \
       --prompt "You triage incoming support tickets."
 
-Every `create` prints the created entity (including its `entity_id`) as
-YAML on success. `--owner-id` defaults to the caller; JSON-shaped flags
-(`--target-metrics`, `--llm-config`, `--permission-boundary`) default to an
-empty array/object. This is create-only for now — no `list`/`get`/`update`
-yet, so scripting a chain (e.g. an Agent's `--model-binding-id`) means
-reading the `entity_id` back out of the previous command's YAML output.
+    loom capability list --lifecycle-state draft
+    loom capability show <entity_id>
+    loom capability show <entity_id> --version 1
+    loom capability transition <entity_id> 1 in_review
+
+This registry is append-only/versioned by design (see
+`docs/superpowers/specs/2026-08-08-catalog-api-design.md`), so `update`
+means "create a new version row", not an in-place mutation -- it takes
+the *entire* set of create flags again (including unchanged ones), and
+there's no `delete`. `--owner-id` defaults to the caller; JSON-shaped
+flags (`--target-metrics`, `--llm-config`, `--permission-boundary`) default
+to an empty array/object. Every command prints its result as a table on
+success; scripting a chain (e.g. an Agent's `--model-binding-id`) means
+reading the `entity_id` column back out of a prior command's output.
 
 ### TLS trust for the IDP connection
 
@@ -261,13 +280,13 @@ on `ModelEndpoint`, not here.
 
 ## Catalog MCP server
 
-An alternative interface onto the same three `create` use-cases as the
-REST API above (`Capability`, `ModelEndpoint`, `Agent`) — exposed as MCP
-tools instead of HTTP endpoints, so an Agent can invoke them directly. It
-shares the REST API's `database`/`auth` config and calls the exact same
-Service layer (`CapabilityService`/`ModelEndpointService`/`AgentService`),
-not a proxy over HTTP — see
-`docs/superpowers/specs/2026-08-08-catalog-api-design.md`. Run it:
+An alternative interface onto the same use-cases as the REST API above
+(`Capability`, `ModelEndpoint`, `Agent`) — exposed as MCP tools instead of
+HTTP endpoints, so an Agent can invoke them directly. It shares the REST
+API's `database`/`auth` config and calls the exact same Service layer
+(`CapabilityService`/`ModelEndpointService`/`AgentService`), not a proxy
+over HTTP — see `docs/superpowers/specs/2026-08-08-catalog-api-design.md`.
+Run it:
 
     loom-catalog-mcp
 
@@ -277,15 +296,21 @@ any MCP client at it with the same kind of bearer JWT the REST API
 expects — issued by the same IDP client, carrying the same
 `tenant_id`/`roles`/`scope` claims (see `loom idp register-client` above)
 — and it enforces the identical tenant resolution and
-`catalog:{capability,model_endpoint,agent}:write` scope checks the REST
-routes do; there's no separate, weaker MCP auth path.
+`catalog:{capability,model_endpoint,agent}:{read,write,transition}` scope
+checks the REST routes do; there's no separate, weaker MCP auth path.
 
-Three tools are registered, one per REST `create` endpoint, taking the
-same request shape as the JSON bodies documented above:
+Seven tools are registered per resource (21 total), one per REST
+endpoint, taking the same request shape as the JSON bodies documented
+above — using `capability` as the example, `model`/`agent` follow the
+same pattern:
 
 - `create_capability(data: CapabilityCreateRequest) -> CapabilityRead`
-- `create_model(data: ModelEndpointCreateRequest) -> ModelEndpointRead`
-- `create_agent(data: AgentCreateRequest) -> AgentRead`
+- `get_capability(entity_id) -> CapabilityRead`
+- `list_capabilities(lifecycle_state?, slug?, limit=50, offset=0) -> Page[CapabilityRead]`
+- `list_capability_versions(entity_id) -> list[CapabilityRead]`
+- `get_capability_version(entity_id, version) -> CapabilityRead`
+- `update_capability(entity_id, data: CapabilityCreateRequest) -> CapabilityRead`
+- `transition_capability(entity_id, version, to_state) -> CapabilityRead`
 
-Scope: create only, matching `loom capability/model/agent create` above —
-no list/get/update tools yet.
+Same no-delete, append-only-versioning story as the CLI above: `update_*`
+creates a new version row, not an in-place mutation.

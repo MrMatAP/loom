@@ -4,7 +4,6 @@ import enum
 import pathlib
 import sys
 import typing
-import uuid
 
 import pydantic
 import rich.console
@@ -12,7 +11,7 @@ import yaml
 
 from loom import __default_config_path__, __version__
 from loom.cli.auth import auth_login, auth_logout, auth_status
-from loom.cli.catalog import agent_create, capability_create, model_create
+from loom.cli.catalog import add_catalog_parsers
 from loom.cli.db import db_current, db_downgrade, db_history, db_revision, db_upgrade
 from loom.cli.idp import (
     idp_register_cli_client,
@@ -20,7 +19,6 @@ from loom.cli.idp import (
     idp_register_docs_client,
 )
 from loom.config import RootConfig
-from loom.model.enums import Layer, MemoryScope, ModelProtocol
 
 console = rich.console.Console()
 
@@ -355,130 +353,7 @@ async def main() -> int:
         )
         auth_status_parser.set_defaults(func=auth_status)
 
-        capability_parser = subparsers.add_parser(
-            'capability', help='Capability commands'
-        )
-        capability_subparser = capability_parser.add_subparsers(required=True)
-        capability_create_parser = capability_subparser.add_parser(
-            'create', help='Create a Capability'
-        )
-        capability_create_parser.add_argument('slug', help='URL-safe unique slug')
-        capability_create_parser.add_argument('name', help='Human-readable name')
-        capability_create_parser.add_argument(
-            '--description', default=None, help='Free-text description'
-        )
-        capability_create_parser.add_argument(
-            '--target-metrics',
-            dest='target_metrics',
-            default='[]',
-            help='Target metrics as a JSON array of objects, defaults to []',
-        )
-        capability_create_parser.add_argument(
-            '--owner-id',
-            dest='owner_id',
-            type=uuid.UUID,
-            default=None,
-            help='Owning Principal, defaults to the caller',
-        )
-        capability_create_parser.set_defaults(func=capability_create)
-
-        model_parser = subparsers.add_parser('model', help='ModelEndpoint commands')
-        model_subparser = model_parser.add_subparsers(required=True)
-        model_create_parser = model_subparser.add_parser(
-            'create', help='Create a ModelEndpoint'
-        )
-        model_create_parser.add_argument('slug', help='URL-safe unique slug')
-        model_create_parser.add_argument('name', help='Human-readable name')
-        model_create_parser.add_argument(
-            '--description', default=None, help='Free-text description'
-        )
-        model_create_parser.add_argument(
-            '--protocol',
-            required=True,
-            choices=[p.value for p in ModelProtocol],
-            help='Wire protocol the endpoint speaks',
-        )
-        model_create_parser.add_argument(
-            '--base-url',
-            dest='base_url',
-            default=None,
-            help=('Endpoint base URL, required when --protocol=openai_compatible'),
-        )
-        model_create_parser.add_argument(
-            '--model',
-            dest='model',
-            required=True,
-            help='The model identifier at the endpoint, e.g. gpt-4o',
-        )
-        model_create_parser.add_argument(
-            '--auth-binding-id',
-            dest='auth_binding_id',
-            type=uuid.UUID,
-            default=None,
-            help='Credential vault binding for this endpoint',
-        )
-        model_create_parser.add_argument(
-            '--owner-id',
-            dest='owner_id',
-            type=uuid.UUID,
-            default=None,
-            help='Owning Principal, defaults to the caller',
-        )
-        model_create_parser.set_defaults(func=model_create)
-
-        agent_parser = subparsers.add_parser('agent', help='Agent commands')
-        agent_subparser = agent_parser.add_subparsers(required=True)
-        agent_create_parser = agent_subparser.add_parser(
-            'create', help='Create an Agent'
-        )
-        agent_create_parser.add_argument('slug', help='URL-safe unique slug')
-        agent_create_parser.add_argument('name', help='Human-readable name')
-        agent_create_parser.add_argument(
-            '--description', default=None, help='Free-text description'
-        )
-        agent_create_parser.add_argument(
-            '--layer',
-            required=True,
-            choices=[layer.value for layer in Layer],
-            help='Skill Graph layer this Agent belongs to',
-        )
-        agent_create_parser.add_argument(
-            '--model-binding-id',
-            dest='model_binding_id',
-            type=uuid.UUID,
-            default=None,
-            help="The bound ModelEndpoint's entity_id, e.g. from `loom model create`",
-        )
-        agent_create_parser.add_argument(
-            '--llm-config',
-            dest='llm_config',
-            default='{}',
-            help='Model invocation overrides as a JSON object, defaults to {}',
-        )
-        agent_create_parser.add_argument(
-            '--prompt', required=True, help='The versioned system prompt'
-        )
-        agent_create_parser.add_argument(
-            '--memory-scope',
-            dest='memory_scope',
-            required=True,
-            choices=[scope.value for scope in MemoryScope],
-            help='Agent memory scope',
-        )
-        agent_create_parser.add_argument(
-            '--permission-boundary',
-            dest='permission_boundary',
-            default='{}',
-            help='Permission boundary as a JSON object, defaults to {}',
-        )
-        agent_create_parser.add_argument(
-            '--owner-id',
-            dest='owner_id',
-            type=uuid.UUID,
-            default=None,
-            help='Owning Principal, defaults to the caller',
-        )
-        agent_create_parser.set_defaults(func=agent_create)
+        add_catalog_parsers(subparsers)
 
         args = parser.parse_args()
         config = RootConfig.load(config_path=args.config_path)
