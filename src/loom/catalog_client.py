@@ -49,16 +49,42 @@ class CatalogClient:
         ctx = build_ssl_context()
         return httpx.AsyncClient(transport=self._transport, verify=ctx)
 
-    async def post(self, path: str, payload: dict[str, typing.Any]) -> dict:
-        """POST `payload` to `path`; returns the decoded JSON body on 2xx,
-        raises `CatalogApiError` otherwise."""
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, typing.Any] | None = None,
+        json: dict[str, typing.Any] | None = None,
+    ) -> dict:
+        """Issue one request; returns the decoded JSON body on 2xx, raises
+        `CatalogApiError` otherwise. `params`/`json` drop `None` values so
+        callers can pass every optional filter unconditionally rather than
+        each building a trimmed dict by hand."""
+        clean_params = (
+            {k: v for k, v in params.items() if v is not None} if params else None
+        )
         async with self._client() as http:
-            response = await http.post(
+            response = await http.request(
+                method,
                 f'{self._base}{path}',
-                json=payload,
+                params=clean_params,
+                json=json,
                 headers={'Authorization': f'Bearer {self._token}'},
                 timeout=30.0,
             )
         if response.is_error:
             raise CatalogApiError(response.status_code, _error_detail(response))
         return response.json()
+
+    async def get(
+        self, path: str, params: dict[str, typing.Any] | None = None
+    ) -> dict:
+        """GET `path`; returns the decoded JSON body on 2xx, raises
+        `CatalogApiError` otherwise."""
+        return await self._request('GET', path, params=params)
+
+    async def post(self, path: str, payload: dict[str, typing.Any]) -> dict:
+        """POST `payload` to `path`; returns the decoded JSON body on 2xx,
+        raises `CatalogApiError` otherwise."""
+        return await self._request('POST', path, json=payload)

@@ -1,4 +1,5 @@
 import dataclasses
+import uuid
 
 import jwt
 from fastmcp import FastMCP
@@ -15,12 +16,14 @@ from loom.api.catalog.dependencies import resolve_principal
 from loom.api.catalog.model_endpoint.repository import ModelEndpointRepository
 from loom.api.catalog.model_endpoint.schemas import ModelEndpointCreateRequest
 from loom.api.catalog.model_endpoint.service import ModelEndpointService
+from loom.api.catalog.pagination import Page
 from loom.api.catalog.security import (
     AuthenticatedPrincipal,
     AuthenticationError,
     TokenValidator,
     assert_scopes,
 )
+from loom.model.enums import LifecycleState
 from loom.model.schemas.agent import AgentRead
 from loom.model.schemas.capability import CapabilityRead
 from loom.model.schemas.model_endpoint import ModelEndpointRead
@@ -83,60 +86,227 @@ async def _authenticated_principal(
     return await resolve_principal(claims, session)
 
 
+@dataclasses.dataclass(frozen=True)
+class ResourceBinding:
+    """Everything that differs between Capability/ModelEndpoint/Agent, so
+    `_register_resource_tools` below can register the same six tools --
+    identical in shape across all three, since `*Service`'s
+    get_current/get_version/list_versions/list_current/create_new_version/
+    transition signatures are identical -- once per resource instead of
+    six near-duplicate functions written out three times each.
+
+    Scope names are copy-pasted verbatim from each resource's router
+    (`require_scopes('catalog:...')` there), not derived, so a typo here
+    can't silently create a mismatched permission boundary between REST
+    and MCP."""
+
+    label: str
+    plural: str
+    article: str  # 'a' or 'an', for the generated tool descriptions
+    service_cls: type
+    repository_cls: type
+    create_request_cls: type
+    read_cls: type
+    read_scope: str
+    write_scope: str
+    transition_scope: str
+
+
+_BINDINGS = (
+    ResourceBinding(
+        label='capability',
+        plural='capabilities',
+        article='a',
+        service_cls=CapabilityService,
+        repository_cls=CapabilityRepository,
+        create_request_cls=CapabilityCreateRequest,
+        read_cls=CapabilityRead,
+        read_scope='catalog:capability:read',
+        write_scope='catalog:capability:write',
+        transition_scope='catalog:capability:transition',
+    ),
+    ResourceBinding(
+        label='model',
+        plural='models',
+        article='a',
+        service_cls=ModelEndpointService,
+        repository_cls=ModelEndpointRepository,
+        create_request_cls=ModelEndpointCreateRequest,
+        read_cls=ModelEndpointRead,
+        read_scope='catalog:model_endpoint:read',
+        write_scope='catalog:model_endpoint:write',
+        transition_scope='catalog:model_endpoint:transition',
+    ),
+    ResourceBinding(
+        label='agent',
+        plural='agents',
+        article='an',
+        service_cls=AgentService,
+        repository_cls=AgentRepository,
+        create_request_cls=AgentCreateRequest,
+        read_cls=AgentRead,
+        read_scope='catalog:agent:read',
+        write_scope='catalog:agent:write',
+        transition_scope='catalog:agent:transition',
+    ),
+)
+
+
+def _register_resource_tools(
+    mcp: FastMCP, state: McpState, binding: ResourceBinding
+) -> None:
+    """Register the six create/get/list/versions/update/transition tools
+    for one resource. Each tool body follows the exact same shape as the
+    corresponding router endpoint: resolve the principal, enforce the
+    matching scope, call the Service, return the Read schema -- no HTTP
+    hop, no duplicated business logic (see
+    docs/superpowers/specs/2026-08-08-catalog-api-design.md)."""
+
+    async def _principal(
+        session: AsyncSession, *, scope: str
+    ) -> AuthenticatedPrincipal:
+        principal = await _authenticated_principal(state, session)
+        assert_scopes(principal.scopes, scope)
+        return principal
+
+    @mcp.tool(
+        name=f'create_{binding.label}',
+        description=f'Create {binding.article} {binding.label.title()}.',
+    )
+    async def _create(data: binding.create_request_cls) -> binding.read_cls:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.write_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            created = await service.create(
+                tenant_id=principal.tenant_id,
+                created_by_id=principal.principal_id,
+                data=data,
+            )
+            await session.commit()
+            return binding.read_cls.model_validate(created)
+
+    @mcp.tool(
+        name=f'get_{binding.label}',
+        description=f'Get the current version of {binding.article} {binding.label.title()}.',
+    )
+    async def _get(entity_id: uuid.UUID) -> binding.read_cls:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.read_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            found = await service.get_current(principal.tenant_id, entity_id)
+            return binding.read_cls.model_validate(found)
+
+    @mcp.tool(
+        name=f'list_{binding.plural}',
+        description=(
+            f'List current versions of {binding.plural.title()} in this tenant, '
+            'optionally filtered by lifecycle_state/slug.'
+        ),
+    )
+    async def _list(
+        lifecycle_state: LifecycleState | None = None,
+        slug: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[binding.read_cls]:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.read_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            items, total = await service.list_current(
+                principal.tenant_id,
+                lifecycle_state=lifecycle_state,
+                slug=slug,
+                limit=limit,
+                offset=offset,
+            )
+            return Page[binding.read_cls](
+                items=[binding.read_cls.model_validate(item) for item in items],
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
+
+    @mcp.tool(
+        name=f'list_{binding.label}_versions',
+        description=f'List every version of {binding.article} {binding.label.title()}.',
+    )
+    async def _versions(entity_id: uuid.UUID) -> list[binding.read_cls]:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.read_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            versions = await service.list_versions(principal.tenant_id, entity_id)
+            return [binding.read_cls.model_validate(v) for v in versions]
+
+    @mcp.tool(
+        name=f'get_{binding.label}_version',
+        description=f'Get one specific version of {binding.article} {binding.label.title()}.',
+    )
+    async def _get_version(entity_id: uuid.UUID, version: int) -> binding.read_cls:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.read_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            found = await service.get_version(principal.tenant_id, entity_id, version)
+            return binding.read_cls.model_validate(found)
+
+    @mcp.tool(
+        name=f'update_{binding.label}',
+        description=(
+            f'Create a new version of {binding.article} {binding.label.title()} -- '
+            'entities in this registry are append-only/versioned, so "update" '
+            'means a new version row, not an in-place mutation of the current one.'
+        ),
+    )
+    async def _update(
+        entity_id: uuid.UUID,
+        data: binding.create_request_cls,  # type: ignore[name-defined]
+    ) -> binding.read_cls:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.write_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            updated = await service.create_new_version(
+                tenant_id=principal.tenant_id,
+                created_by_id=principal.principal_id,
+                entity_id=entity_id,
+                data=data,
+            )
+            await session.commit()
+            return binding.read_cls.model_validate(updated)
+
+    @mcp.tool(
+        name=f'transition_{binding.label}',
+        description=f'Transition {binding.article} {binding.label.title()} to a new lifecycle state.',
+    )
+    async def _transition(
+        entity_id: uuid.UUID, version: int, to_state: LifecycleState
+    ) -> binding.read_cls:  # type: ignore[name-defined]
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(session, scope=binding.transition_scope)
+            service = binding.service_cls(binding.repository_cls(session))
+            transitioned = await service.transition(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                to_state=to_state,
+                actor_id=principal.principal_id,
+            )
+            await session.commit()
+            return binding.read_cls.model_validate(transitioned)
+
+
 def create_mcp_server(state: McpState) -> FastMCP:
-    """Build the Catalog MCP server: one tool per REST `create` endpoint,
-    each calling the same Service layer its router counterpart calls (see
-    docs/superpowers/specs/2026-08-08-catalog-api-design.md) so business
-    logic -- including tenant/scope enforcement -- isn't duplicated or
-    allowed to drift between the two adapters."""
+    """Build the Catalog MCP server: create/get/list/versions/update/
+    transition tools for Capability, ModelEndpoint, and Agent -- an
+    alternative interface onto the same Service layer the REST API's
+    routers call (see
+    docs/superpowers/specs/2026-08-08-catalog-api-design.md)."""
     mcp = FastMCP('Loom Catalog')
-
-    @mcp.tool
-    async def create_capability(data: CapabilityCreateRequest) -> CapabilityRead:
-        """Create a Capability."""
-        session_factory = _require_session_factory(state)
-        async with session_factory() as session:
-            principal = await _authenticated_principal(state, session)
-            assert_scopes(principal.scopes, 'catalog:capability:write')
-            service = CapabilityService(CapabilityRepository(session))
-            capability = await service.create(
-                tenant_id=principal.tenant_id,
-                created_by_id=principal.principal_id,
-                data=data,
-            )
-            await session.commit()
-            return CapabilityRead.model_validate(capability)
-
-    @mcp.tool
-    async def create_model(data: ModelEndpointCreateRequest) -> ModelEndpointRead:
-        """Create a ModelEndpoint."""
-        session_factory = _require_session_factory(state)
-        async with session_factory() as session:
-            principal = await _authenticated_principal(state, session)
-            assert_scopes(principal.scopes, 'catalog:model_endpoint:write')
-            service = ModelEndpointService(ModelEndpointRepository(session))
-            model_endpoint = await service.create(
-                tenant_id=principal.tenant_id,
-                created_by_id=principal.principal_id,
-                data=data,
-            )
-            await session.commit()
-            return ModelEndpointRead.model_validate(model_endpoint)
-
-    @mcp.tool
-    async def create_agent(data: AgentCreateRequest) -> AgentRead:
-        """Create an Agent."""
-        session_factory = _require_session_factory(state)
-        async with session_factory() as session:
-            principal = await _authenticated_principal(state, session)
-            assert_scopes(principal.scopes, 'catalog:agent:write')
-            service = AgentService(AgentRepository(session))
-            agent = await service.create(
-                tenant_id=principal.tenant_id,
-                created_by_id=principal.principal_id,
-                data=data,
-            )
-            await session.commit()
-            return AgentRead.model_validate(agent)
-
+    for binding in _BINDINGS:
+        _register_resource_tools(mcp, state, binding)
     return mcp
