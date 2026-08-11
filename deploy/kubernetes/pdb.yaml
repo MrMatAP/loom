@@ -1,0 +1,24 @@
+# Keeps at least 1 replica of each up through a voluntary disruption (node
+# drain, cluster upgrade) -- meaningful once `replicas`/HPA minReplicas is
+# above 1, which is the default in both Deployments here.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: loom-catalog-api
+  namespace: loom-catalog
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loom-catalog-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: loom-catalog-mcp
+  namespace: loom-catalog
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loom-catalog-mcp

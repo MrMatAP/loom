@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: loom-catalog
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - db-migrate-job.yaml
+  - catalog-api-deployment.yaml
+  - catalog-api-service.yaml
+  - catalog-api-hpa.yaml
+  - catalog-mcp-deployment.yaml
+  - catalog-mcp-service.yaml
+  - catalog-mcp-hpa.yaml
+  - pdb.yaml
+
+# secret.example.yaml and ingress.example.yaml are deliberately not listed
+# here -- see the comments in each file for why.
+
+# Point every Deployment/Job's `image: loom:dev` at your real, built image
+# in one place:
+#   kustomize edit set image loom=ghcr.io/your-org/loom:1.4.2
+images:
+  - name: loom
+    newName: ghcr.io/your-org/loom # CHANGEME
+    newTag: dev # CHANGEME -- e.g. the version `docker build --build-arg VERSION=...` used

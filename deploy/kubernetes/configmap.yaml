@@ -1,0 +1,25 @@
+# Non-secret settings shared by catalog-api, catalog-mcp, and the
+# db-migrate Job -- entrypoint.sh (see /Dockerfile) turns these into the
+# on-disk config file each container reads at $LOOM_CONFIG_PATH. Every
+# CHANGEME below must be edited before applying -- none of these are real,
+# working defaults (this manifest set deliberately provisions no
+# PostgreSQL of its own; see docs/admin-guide.md's "Provide a database"
+# step for why and what to point this at).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loom-catalog-config
+  namespace: loom-catalog
+data:
+  # Written to an emptyDir (see the `config` volume on each Deployment/Job
+  # below), not a mounted Secret -- `loom config set` chmod(0o600)s the
+  # file on every write, which fails against a read-only Secret mount.
+  # See docker/entrypoint.sh for the full rationale.
+  LOOM_CONFIG_PATH: /config/loom.yaml
+  LOOM_DB_HOST: CHANGEME-your-postgres-host
+  LOOM_DB_PORT: '5432'
+  LOOM_DB_NAME: loom
+  LOOM_DB_USERNAME: loom
+  LOOM_AUTH_ISSUER: https://idp.example/realms/loom # CHANGEME
+  LOOM_AUTH_AUDIENCE: loom-catalog-api
+  LOOM_CATALOG_API_BASE_URL: https://catalog.example.com # CHANGEME -- externally-reachable URL

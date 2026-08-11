@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from loom import __default_config_path__
+from loom import default_config_path
 from loom.config import RootConfig
 from loom.model.engine import get_async_session_factory
 
@@ -20,7 +20,18 @@ def create_app(config: RootConfig) -> FastAPI:
     # `path` defaults to fastmcp.settings.streamable_http_path ("/mcp");
     # mounting the returned sub-app at "/" below keeps that as the final
     # client-visible path rather than nesting it under a second prefix.
-    mcp_asgi_app = mcp.http_app()
+    #
+    # stateless_http=True: every tool call already re-resolves the caller's
+    # principal from the Authorization header on that request (see
+    # `server.py`'s `_authenticated_principal`), so no per-call state needs
+    # to survive between requests. Without this, fastmcp pins an MCP
+    # session to whichever server process handled its `initialize` call --
+    # fine for a single process, but it defeats horizontal scaling behind a
+    # Service/LoadBalancer, where a session's later requests can land on a
+    # different replica with no memory of it. Verified against a real
+    # Streamable HTTP round trip in
+    # `tests/api/test_mcp_main.py::test_mcp_tool_call_over_real_http_reads_the_authorization_header`.
+    mcp_asgi_app = mcp.http_app(stateless_http=True)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -46,7 +57,7 @@ def create_app(config: RootConfig) -> FastAPI:
     return app
 
 
-app = create_app(RootConfig.load(config_path=__default_config_path__))
+app = create_app(RootConfig.load(config_path=default_config_path()))
 
 
 def run() -> None:

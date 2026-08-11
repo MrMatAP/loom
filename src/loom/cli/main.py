@@ -9,7 +9,7 @@ import pydantic
 import rich.console
 import yaml
 
-from loom import __default_config_path__, __version__
+from loom import __version__, default_config_path
 from loom.cli.auth import auth_login, auth_logout, auth_status
 from loom.cli.catalog import add_catalog_parsers
 from loom.cli.db import db_current, db_downgrade, db_history, db_revision, db_upgrade
@@ -170,8 +170,9 @@ async def main() -> int:
             type=pathlib.Path,
             required=False,
             dest='config_path',
-            default=__default_config_path__,
-            help=f'Path to the config file, defaults to {__default_config_path__}',
+            default=default_config_path(),
+            help=f'Path to the config file, defaults to {default_config_path()} '
+            '(or $LOOM_CONFIG_PATH if set)',
         )
         parser.add_argument(
             '--verbose',

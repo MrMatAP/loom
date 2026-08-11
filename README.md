@@ -2,6 +2,12 @@
 
 An AI-Enabled Distributed Systems IDE
 
+Deploying the Catalog API/MCP server as a container (Docker, Kubernetes,
+horizontal scaling)? See [docs/admin-guide.md](docs/admin-guide.md).
+Already have one running and just want to use it? See
+[docs/user-guide.md](docs/user-guide.md). This README is the full
+reference both guides link back into.
+
 ## Database
 
 Loom stores its registry (Capabilities, Agents, Skills, Tools, DataSources,

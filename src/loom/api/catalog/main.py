@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from loom import __default_config_path__
+from loom import default_config_path
 from loom.config import RootConfig
 from loom.model.engine import get_async_session_factory
 
@@ -85,7 +85,7 @@ def create_app(config: RootConfig) -> FastAPI:
     return app
 
 
-app = create_app(RootConfig.load(config_path=__default_config_path__))
+app = create_app(RootConfig.load(config_path=default_config_path()))
 
 
 def run() -> None:

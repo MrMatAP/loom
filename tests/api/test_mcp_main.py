@@ -39,6 +39,23 @@ def test_create_app_mounts_the_mcp_server_and_exposes_healthz():
     assert '/healthz' in paths
 
 
+def test_mcp_mount_runs_stateless_so_any_replica_can_serve_any_request():
+    """No MCP session may be pinned to whichever pod happened to handle its
+    `initialize` call -- a later request for that session landing on a
+    *different* replica behind a Service/LoadBalancer must still work.
+    fastmcp's own observable signal for `stateless_http=True` is that the
+    `/mcp` route drops GET (no SSE stream, since there's no session to push
+    notifications into) and accepts only POST/DELETE -- assert that,
+    rather than the `stateless_http=True` kwarg itself, so this fails if a
+    fastmcp upgrade ever changes what the flag does instead of just its
+    name."""
+    app = create_app(RootConfig(config_path='/dev/null'))
+    mount = next(route for route in app.routes if isinstance(route, Mount))
+    mcp_route = next(r for r in mount.app.routes if getattr(r, 'path', None) == '/mcp')
+
+    assert mcp_route.methods == {'POST', 'DELETE'}
+
+
 @pytest.mark.asyncio
 async def test_healthz_does_not_require_the_lifespan_to_have_run():
     """`/healthz` doesn't touch McpState, so it must work even before the

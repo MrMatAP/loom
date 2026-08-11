@@ -1,0 +1,45 @@
+# Template only -- NOT part of kustomization.yaml's resources, since the
+# right ingressClassName/host/TLS setup is entirely cluster-specific. Copy
+# alongside the other manifests and edit the CHANGEME values, or translate
+# to whatever your cluster actually fronts Services with (a cloud LB,
+# Gateway API, etc).
+#
+# host must match LOOM_CATALOG_API_BASE_URL in configmap.yaml, and must be
+# the same URL registered via `loom idp register-docs-client
+# --api-base-url` if you want Swagger UI's interactive login to work
+# through this ingress -- a mismatch there is the most common reason that
+# login redirect fails (see README.md).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: loom-catalog
+  namespace: loom-catalog
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt # CHANGEME or remove
+spec:
+  ingressClassName: nginx # CHANGEME
+  tls:
+    - hosts:
+        - catalog.example.com # CHANGEME
+      secretName: loom-catalog-tls
+  rules:
+    - host: catalog.example.com # CHANGEME
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: loom-catalog-api
+                port:
+                  name: http
+    - host: catalog-mcp.example.com # CHANGEME
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: loom-catalog-mcp
+                port:
+                  name: http

@@ -1,0 +1,96 @@
+# Same statelessness story as catalog-api-deployment.yaml, plus one more
+# guarantee specific to MCP: mcp/main.py builds its Streamable HTTP app
+# with stateless_http=True, so no MCP session is pinned to whichever
+# replica happened to handle its `initialize` call -- a session's later
+# requests can land on any replica behind the Service below. Don't drop
+# that flag; without it this Deployment's replica count is decorative
+# (see mcp/main.py's comment and
+# tests/api/test_mcp_main.py::test_mcp_mount_runs_stateless_so_any_replica_can_serve_any_request).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loom-catalog-mcp
+  namespace: loom-catalog
+  labels:
+    app.kubernetes.io/name: loom-catalog-mcp
+    app.kubernetes.io/part-of: loom-catalog
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loom-catalog-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loom-catalog-mcp
+        app.kubernetes.io/part-of: loom-catalog
+        app.kubernetes.io/component: mcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: loom-catalog-mcp
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: loom-catalog-mcp
+          image: loom:dev # CHANGEME -- set via `kustomize edit set image`, see kustomization.yaml
+          # `args`, not `command` -- `command` would override the image's
+          # ENTRYPOINT (docker/entrypoint.sh, which materializes
+          # $LOOM_CONFIG_PATH from the env vars below before running
+          # anything); `args` overrides only its default CMD
+          # (loom-catalog-api).
+          args: ['loom-catalog-mcp']
+          ports:
+            - name: http
+              containerPort: 8100
+          envFrom:
+            - configMapRef:
+                name: loom-catalog-config
+          env:
+            - name: LOOM_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: loom-db-credentials
+                  key: password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          emptyDir: {}

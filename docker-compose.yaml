@@ -1,0 +1,100 @@
+# Local, single-node run of the full Catalog stack (Postgres + the
+# `loom db upgrade` migration + the REST API + the MCP server) built from
+# the same image as the Kubernetes manifests under deploy/kubernetes/ --
+# useful for trying the Catalog out or developing against it without a
+# cluster. It is NOT the horizontal-scaling story (that's Kubernetes'
+# Deployment replicas + HorizontalPodAutoscaler, see deploy/kubernetes/ and
+# docs/admin-guide.md); every service here runs as a single instance.
+#
+# Needs an OIDC issuer reachable from the containers -- this stack doesn't
+# run one itself, same as the plain `loom-catalog-api` story in README.md.
+# Copy .env.example to .env and fill in at least LOOM_DB_PASSWORD and
+# LOOM_AUTH_ISSUER/LOOM_AUTH_AUDIENCE before `docker compose up`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${LOOM_DB_NAME:-loom}
+      POSTGRES_USER: ${LOOM_DB_USERNAME:-loom}
+      POSTGRES_PASSWORD: ${LOOM_DB_PASSWORD:?set LOOM_DB_PASSWORD in .env}
+    volumes:
+      - loom-postgres-data:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${LOOM_DB_USERNAME:-loom} -d ${LOOM_DB_NAME:-loom}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs once per `docker compose up` and exits 0 -- catalog-api/catalog-mcp
+  # wait on that exit via `service_completed_successfully` rather than
+  # racing a still-migrating database. See docs/admin-guide.md's note on
+  # why this stays a dedicated one-shot step rather than an entrypoint
+  # check inside catalog-api/catalog-mcp: running `loom db upgrade`
+  # concurrently from more than one replica is exactly the race
+  # (`DuplicateObject` on a shared Postgres enum type) fixed in this
+  # project's history -- one runner, always.
+  migrate:
+    build: .
+    image: loom:${LOOM_IMAGE_TAG:-dev}
+    command: ['loom', 'db', 'upgrade']
+    environment: &loom-env
+      LOOM_DB_HOST: postgres
+      LOOM_DB_PORT: '5432'
+      LOOM_DB_NAME: ${LOOM_DB_NAME:-loom}
+      LOOM_DB_USERNAME: ${LOOM_DB_USERNAME:-loom}
+      LOOM_DB_PASSWORD: ${LOOM_DB_PASSWORD:?set LOOM_DB_PASSWORD in .env}
+      LOOM_AUTH_ISSUER: ${LOOM_AUTH_ISSUER:?set LOOM_AUTH_ISSUER in .env}
+      LOOM_AUTH_AUDIENCE: ${LOOM_AUTH_AUDIENCE:-loom-catalog-api}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  catalog-api:
+    build: .
+    image: loom:${LOOM_IMAGE_TAG:-dev}
+    command: ['loom-catalog-api']
+    environment:
+      <<: *loom-env
+      LOOM_CATALOG_API_BASE_URL: http://localhost:8000
+    ports:
+      - '8000:8000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u; u.urlopen('http://localhost:8000/healthz')
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  catalog-mcp:
+    build: .
+    image: loom:${LOOM_IMAGE_TAG:-dev}
+    command: ['loom-catalog-mcp']
+    environment: *loom-env
+    ports:
+      - '8100:8100'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u; u.urlopen('http://localhost:8100/healthz')
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  loom-postgres-data:
