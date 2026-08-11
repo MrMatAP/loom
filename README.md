@@ -258,3 +258,34 @@ binding floats to whichever version is currently `is_current`, unlike
 `llm_config` stays on the Agent for per-agent invocation overrides
 (temperature, max_tokens, ...); the endpoint's identity and transport live
 on `ModelEndpoint`, not here.
+
+## Catalog MCP server
+
+An alternative interface onto the same three `create` use-cases as the
+REST API above (`Capability`, `ModelEndpoint`, `Agent`) — exposed as MCP
+tools instead of HTTP endpoints, so an Agent can invoke them directly. It
+shares the REST API's `database`/`auth` config and calls the exact same
+Service layer (`CapabilityService`/`ModelEndpointService`/`AgentService`),
+not a proxy over HTTP — see
+`docs/superpowers/specs/2026-08-08-catalog-api-design.md`. Run it:
+
+    loom-catalog-mcp
+
+This serves Streamable HTTP on `http://0.0.0.0:8100/mcp` (a different
+port than `loom-catalog-api`'s 8000, since both can run at once). Point
+any MCP client at it with the same kind of bearer JWT the REST API
+expects — issued by the same IDP client, carrying the same
+`tenant_id`/`roles`/`scope` claims (see `loom idp register-client` above)
+— and it enforces the identical tenant resolution and
+`catalog:{capability,model_endpoint,agent}:write` scope checks the REST
+routes do; there's no separate, weaker MCP auth path.
+
+Three tools are registered, one per REST `create` endpoint, taking the
+same request shape as the JSON bodies documented above:
+
+- `create_capability(data: CapabilityCreateRequest) -> CapabilityRead`
+- `create_model(data: ModelEndpointCreateRequest) -> ModelEndpointRead`
+- `create_agent(data: AgentCreateRequest) -> AgentRead`
+
+Scope: create only, matching `loom capability/model/agent create` above —
+no list/get/update tools yet.

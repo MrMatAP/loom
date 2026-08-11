@@ -19,6 +19,22 @@ class AuthenticatedPrincipal:
     scopes: frozenset[str]
 
 
+class AuthenticationError(Exception):
+    """Raised when a token can't be resolved to an internal Principal.
+
+    Transport-neutral: the REST dependency chain (`dependencies.py`) and
+    the MCP tool adapter (`mcp/server.py`) both raise this from the same
+    underlying resolution logic and translate it into their own wire
+    format (HTTPException(401) vs. a plain error message back to the
+    calling agent).
+    """
+
+
+class InsufficientScopeError(Exception):
+    """Raised when a principal's scopes don't cover a required set. Same
+    transport-neutral split as `AuthenticationError`."""
+
+
 def resolve_jwks_uri(issuer: str) -> str:
     """Discover the JWKS URI from the issuer's OIDC discovery document."""
     ctx = build_ssl_context()
@@ -68,3 +84,12 @@ def expand_claims_to_scopes(claims: dict) -> frozenset[str]:
     for role in claims.get('roles', []):
         scopes.update(ROLE_BUNDLES.get(role, {role}))
     return frozenset(scopes)
+
+
+def assert_scopes(scopes: frozenset[str], *required: str) -> None:
+    """Raise `InsufficientScopeError` unless every `required` scope is
+    present in `scopes`."""
+    missing = set(required) - scopes
+    if missing:
+        joined = ', '.join(sorted(missing))
+        raise InsufficientScopeError(f'Missing required scope(s): {joined}')
