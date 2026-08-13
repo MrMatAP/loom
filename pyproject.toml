@@ -76,6 +76,7 @@ addopts = "--cov=loom --cov-branch --cov-report=term --cov-report=xml:build/cove
 testpaths = ["tests"]
 markers = [
     "live_idp: exercises a real Keycloak instance over the network; requires LOOM_IDP_ISSUER_URL, LOOM_IDP_ISSUER_ADMIN_USERNAME, LOOM_IDP_ISSUER_ADMIN_PASSWORD (self-skips otherwise).",
+    "live_db: exercises a real Postgres instance over the network; requires LOOM_DB_HOST (self-skips otherwise).",
 ]
 junit_family = "xunit2"
 log_cli = 1

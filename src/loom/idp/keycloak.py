@@ -152,6 +152,35 @@ class KeycloakAdminClient:
             client_secret=None,
         )
 
+    async def set_access_token_lifespan(self, client_ref: str, seconds: int) -> None:
+        """Override this client's access-token lifespan (Keycloak's
+        `access.token.lifespan` client attribute), independent of whatever
+        the realm's own default is -- deliberately a client-level override
+        rather than a realm-wide change, since a realm default is often
+        shared with other, unrelated clients. Safe to call on an
+        already-registered client (merges into its existing `attributes`
+        rather than replacing them), unlike `register_public_client`, which
+        no-ops on an existing client via its idempotent-on-409 create path."""
+        headers = {'Authorization': f'Bearer {self._token}'}
+        async with self._client() as http:
+            get_response = await http.get(
+                f'{self._realm_admin_base}/clients/{client_ref}',
+                headers=headers,
+                timeout=30.0,
+            )
+            get_response.raise_for_status()
+            client = get_response.json()
+            attributes = client.get('attributes') or {}
+            attributes['access.token.lifespan'] = str(seconds)
+            client['attributes'] = attributes
+            put_response = await http.put(
+                f'{self._realm_admin_base}/clients/{client_ref}',
+                json=client,
+                headers=headers,
+                timeout=30.0,
+            )
+            put_response.raise_for_status()
+
     async def add_audience_mapper(
         self, client_ref: str, *, target_client_id: str
     ) -> None:

@@ -17,10 +17,18 @@ from loom.cli.catalog import (
     capability_update,
     model_create,
     model_update,
+    principal_create,
+    principal_list,
+    principal_show,
+    principal_update,
     resource_list,
     resource_show,
     resource_transition,
     resource_versions,
+    tenant_create,
+    tenant_list,
+    tenant_show,
+    tenant_update,
 )
 from loom.config import RootConfig
 
@@ -56,6 +64,12 @@ class _FakeCatalogClient:
 
     async def post(self, path, payload):
         type(self).last_call = {'method': 'POST', 'path': path, 'payload': payload}
+        if type(self).error is not None:
+            raise type(self).error
+        return type(self).response
+
+    async def patch(self, path, payload):
+        type(self).last_call = {'method': 'PATCH', 'path': path, 'payload': payload}
         if type(self).error is not None:
             raise type(self).error
         return type(self).response
@@ -509,14 +523,21 @@ async def test_create_reports_api_error(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_create_reports_401_as_reauth_hint(tmp_path, capsys):
+async def test_create_reports_401_with_the_servers_detail(tmp_path, capsys):
+    """The 401 message must surface the server's actual reason -- it's the
+    only thing that distinguishes "your token expired" from "your account
+    isn't provisioned", and re-login only fixes the former."""
     config = _logged_in_config(tmp_path)
-    _FakeCatalogClient.error = CatalogApiError(401, 'Invalid token: expired')
+    _FakeCatalogClient.error = CatalogApiError(
+        401, 'No principal provisioned for this identity'
+    )
 
     result = await agent_create(config, _agent_args())
 
+    out = capsys.readouterr().out
     assert result == 1
-    assert 'loom auth login' in capsys.readouterr().out
+    assert 'No principal provisioned for this identity' in out
+    assert 'loom auth login' in out
 
 
 @pytest.mark.asyncio
@@ -526,6 +547,159 @@ async def test_resource_list_requires_login(tmp_path):
         RESOURCES['capability'],
         config,
         argparse.Namespace(lifecycle_state=None, slug=None, limit=50, offset=0),
+    )
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+
+
+# --- Tenant/Principal: CRUD ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tenant_create_posts_expected_payload(tmp_path):
+    config = _logged_in_config(tmp_path)
+    result = await tenant_create(config, argparse.Namespace(slug='acme', name='Acme'))
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'POST',
+        'path': '/api/v1/tenants',
+        'payload': {'slug': 'acme', 'name': 'Acme'},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tenant_list_gets_with_pagination(tmp_path):
+    config = _logged_in_config(tmp_path)
+    _FakeCatalogClient.response = {'items': [], 'total': 0, 'limit': 50, 'offset': 0}
+    result = await tenant_list(config, argparse.Namespace(limit=50, offset=0))
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'GET',
+        'path': '/api/v1/tenants',
+        'params': {'limit': 50, 'offset': 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tenant_show_gets_by_id(tmp_path):
+    config = _logged_in_config(tmp_path)
+    tenant_id = uuid.uuid4()
+    result = await tenant_show(config, argparse.Namespace(tenant_id=tenant_id))
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'GET',
+        'path': f'/api/v1/tenants/{tenant_id}',
+        'params': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tenant_update_patches_name_in_place(tmp_path):
+    """Unlike Capability/ModelEndpoint/Agent's `update`, Tenant isn't
+    versioned -- this must PATCH the same id, not POST a new version."""
+    config = _logged_in_config(tmp_path)
+    tenant_id = uuid.uuid4()
+    result = await tenant_update(
+        config, argparse.Namespace(tenant_id=tenant_id, name='Renamed')
+    )
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'PATCH',
+        'path': f'/api/v1/tenants/{tenant_id}',
+        'payload': {'name': 'Renamed'},
+    }
+
+
+@pytest.mark.asyncio
+async def test_principal_create_posts_expected_payload(tmp_path):
+    config = _logged_in_config(tmp_path)
+    tenant_id = uuid.uuid4()
+    result = await principal_create(
+        config,
+        argparse.Namespace(
+            tenant_id=tenant_id,
+            kind='user',
+            display_name='Mathieu Imfeld',
+            external_id='sub-123',
+        ),
+    )
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'POST',
+        'path': '/api/v1/principals',
+        'payload': {
+            'tenant_id': str(tenant_id),
+            'kind': 'user',
+            'display_name': 'Mathieu Imfeld',
+            'external_id': 'sub-123',
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_principal_list_requires_tenant_id_query_param(tmp_path):
+    config = _logged_in_config(tmp_path)
+    tenant_id = uuid.uuid4()
+    _FakeCatalogClient.response = {'items': [], 'total': 0, 'limit': 50, 'offset': 0}
+    result = await principal_list(
+        config, argparse.Namespace(tenant_id=tenant_id, limit=50, offset=0)
+    )
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'GET',
+        'path': '/api/v1/principals',
+        'params': {'tenant_id': str(tenant_id), 'limit': 50, 'offset': 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_principal_show_gets_by_id(tmp_path):
+    config = _logged_in_config(tmp_path)
+    principal_id = uuid.uuid4()
+    result = await principal_show(config, argparse.Namespace(principal_id=principal_id))
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'GET',
+        'path': f'/api/v1/principals/{principal_id}',
+        'params': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_principal_update_patches_display_name_in_place(tmp_path):
+    config = _logged_in_config(tmp_path)
+    principal_id = uuid.uuid4()
+    result = await principal_update(
+        config,
+        argparse.Namespace(principal_id=principal_id, display_name='New Name'),
+    )
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'PATCH',
+        'path': f'/api/v1/principals/{principal_id}',
+        'payload': {'display_name': 'New Name'},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tenant_create_requires_login(tmp_path):
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    result = await tenant_create(config, argparse.Namespace(slug='acme', name='Acme'))
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_principal_create_requires_login(tmp_path):
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    result = await principal_create(
+        config,
+        argparse.Namespace(
+            tenant_id=uuid.uuid4(),
+            kind='user',
+            display_name='x',
+            external_id='y',
+        ),
     )
     assert result == 1
     assert _FakeCatalogClient.last_call is None
@@ -571,3 +745,47 @@ def test_update_requires_an_entity_id_positional(parser):
     )
     assert args.slug == 'my-slug'
     assert isinstance(args.entity_id, uuid.UUID)
+
+
+@pytest.mark.parametrize('resource', ['tenant', 'principal'])
+def test_tenant_and_principal_have_crud_verbs_but_not_versioned_verbs(parser, resource):
+    """Tenant/Principal aren't VersionedEntity -- they get create/list/show/
+    update, but not versions/transition."""
+    sub = parser._subparsers._group_actions[0].choices[resource]
+    verb_names = set(sub._subparsers._group_actions[0].choices.keys())
+    assert {'create', 'list', 'show', 'update'} <= verb_names
+    assert not {'versions', 'transition'} & verb_names
+
+
+def test_tenant_update_takes_tenant_id_and_name_positionals(parser):
+    tenant_id = uuid.uuid4()
+    args = parser.parse_args(['tenant', 'update', str(tenant_id), 'Renamed'])
+    assert args.tenant_id == tenant_id
+    assert args.name == 'Renamed'
+
+
+def test_principal_create_requires_tenant_id_kind_display_name_external_id(parser):
+    tenant_id = uuid.uuid4()
+    args = parser.parse_args(
+        [
+            'principal',
+            'create',
+            '--tenant-id',
+            str(tenant_id),
+            '--kind',
+            'user',
+            '--display-name',
+            'Mathieu',
+            '--external-id',
+            'sub-123',
+        ]
+    )
+    assert args.tenant_id == tenant_id
+    assert args.kind == 'user'
+    assert args.display_name == 'Mathieu'
+    assert args.external_id == 'sub-123'
+
+
+def test_principal_list_requires_tenant_id_flag(parser):
+    with pytest.raises(SystemExit):
+        parser.parse_args(['principal', 'list'])

@@ -161,3 +161,78 @@ async def test_resource_versions_wire_contract(cli_catalog_client, rendered) -> 
     rows = rendered['table']['rows']
     assert [row['entity_id'] for row in rows] == [created['entity_id']]
     assert rows[0]['slug'] == 'wire-contract-versions'
+
+
+@pytest.mark.asyncio
+async def test_tenant_crud_wire_contract(cli_catalog_client, rendered) -> None:
+    """Tenant isn't a VersionedEntity -- `list` reads the same `Page`
+    envelope shape as the trio above, but `show`/`update` hit `{api_path}/
+    {id}` directly (no `/versions/...`), and `update` is a real PATCH."""
+    config = _cli_config()
+
+    exit_code = await catalog.tenant_create(
+        config,
+        argparse.Namespace(slug='wire-contract-tenant', name='Wire Contract Tenant'),
+    )
+    assert exit_code == 0
+    tenant_id = uuid.UUID(rendered['detail']['id'])
+
+    exit_code = await catalog.tenant_list(
+        config, argparse.Namespace(limit=50, offset=0)
+    )
+    assert exit_code == 0
+    assert str(tenant_id) in [row['id'] for row in rendered['table']['rows']]
+
+    exit_code = await catalog.tenant_show(
+        config, argparse.Namespace(tenant_id=tenant_id)
+    )
+    assert exit_code == 0
+    assert rendered['detail']['slug'] == 'wire-contract-tenant'
+
+    exit_code = await catalog.tenant_update(
+        config, argparse.Namespace(tenant_id=tenant_id, name='Renamed Tenant')
+    )
+    assert exit_code == 0
+    assert rendered['detail']['name'] == 'Renamed Tenant'
+
+
+@pytest.mark.asyncio
+async def test_principal_crud_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    """`principal list` sends `tenant_id` as a required query param (not
+    optional like `slug`/`lifecycle_state` on the versioned trio) --
+    confirms `list_principals`' `Query(...)` actually requires it end to
+    end, not just in the CLI's own argparse."""
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    exit_code = await catalog.principal_create(
+        config,
+        argparse.Namespace(
+            tenant_id=tenant_id,
+            kind='service_account',
+            display_name='Wire Contract Principal',
+            external_id='wire-contract-external-id',
+        ),
+    )
+    assert exit_code == 0
+    principal_id = uuid.UUID(rendered['detail']['id'])
+
+    exit_code = await catalog.principal_list(
+        config, argparse.Namespace(tenant_id=tenant_id, limit=50, offset=0)
+    )
+    assert exit_code == 0
+    assert str(principal_id) in [row['id'] for row in rendered['table']['rows']]
+
+    exit_code = await catalog.principal_show(
+        config, argparse.Namespace(principal_id=principal_id)
+    )
+    assert exit_code == 0
+    assert rendered['detail']['external_id'] == 'wire-contract-external-id'
+
+    exit_code = await catalog.principal_update(
+        config, argparse.Namespace(principal_id=principal_id, display_name='Renamed')
+    )
+    assert exit_code == 0
+    assert rendered['detail']['display_name'] == 'Renamed'

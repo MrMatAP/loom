@@ -15,6 +15,7 @@ class _FakeKeycloakAdminClient:
         self.audience_mapper: tuple[str, str] | None = None
         self.client_roles_mapper: tuple[str, str] | None = None
         self.tenant_id_mapper: str | None = None
+        self.access_token_lifespan: tuple[str, int] | None = None
 
     @classmethod
     async def login(cls, issuer, **kwargs):
@@ -43,6 +44,9 @@ class _FakeKeycloakAdminClient:
     async def add_tenant_id_mapper(self, client_ref):
         self.tenant_id_mapper = client_ref
 
+    async def set_access_token_lifespan(self, client_ref, seconds):
+        self.access_token_lifespan = (client_ref, seconds)
+
 
 def _base_args(**overrides):
     defaults = {
@@ -54,6 +58,7 @@ def _base_args(**overrides):
         'client_id': 'loom-catalog-docs',
         'client_name': None,
         'api_base_url': 'https://catalog.example.com',
+        'access_token_lifespan': None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -207,6 +212,85 @@ async def test_register_cli_client_wires_device_flow(monkeypatch, tmp_path):
 
     reloaded = RootConfig.load(config_path=config.config_path)
     assert reloaded.auth.cli_client_id == 'loom-cli'
+
+
+@pytest.mark.asyncio
+async def test_register_cli_client_leaves_lifespan_alone_by_default(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        async def set_access_token_lifespan(self, client_ref, seconds):
+            captured['lifespan'] = (client_ref, seconds)
+
+    monkeypatch.delenv('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN', raising=False)
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+
+    config = _configured_root_config(tmp_path)
+    await idp_register_cli_client(config, _base_args(client_id='loom-cli'))
+
+    assert 'lifespan' not in captured
+
+
+@pytest.mark.asyncio
+async def test_register_cli_client_applies_access_token_lifespan_flag(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        async def set_access_token_lifespan(self, client_ref, seconds):
+            captured['lifespan'] = (client_ref, seconds)
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+
+    config = _configured_root_config(tmp_path)
+    await idp_register_cli_client(
+        config, _base_args(client_id='loom-cli', access_token_lifespan=1800)
+    )
+
+    assert captured['lifespan'] == ('fake-public-internal-id', 1800)
+
+
+@pytest.mark.asyncio
+async def test_register_cli_client_applies_access_token_lifespan_env_var(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        async def set_access_token_lifespan(self, client_ref, seconds):
+            captured['lifespan'] = (client_ref, seconds)
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+    monkeypatch.setenv('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN', '1800')
+
+    config = _configured_root_config(tmp_path)
+    await idp_register_cli_client(config, _base_args(client_id='loom-cli'))
+
+    assert captured['lifespan'] == ('fake-public-internal-id', 1800)
+
+
+@pytest.mark.asyncio
+async def test_register_cli_client_flag_takes_precedence_over_env_var(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class _SpyKeycloakAdminClient(_FakeKeycloakAdminClient):
+        async def set_access_token_lifespan(self, client_ref, seconds):
+            captured['lifespan'] = (client_ref, seconds)
+
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
+    monkeypatch.setenv('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN', '1800')
+
+    config = _configured_root_config(tmp_path)
+    await idp_register_cli_client(
+        config, _base_args(client_id='loom-cli', access_token_lifespan=3600)
+    )
+
+    assert captured['lifespan'] == ('fake-public-internal-id', 3600)
 
 
 @pytest.mark.asyncio

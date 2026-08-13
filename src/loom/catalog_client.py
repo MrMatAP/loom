@@ -77,9 +77,7 @@ class CatalogClient:
             raise CatalogApiError(response.status_code, _error_detail(response))
         return response.json()
 
-    async def get(
-        self, path: str, params: dict[str, typing.Any] | None = None
-    ) -> dict:
+    async def get(self, path: str, params: dict[str, typing.Any] | None = None) -> dict:
         """GET `path`; returns the decoded JSON body on 2xx, raises
         `CatalogApiError` otherwise."""
         return await self._request('GET', path, params=params)
@@ -88,3 +86,10 @@ class CatalogClient:
         """POST `payload` to `path`; returns the decoded JSON body on 2xx,
         raises `CatalogApiError` otherwise."""
         return await self._request('POST', path, json=payload)
+
+    async def patch(self, path: str, payload: dict[str, typing.Any]) -> dict:
+        """PATCH `payload` to `path`; returns the decoded JSON body on 2xx,
+        raises `CatalogApiError` otherwise. Used by Tenant/Principal updates,
+        which mutate in place rather than creating a new version the way
+        Capability/ModelEndpoint/Agent's `update` does."""
+        return await self._request('PATCH', path, json=payload)

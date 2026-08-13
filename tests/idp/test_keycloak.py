@@ -559,6 +559,67 @@ async def test_add_tenant_id_mapper_is_idempotent_on_409():
 
 
 @pytest.mark.asyncio
+async def test_set_access_token_lifespan_merges_into_existing_attributes():
+    """Must GET-then-PUT rather than replace `attributes` wholesale, or it
+    would silently drop e.g. `oauth2.device.authorization.grant.enabled`
+    set at registration time."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        expected_path = '/admin/realms/loom/clients/cli-internal-id'
+        if path == expected_path and request.method == 'GET':
+            return httpx.Response(
+                200,
+                json={
+                    'id': 'cli-internal-id',
+                    'clientId': 'loom-cli',
+                    'attributes': {'oauth2.device.authorization.grant.enabled': 'true'},
+                },
+            )
+        if path == expected_path and request.method == 'PUT':
+            assert request.headers['Authorization'] == 'Bearer t'
+            body = json.loads(request.read())
+            assert body['attributes'] == {
+                'oauth2.device.authorization.grant.enabled': 'true',
+                'access.token.lifespan': '1800',
+            }
+            return httpx.Response(204)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.set_access_token_lifespan('cli-internal-id', 1800)
+
+
+@pytest.mark.asyncio
+async def test_set_access_token_lifespan_handles_no_prior_attributes():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        expected_path = '/admin/realms/loom/clients/cli-internal-id'
+        if path == expected_path and request.method == 'GET':
+            return httpx.Response(
+                200, json={'id': 'cli-internal-id', 'clientId': 'loom-cli'}
+            )
+        if path == expected_path and request.method == 'PUT':
+            body = json.loads(request.read())
+            assert body['attributes'] == {'access.token.lifespan': '300'}
+            return httpx.Response(204)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.set_access_token_lifespan('cli-internal-id', 300)
+
+
+@pytest.mark.asyncio
 async def test_declare_client_roles_still_raises_on_server_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={'errorMessage': 'boom'})

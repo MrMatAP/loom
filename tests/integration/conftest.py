@@ -1,11 +1,18 @@
+import importlib.resources
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 
 import httpx
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import Engine
 
+from loom.config.database_config import DatabaseConfig
 from loom.idp.keycloak import KeycloakAdminClient
+from loom.model.engine import get_engine
 from loom.tls import build_ssl_context
 
 from .live import (
@@ -15,6 +22,7 @@ from .live import (
     IT_PREFIX,
     admin_headers,
 )
+from .live_db import DB_HOST_ENV_VAR
 
 
 @pytest.fixture(scope='session')
@@ -175,3 +183,68 @@ async def cli_client(
     await admin_client.add_tenant_id_mapper(result.internal_ref)
     yield client_id, result.internal_ref
     await _delete_client(admin_client, result.internal_ref)
+
+
+@pytest.fixture(scope='session')
+def live_db_config() -> DatabaseConfig:
+    """DatabaseConfig built from the same LOOM_DB_* names entrypoint.sh/
+    docs/admin-guide.md use -- deliberately not LOOM_IDP_ISSUER_*-shaped
+    names, since this suite talks to Postgres, not Keycloak."""
+    return DatabaseConfig(
+        host=os.environ[DB_HOST_ENV_VAR],
+        port=int(os.environ.get('LOOM_DB_PORT', '5432')),
+        database=os.environ.get('LOOM_DB_NAME', 'loom'),
+        username=os.environ.get('LOOM_DB_USERNAME', 'loom'),
+        password=os.environ.get('LOOM_DB_PASSWORD'),
+    )
+
+
+@pytest.fixture(scope='session')
+def live_db_engine(live_db_config: DatabaseConfig) -> Generator[Engine]:
+    """A real Postgres engine, migrated to `head` via the packaged Alembic
+    revisions -- the same path `loom db upgrade` runs in production, so this
+    exercises the actual schema (native UUID/enum types, constraints) rather
+    than the sqlite approximation the rest of the suite uses. Migrations are
+    additive schema, not a throwaway test object (same reasoning as
+    `tenant_id_user_attribute` above), so they're left applied rather than
+    downgraded afterward.
+
+    A bad LOOM_DB_PASSWORD reads as a clean skip, distinct from any other
+    failure mode -- same reasoning as `admin_client` above: a bad `.env`
+    should read as "fix your credentials", not a test bug."""
+    script_location = importlib.resources.files('loom') / 'migrations'
+    alembic_config = Config()
+    alembic_config.set_main_option('script_location', str(script_location))
+    alembic_config.set_main_option('sqlalchemy.url', live_db_config.dsn)
+    try:
+        command.upgrade(alembic_config, 'head')
+    except sa.exc.OperationalError as exc:
+        cause = exc.orig
+        if 'password authentication failed' in str(cause):
+            pytest.skip(
+                f'Postgres rejected the credentials for LOOM_DB_HOST='
+                f'{live_db_config.host!r}, user {live_db_config.username!r}: {cause}'
+            )
+        raise
+
+    engine = get_engine(live_db_config)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def live_db_session(live_db_engine: Engine) -> Generator[sa.orm.Session]:
+    """A transactional session for one test -- rolled back on exit so
+    nothing this suite writes (even outside the `IT_PREFIX` convention)
+    persists in the shared database."""
+    connection = live_db_engine.connect()
+    transaction = connection.begin()
+    session = sa.orm.Session(bind=connection)
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()

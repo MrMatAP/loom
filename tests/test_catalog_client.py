@@ -31,6 +31,48 @@ async def test_post_sends_bearer_token_and_returns_json_body():
 
 
 @pytest.mark.asyncio
+async def test_patch_sends_bearer_token_and_returns_json_body():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured['method'] = request.method
+        captured['url'] = str(request.url)
+        captured['authorization'] = request.headers['Authorization']
+        captured['body'] = json.loads(request.read())
+        return httpx.Response(200, json={'id': 'abc-123', 'name': 'Renamed'})
+
+    client = CatalogClient(
+        'https://api.example.com',
+        'access-tok',
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.patch('/api/v1/tenants/abc-123', {'name': 'Renamed'})
+
+    assert captured['method'] == 'PATCH'
+    assert captured['url'] == 'https://api.example.com/api/v1/tenants/abc-123'
+    assert captured['authorization'] == 'Bearer access-tok'
+    assert captured['body'] == {'name': 'Renamed'}
+    assert result == {'id': 'abc-123', 'name': 'Renamed'}
+
+
+@pytest.mark.asyncio
+async def test_patch_raises_catalog_api_error_on_4xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(404, json={'detail': 'not found'})
+
+    client = CatalogClient(
+        'https://api.example.com', 'access-tok', transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(CatalogApiError) as exc_info:
+        await client.patch('/api/v1/tenants/missing', {'name': 'x'})
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == 'not found'
+
+
+@pytest.mark.asyncio
 async def test_get_sends_bearer_token_and_query_params():
     captured = {}
 

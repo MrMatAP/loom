@@ -12,7 +12,13 @@ import rich.table
 
 from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
-from loom.model.enums import Layer, LifecycleState, MemoryScope, ModelProtocol
+from loom.model.enums import (
+    Layer,
+    LifecycleState,
+    MemoryScope,
+    ModelProtocol,
+    PrincipalKind,
+)
 
 console = rich.console.Console()
 
@@ -51,7 +57,14 @@ def _uuid_str(value: typing.Any) -> str | None:
 
 def _print_api_error(exc: CatalogApiError) -> int:
     if exc.status_code == 401:
-        console.print('[red]Not authorized.[/red] Run `loom auth login` again.')
+        console.print(f'[red]Not authorized:[/red] {exc.detail}')
+        console.print(
+            'If that mentions an expired/invalid token, run `loom auth '
+            'login` again. Otherwise (e.g. a missing `tenant_id` claim or no '
+            'Principal record for your account), logging in again will not '
+            'help -- it is a server-side provisioning issue for your admin '
+            'to fix.'
+        )
     else:
         console.print(f'[red]{exc.status_code}[/red] {exc.detail}')
     return 1
@@ -99,6 +112,22 @@ async def _post_and_show(config: RootConfig, path: str, payload: dict) -> int:
     client = CatalogClient(config.catalog.api_base_url, token)
     try:
         result = await client.post(path, payload)
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(result)
+    return 0
+
+
+async def _patch_and_show(config: RootConfig, path: str, payload: dict) -> int:
+    """Shared PATCH-and-render for Tenant/Principal `update` -- unlike
+    Capability/ModelEndpoint/Agent's `update`, which POSTs a new version,
+    Tenant/Principal aren't versioned entities and mutate in place."""
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
+    try:
+        result = await client.patch(path, payload)
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_detail(result)
@@ -320,6 +349,120 @@ async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show(config, path, payload)
 
 
+# --- Tenant/Principal: CRUD ---------------------------------------------
+#
+# Not VersionedEntity -- no lifecycle_state/version/transitions, so these
+# don't go through RESOURCES/_add_generic_verbs (built for the versioned
+# trio above). `update` is a PATCH in place, not a new version. Neither
+# resource has a delete endpoint (see the routers).
+#
+# Bootstrapping the very first Tenant/Principal in a fresh deployment can't
+# go through these -- create_tenant/create_principal both require an
+# already-authorized, already-provisioned caller, which doesn't exist yet.
+# See `loom db seed-principal` for that case.
+
+_TENANT_API_PATH = '/api/v1/tenants'
+_TENANT_LIST_COLUMNS = ('id', 'slug', 'name')
+_PRINCIPAL_API_PATH = '/api/v1/principals'
+_PRINCIPAL_LIST_COLUMNS = ('id', 'tenant_id', 'kind', 'display_name', 'external_id')
+
+
+async def tenant_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a Tenant via the Catalog API."""
+    payload = {'slug': args.slug, 'name': args.name}
+    return await _post_and_show(config, _TENANT_API_PATH, payload)
+
+
+async def tenant_list(config: RootConfig, args: argparse.Namespace) -> int:
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
+    params = {'limit': args.limit, 'offset': args.offset}
+    try:
+        page = await client.get(_TENANT_API_PATH, params=params)
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_TENANT_LIST_COLUMNS, page['items'])
+    console.print(
+        f'[dim]{len(page["items"])} of {page["total"]} shown '
+        f'(limit={page["limit"]}, offset={page["offset"]})[/dim]'
+    )
+    return 0
+
+
+async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
+    try:
+        item = await client.get(f'{_TENANT_API_PATH}/{args.tenant_id}')
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(item)
+    return 0
+
+
+async def tenant_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Update a Tenant's name via the Catalog API."""
+    path = f'{_TENANT_API_PATH}/{args.tenant_id}'
+    return await _patch_and_show(config, path, {'name': args.name})
+
+
+async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a Principal via the Catalog API. Requires an existing Tenant
+    (see `loom tenant create`/`loom tenant list`)."""
+    payload = {
+        'tenant_id': str(args.tenant_id),
+        'kind': args.kind,
+        'display_name': args.display_name,
+        'external_id': args.external_id,
+    }
+    return await _post_and_show(config, _PRINCIPAL_API_PATH, payload)
+
+
+async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
+    params = {
+        'tenant_id': str(args.tenant_id),
+        'limit': args.limit,
+        'offset': args.offset,
+    }
+    try:
+        page = await client.get(_PRINCIPAL_API_PATH, params=params)
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_PRINCIPAL_LIST_COLUMNS, page['items'])
+    console.print(
+        f'[dim]{len(page["items"])} of {page["total"]} shown '
+        f'(limit={page["limit"]}, offset={page["offset"]})[/dim]'
+    )
+    return 0
+
+
+async def principal_show(config: RootConfig, args: argparse.Namespace) -> int:
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
+    try:
+        item = await client.get(f'{_PRINCIPAL_API_PATH}/{args.principal_id}')
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(item)
+    return 0
+
+
+async def principal_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Update a Principal's display name via the Catalog API."""
+    path = f'{_PRINCIPAL_API_PATH}/{args.principal_id}'
+    return await _patch_and_show(config, path, {'display_name': args.display_name})
+
+
 # --- argparse wiring ---------------------------------------------------
 
 
@@ -521,11 +664,89 @@ def _add_agent_parsers(subparsers: argparse._SubParsersAction) -> None:
     _add_generic_verbs(sub, RESOURCES['agent'])
 
 
+def _add_tenant_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('tenant', help='Tenant commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a Tenant')
+    create_parser.add_argument('slug', help='URL-safe unique slug')
+    create_parser.add_argument('name', help='Human-readable name')
+    create_parser.set_defaults(func=tenant_create)
+
+    list_parser = sub.add_parser('list', help='List Tenants')
+    list_parser.add_argument(
+        '--limit', type=int, default=50, help='Max results, defaults to 50'
+    )
+    list_parser.add_argument(
+        '--offset', type=int, default=0, help='Pagination offset, defaults to 0'
+    )
+    list_parser.set_defaults(func=tenant_list)
+
+    show_parser = sub.add_parser('show', help='Show a Tenant')
+    show_parser.add_argument('tenant_id', type=uuid.UUID)
+    show_parser.set_defaults(func=tenant_show)
+
+    update_parser = sub.add_parser('update', help="Update a Tenant's name")
+    update_parser.add_argument('tenant_id', type=uuid.UUID)
+    update_parser.add_argument('name', help='New name')
+    update_parser.set_defaults(func=tenant_update)
+
+
+def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('principal', help='Principal commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a Principal')
+    create_parser.add_argument(
+        '--tenant-id', dest='tenant_id', type=uuid.UUID, required=True
+    )
+    create_parser.add_argument(
+        '--kind',
+        required=True,
+        choices=[k.value for k in PrincipalKind],
+        help='What this Principal represents',
+    )
+    create_parser.add_argument(
+        '--display-name', dest='display_name', required=True, help='Human-readable name'
+    )
+    create_parser.add_argument(
+        '--external-id',
+        dest='external_id',
+        required=True,
+        help="The IDP token's `sub` claim this Principal resolves to",
+    )
+    create_parser.set_defaults(func=principal_create)
+
+    list_parser = sub.add_parser('list', help='List Principals in a Tenant')
+    list_parser.add_argument(
+        '--tenant-id', dest='tenant_id', type=uuid.UUID, required=True
+    )
+    list_parser.add_argument(
+        '--limit', type=int, default=50, help='Max results, defaults to 50'
+    )
+    list_parser.add_argument(
+        '--offset', type=int, default=0, help='Pagination offset, defaults to 0'
+    )
+    list_parser.set_defaults(func=principal_list)
+
+    show_parser = sub.add_parser('show', help='Show a Principal')
+    show_parser.add_argument('principal_id', type=uuid.UUID)
+    show_parser.set_defaults(func=principal_show)
+
+    update_parser = sub.add_parser('update', help="Update a Principal's display name")
+    update_parser.add_argument('principal_id', type=uuid.UUID)
+    update_parser.add_argument('display_name', help='New display name')
+    update_parser.set_defaults(func=principal_update)
+
+
 def add_catalog_parsers(subparsers: argparse._SubParsersAction) -> None:
     """Register `loom capability|model|agent {create,update,list,show,
-    versions,transition}` -- called once from `cli/main.py` so resource
-    knowledge (payload shape, list columns, API path) stays here rather
-    than growing `main.py`'s own argparse setup by 3 resources x 6 verbs."""
+    versions,transition}` and `loom tenant|principal {create,list,show,
+    update}` -- called once from `cli/main.py` so resource knowledge
+    (payload shape, list columns, API path) stays here rather than growing
+    `main.py`'s own argparse setup."""
     _add_capability_parsers(subparsers)
     _add_model_parsers(subparsers)
     _add_agent_parsers(subparsers)
+    _add_tenant_parsers(subparsers)
+    _add_principal_parsers(subparsers)

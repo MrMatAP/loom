@@ -27,6 +27,19 @@ def _resolve_admin_password(args: argparse.Namespace) -> str:
     return getpass.getpass('Keycloak admin password: ')
 
 
+def _resolve_access_token_lifespan(args: argparse.Namespace) -> int | None:
+    """Resolve the CLI session's access-token lifespan override from flag or
+    env var; None (Keycloak's realm default applies, unmodified) if neither
+    is set. Keycloak realm defaults are commonly a few minutes -- short
+    enough that `loom auth login` sessions can feel like they expire almost
+    immediately, since `catalog.py`'s own auto-refresh isn't implemented
+    yet (see README's CLI session notes)."""
+    if args.access_token_lifespan is not None:
+        return args.access_token_lifespan
+    env_value = os.environ.get('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN')
+    return int(env_value) if env_value else None
+
+
 async def _login_as_admin(
     issuer_url: str, args: argparse.Namespace
 ) -> KeycloakAdminClient:
@@ -163,6 +176,13 @@ async def idp_register_cli_client(config: RootConfig, args: argparse.Namespace) 
         f'Registered CLI device-flow client: {result.client_id} '
         f'(internal ref: {result.internal_ref})'
     )
+
+    lifespan = _resolve_access_token_lifespan(args)
+    if lifespan is not None:
+        await client.set_access_token_lifespan(result.internal_ref, lifespan)
+        print(
+            f'Set access-token lifespan to {lifespan}s (overrides the realm default).'
+        )
 
     config.auth.cli_client_id = result.client_id
     config.save()

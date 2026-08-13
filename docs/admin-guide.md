@@ -257,3 +257,26 @@ most common reason that login redirect fails.
 - **HPA shows `<unknown>` for CPU** -- metrics-server isn't installed, or
   the container has no `resources.requests.cpu` set (both Deployments here
   do, by default).
+- **One user gets `401 Not authorized` from every request, even right
+  after `loom auth login` succeeds** -- this is *not* a missing scope (a
+  missing scope is a `403`, not a `401`; see `require_scopes` in
+  `src/loom/api/catalog/dependencies.py`). A `401` here means
+  `resolve_principal` couldn't resolve the token's identity at all, for
+  one of three reasons, in the order it checks them -- the CLI's error
+  message names which one:
+  1. **No `tenant_id` claim on the token.** `loom idp register-*` only
+     wires the *client-side* mapper that would surface it
+     (`add_tenant_id_mapper` in `src/loom/idp/keycloak.py`); each user
+     still needs a `tenant_id` attribute set on their own IDP account --
+     separate, per-user admin work, easy to miss since assigning scopes/
+     roles to a user doesn't do this.
+  2. **The `tenant_id` claim isn't a valid UUID.**
+  3. **No matching `Principal` row exists yet** for that `(tenant_id,
+     sub)` pair in the Catalog's own database. `POST /api/v1/principals`
+     (what `loom principal create` calls) requires an already-provisioned,
+     already-scoped `Principal` to call it, so it can't bootstrap itself --
+     use `loom db seed-principal` instead, which writes directly to the
+     database (see README's "Managing Tenants and Principals from the
+     CLI") to create the first one.
+  Re-running `loom auth login` does not fix any of these three --  the
+  token it gets back will look identical.

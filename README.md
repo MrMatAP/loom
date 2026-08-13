@@ -119,6 +119,23 @@ access/refresh tokens in the local config (file permissions hardened to
 `0600`, tokens masked whenever the config is printed). Check status with
 `loom auth status`, and clear the session with `loom auth logout`.
 
+**Session length**: how long that login lasts before every `loom`
+subcommand demands a fresh one is Keycloak's realm/client "Access Token
+Lifespan" (commonly a few minutes by default) — `loom` doesn't shorten it,
+but it doesn't lengthen it either: the cached `refresh_token` is stored but
+not yet used to silently renew an expired session, so a lapsed session
+currently means a full `loom auth login` again, not a quiet refresh. If the
+realm default feels too short, override it for just this client at
+registration time (or re-run against an already-registered one to change
+it later):
+
+    loom idp register-cli-client --issuer-url https://idp.example/realms/loom \
+      --client-id loom-cli --access-token-lifespan 1800
+
+(seconds; also settable via `LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN`, flag
+takes precedence). This changes only `loom-cli`'s own token lifespan, not
+the realm default other clients rely on.
+
 ### Managing Catalog entities from the CLI
 
 Once logged in (see above), `loom capability`, `loom model`, and
@@ -166,6 +183,54 @@ flags (`--target-metrics`, `--llm-config`, `--permission-boundary`) default
 to an empty array/object. Every command prints its result as a table on
 success; scripting a chain (e.g. an Agent's `--model-binding-id`) means
 reading the `entity_id` column back out of a prior command's output.
+
+### Managing Tenants and Principals from the CLI
+
+`loom tenant`/`loom principal` work the same way, against the same API,
+but aren't `VersionedEntity` -- no `lifecycle_state`/version history, so
+there's `create`/`list`/`show`/`update` and no `versions`/`transition`,
+and `update` is a real in-place `PATCH` rather than a new version:
+
+    loom tenant create <slug> <name>
+    loom tenant list [--limit N] [--offset N]
+    loom tenant show <tenant_id>
+    loom tenant update <tenant_id> <name>
+
+    loom principal create --tenant-id <id> --kind {user,agent,service_account} \
+      --display-name <name> --external-id <sub>
+    loom principal list --tenant-id <id> [--limit N] [--offset N]
+    loom principal show <principal_id>
+    loom principal update <principal_id> <display_name>
+
+`--external-id` is the identity a token has to carry (its `sub` claim) for
+`resolve_principal` to match it up at request time -- see
+`src/loom/api/catalog/dependencies.py`. Neither resource has a `delete`
+endpoint.
+
+**Bootstrapping the first one.** `loom principal create` calls `POST
+/principals`, which itself requires an already-authorized, already-
+provisioned caller -- on a fresh deployment nobody is one yet, so this
+command can't create its own prerequisite. `loom db seed-principal` is the
+escape hatch: it writes the Tenant/Principal rows directly to the database
+via `config.database` (the same direct-DB-access story as `loom db
+upgrade`), no bearer token involved, entirely bypassing the API/Policy
+Engine:
+
+    loom db seed-principal --tenant-slug acme --tenant-name "Acme Corp" \
+      --kind user --display-name "Mathieu Imfeld" --external-id <sub from the IDP token>
+
+Safe to re-run: it reuses an existing Tenant by `--tenant-slug` (only
+needs `--tenant-name` the first time), and reports rather than erroring if
+a Principal for that `(tenant, external_id)` pair already exists. It also
+writes one `AuditEvent` for the bootstrap itself (`actor_principal_id`
+pointing at the Principal it just created, since there's no other actor to
+attribute it to), so the bypass isn't silent -- but every *subsequent*
+Principal should go through `loom principal create` instead, so it's
+actually policy-checked and audit-logged the normal way. This only creates
+the database row -- the matching IDP account still separately needs a
+`tenant_id` attribute set to this Tenant's id (see `docs/admin-guide.md`'s
+Troubleshooting section), or its tokens still won't carry the claim this
+Principal is resolved by.
 
 ### TLS trust for the IDP connection
 
@@ -237,6 +302,28 @@ for `loom-it-claims-probe`, since it's the one object in this suite with
 `directAccessGrantsEnabled` on. If the admin credentials are rejected,
 the whole suite skips with the exact Keycloak error rather than failing —
 that's a credentials problem to fix in your environment, not a test bug.
+
+### Live Postgres integration tests
+
+A second, independent live suite exercises a real Postgres instance
+instead of the in-memory sqlite the rest of `pytest` uses — migrated via
+the packaged Alembic revisions (`loom db upgrade`'s own code path), so it
+catches things sqlite's looser typing can hide (native UUID/enum columns,
+constraints). Also self-skips without live credentials:
+
+    export LOOM_DB_HOST=localhost
+    # LOOM_DB_PORT/LOOM_DB_NAME/LOOM_DB_USERNAME/LOOM_DB_PASSWORD default
+    # the same way they do for `loom db upgrade` itself -- see
+    # docs/admin-guide.md's configuration table.
+
+    pytest tests/integration/ -m live_db
+
+Point it at a disposable database, not production: migrations are applied
+and left in place (additive schema, same reasoning as the IDP suite's
+`tenant_id` User Profile attribute), and each test runs inside a
+transaction rolled back on exit so no row it writes persists — but neither
+of those makes it something to run against a database anything else
+depends on.
 
 ### Assigning an Agent to an LLM model
 

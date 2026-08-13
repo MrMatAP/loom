@@ -11,7 +11,12 @@ someone already has and can tell you its URL.
 You need two things from your admin: the Catalog's URL, and to be
 registered with its IDP (assigned one of `catalog-viewer`/
 `catalog-editor`/`catalog-approver`/`catalog-admin`/
-`catalog-platform-admin`, or an equivalent set of scopes).
+`catalog-platform-admin`, or an equivalent set of scopes). Scopes alone
+aren't the whole story -- your admin also needs to have given your IDP
+account a `tenant_id` attribute and provisioned a matching `Principal`
+record for you in the Catalog itself, or every request will `401` no
+matter how many scopes your token carries (see
+[docs/admin-guide.md](admin-guide.md)'s Troubleshooting section).
 
 Point the CLI at the API:
 
@@ -88,8 +93,12 @@ section.
 ## Getting help
 
 `loom <resource> <verb> --help` documents every flag for that command.
-If a command fails with a `401`, your session likely expired --
-`loom auth login` again. If it fails with anything else, the error
+If a command fails with a `401`, read the reason the CLI prints along
+with it: if it names an expired/invalid token, `loom auth login` again;
+if it instead points at your account not being fully provisioned (no
+`tenant_id`, no `Principal` record), logging in again won't help --
+that's an admin-side fix, see [docs/admin-guide.md](admin-guide.md)'s
+Troubleshooting section. If a command fails with anything else, the error
 message is the API's own rejection reason (a validation error, an illegal
 lifecycle transition, a missing scope) -- for deployment-level issues
 (the API unreachable at all, `500`s on every request), see

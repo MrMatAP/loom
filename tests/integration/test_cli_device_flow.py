@@ -79,3 +79,28 @@ async def test_device_flow_start_and_first_poll_against_live_keycloak(
     single_attempt = replace(authorization, expires_in=authorization.interval)
     with pytest.raises(DeviceCodeError, match='timed out'):
         await device_client.poll(single_attempt)
+
+
+@pytest.mark.asyncio
+async def test_set_access_token_lifespan_overrides_client_attribute(
+    admin_client, cli_client
+):
+    """`loom idp register-cli-client --access-token-lifespan` end to end
+    against real Keycloak -- confirms the merge-not-replace GET/PUT doesn't
+    drop `oauth2.device.authorization.grant.enabled` (set at registration,
+    asserted above) while applying the override."""
+    _, internal_ref = cli_client
+
+    await admin_client.set_access_token_lifespan(internal_ref, 1800)
+
+    async with httpx.AsyncClient(verify=build_ssl_context()) as http:
+        response = await http.get(
+            f'{admin_client._realm_admin_base}/clients/{internal_ref}',
+            headers={'Authorization': f'Bearer {admin_client._token}'},
+            timeout=30.0,
+        )
+    response.raise_for_status()
+    attributes = response.json()['attributes']
+
+    assert attributes['access.token.lifespan'] == '1800'
+    assert attributes['oauth2.device.authorization.grant.enabled'] == 'true'
