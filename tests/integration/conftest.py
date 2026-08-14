@@ -64,44 +64,6 @@ async def admin_client(live_issuer: str) -> AsyncGenerator[KeycloakAdminClient]:
     yield client
 
 
-@pytest_asyncio.fixture(scope='session')
-async def tenant_id_user_attribute(admin_client: KeycloakAdminClient) -> None:
-    """Ensure the realm's declarative User Profile recognizes `tenant_id`
-    as a user attribute.
-
-    Keycloak's declarative User Profile silently drops any attribute not
-    declared in its schema on user create/update -- `attributes` in the
-    request body is accepted, but the server just omits it from the
-    stored user rather than erroring, so `add_tenant_id_mapper`'s claim
-    ends up empty with no signal pointing back at the cause. This is
-    additive realm schema, not a throwaway test object (unlike everything
-    else this suite tears down under `IT_PREFIX`), so it's left in place
-    rather than reverted -- idempotent to re-run, and safe for the realm
-    going forward."""
-    async with httpx.AsyncClient(verify=build_ssl_context()) as http:
-        headers = admin_headers(admin_client)
-        profile_url = f'{admin_client._realm_admin_base}/users/profile'
-        response = await http.get(profile_url, headers=headers, timeout=30.0)
-        response.raise_for_status()
-        profile = response.json()
-
-        if any(attr['name'] == 'tenant_id' for attr in profile['attributes']):
-            return
-
-        profile['attributes'].append(
-            {
-                'name': 'tenant_id',
-                'displayName': 'Tenant ID',
-                'permissions': {'view': ['admin', 'user'], 'edit': ['admin', 'user']},
-                'multivalued': False,
-            }
-        )
-        update_response = await http.put(
-            profile_url, json=profile, headers=headers, timeout=30.0
-        )
-        update_response.raise_for_status()
-
-
 async def _delete_client(admin_client: KeycloakAdminClient, internal_ref: str) -> None:
     """Best-effort teardown: a client this suite created is gone either
     way, so a delete failure shouldn't fail the test that already ran."""
@@ -117,9 +79,11 @@ async def _delete_client(admin_client: KeycloakAdminClient, internal_ref: str) -
 async def resource_server_client(
     admin_client: KeycloakAdminClient,
 ) -> AsyncGenerator[tuple[str, str]]:
-    """The confidential resource-server client, mirroring `loom idp
-    register-client`: audience/roles mappers on the public clients below
-    point back at this one."""
+    """The confidential RESTful API resource-server client, mirroring
+    `loom idp register`'s API step: audience/roles mappers on the public
+    clients below point back at this one -- the sole source of the
+    declared role vocabulary (see `mcp_resource_server_client` below for
+    why the MCP resource server doesn't get its own)."""
     from loom.idp.client import catalog_role_definitions
 
     client_id = f'{IT_PREFIX}-resource-server'
@@ -136,16 +100,38 @@ async def resource_server_client(
 
 
 @pytest_asyncio.fixture(scope='session')
-async def docs_client(
-    admin_client: KeycloakAdminClient, resource_server_client: tuple[str, str]
+async def mcp_resource_server_client(
+    admin_client: KeycloakAdminClient,
 ) -> AsyncGenerator[tuple[str, str]]:
-    """The public Swagger UI client, mirroring `loom idp
-    register-docs-client`: PKCE-only Authorization Code flow."""
+    """The confidential MCP server resource-server client, mirroring `loom
+    idp register`'s MCP step: a second value public-client tokens carry in
+    `aud`, deliberately with no role declarations of its own (see
+    `resource_server_client` above -- the vocabulary stays declared once)."""
+    client_id = f'{IT_PREFIX}-mcp-resource-server'
+    result = await admin_client.register_client(
+        client_id=client_id,
+        client_name='Loom Integration Test MCP Resource Server',
+        service_account=True,
+    )
+    yield client_id, result.internal_ref
+    await _delete_client(admin_client, result.internal_ref)
+
+
+@pytest_asyncio.fixture(scope='session')
+async def swagger_client(
+    admin_client: KeycloakAdminClient,
+    resource_server_client: tuple[str, str],
+    mcp_resource_server_client: tuple[str, str],
+) -> AsyncGenerator[tuple[str, str]]:
+    """The public Swagger UI client, mirroring `loom idp register`'s
+    Swagger UI step: PKCE-only Authorization Code flow, with an audience
+    mapper for each resource server so its tokens satisfy both."""
     resource_server_id, _ = resource_server_client
-    client_id = f'{IT_PREFIX}-docs'
+    mcp_resource_server_id, _ = mcp_resource_server_client
+    client_id = f'{IT_PREFIX}-swagger'
     result = await admin_client.register_public_client(
         client_id=client_id,
-        client_name='Loom Integration Test Docs Client',
+        client_name='Loom Integration Test Swagger UI Client',
         standard_flow=True,
         redirect_uris=('https://loom-it.invalid/docs/oauth2-redirect',),
         web_origins=('https://loom-it.invalid',),
@@ -153,21 +139,27 @@ async def docs_client(
     await admin_client.add_audience_mapper(
         result.internal_ref, target_client_id=resource_server_id
     )
+    await admin_client.add_audience_mapper(
+        result.internal_ref, target_client_id=mcp_resource_server_id
+    )
     await admin_client.add_client_roles_mapper(
         result.internal_ref, source_client_id=resource_server_id
     )
-    await admin_client.add_tenant_id_mapper(result.internal_ref)
     yield client_id, result.internal_ref
     await _delete_client(admin_client, result.internal_ref)
 
 
 @pytest_asyncio.fixture(scope='session')
 async def cli_client(
-    admin_client: KeycloakAdminClient, resource_server_client: tuple[str, str]
+    admin_client: KeycloakAdminClient,
+    resource_server_client: tuple[str, str],
+    mcp_resource_server_client: tuple[str, str],
 ) -> AsyncGenerator[tuple[str, str]]:
-    """The public `loom auth login` client, mirroring `loom idp
-    register-cli-client`: device-authorization-grant only."""
+    """The public `loom auth login` client, mirroring `loom idp register`'s
+    CLI step: device-authorization-grant only, with an audience mapper for
+    each resource server so its tokens satisfy both."""
     resource_server_id, _ = resource_server_client
+    mcp_resource_server_id, _ = mcp_resource_server_client
     client_id = f'{IT_PREFIX}-cli'
     result = await admin_client.register_public_client(
         client_id=client_id,
@@ -177,10 +169,12 @@ async def cli_client(
     await admin_client.add_audience_mapper(
         result.internal_ref, target_client_id=resource_server_id
     )
+    await admin_client.add_audience_mapper(
+        result.internal_ref, target_client_id=mcp_resource_server_id
+    )
     await admin_client.add_client_roles_mapper(
         result.internal_ref, source_client_id=resource_server_id
     )
-    await admin_client.add_tenant_id_mapper(result.internal_ref)
     yield client_id, result.internal_ref
     await _delete_client(admin_client, result.internal_ref)
 
@@ -205,9 +199,8 @@ def live_db_engine(live_db_config: DatabaseConfig) -> Generator[Engine]:
     revisions -- the same path `loom db upgrade` runs in production, so this
     exercises the actual schema (native UUID/enum types, constraints) rather
     than the sqlite approximation the rest of the suite uses. Migrations are
-    additive schema, not a throwaway test object (same reasoning as
-    `tenant_id_user_attribute` above), so they're left applied rather than
-    downgraded afterward.
+    additive schema, not a throwaway test object, so they're left applied
+    rather than downgraded afterward.
 
     A bad LOOM_DB_PASSWORD reads as a clean skip, distinct from any other
     failure mode -- same reasoning as `admin_client` above: a bad `.env`

@@ -60,10 +60,9 @@ def _print_api_error(exc: CatalogApiError) -> int:
         console.print(f'[red]Not authorized:[/red] {exc.detail}')
         console.print(
             'If that mentions an expired/invalid token, run `loom auth '
-            'login` again. Otherwise (e.g. a missing `tenant_id` claim or no '
-            'Principal record for your account), logging in again will not '
-            'help -- it is a server-side provisioning issue for your admin '
-            'to fix.'
+            'login` again. Otherwise (e.g. no Principal record for your '
+            'account), logging in again will not help -- it is a '
+            'server-side provisioning issue for your admin to fix.'
         )
     else:
         console.print(f'[red]{exc.status_code}[/red] {exc.detail}')
@@ -109,7 +108,9 @@ async def _post_and_show(config: RootConfig, path: str, payload: dict) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     try:
         result = await client.post(path, payload)
     except CatalogApiError as exc:
@@ -125,7 +126,9 @@ async def _patch_and_show(config: RootConfig, path: str, payload: dict) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     try:
         result = await client.patch(path, payload)
     except CatalogApiError as exc:
@@ -182,7 +185,9 @@ async def resource_list(
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     params = {
         'lifecycle_state': args.lifecycle_state,
         'slug': args.slug,
@@ -207,7 +212,9 @@ async def resource_show(
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     path = f'{spec.api_path}/{args.entity_id}'
     if args.version is not None:
         path = f'{path}/versions/{args.version}'
@@ -225,7 +232,9 @@ async def resource_versions(
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     try:
         items = await client.get(f'{spec.api_path}/{args.entity_id}/versions')
     except CatalogApiError as exc:
@@ -353,18 +362,26 @@ async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
 #
 # Not VersionedEntity -- no lifecycle_state/version/transitions, so these
 # don't go through RESOURCES/_add_generic_verbs (built for the versioned
-# trio above). `update` is a PATCH in place, not a new version. Neither
-# resource has a delete endpoint (see the routers).
+# trio above). Tenant's `update` is a PATCH in place, not a new version.
+# Principal has no `update` at all -- its only mutable field used to be
+# display_name, which no longer exists (a Principal's human-readable name
+# lives in the IDP's `name` claim, not stored here; see
+# `src/loom/model/tenant.py`'s `Principal` docstring). Neither resource
+# has a delete endpoint (see the routers).
 #
-# Bootstrapping the very first Tenant/Principal in a fresh deployment can't
-# go through these -- create_tenant/create_principal both require an
-# already-authorized, already-provisioned caller, which doesn't exist yet.
-# See `loom db seed-principal` for that case.
+# Bootstrapping the very first Tenant/Principal in a fresh deployment does
+# go through these: POST /tenants and POST /principals only require the
+# caller's token to carry `catalog:tenant:write`/`catalog:principal:write`
+# (granted by the `catalog-platform-admin` role -- see `loom idp register`
+# and docs/admin-guide.md's "Platform administrator" section), not an
+# already-provisioned Principal. The platform administrator's own account
+# never needs a Principal row for this; one is only needed once they (or
+# anyone else) want to act as a Principal within a specific Tenant.
 
 _TENANT_API_PATH = '/api/v1/tenants'
 _TENANT_LIST_COLUMNS = ('id', 'slug', 'name')
 _PRINCIPAL_API_PATH = '/api/v1/principals'
-_PRINCIPAL_LIST_COLUMNS = ('id', 'tenant_id', 'kind', 'display_name', 'external_id')
+_PRINCIPAL_LIST_COLUMNS = ('id', 'tenant_id', 'kind', 'external_id')
 
 
 async def tenant_create(config: RootConfig, args: argparse.Namespace) -> int:
@@ -377,7 +394,9 @@ async def tenant_list(config: RootConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     params = {'limit': args.limit, 'offset': args.offset}
     try:
         page = await client.get(_TENANT_API_PATH, params=params)
@@ -395,7 +414,9 @@ async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     try:
         item = await client.get(f'{_TENANT_API_PATH}/{args.tenant_id}')
     except CatalogApiError as exc:
@@ -412,23 +433,29 @@ async def tenant_update(config: RootConfig, args: argparse.Namespace) -> int:
 
 async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a Principal via the Catalog API. Requires an existing Tenant
-    (see `loom tenant create`/`loom tenant list`)."""
+    (see `loom tenant create`/`loom tenant list`) and its id -- tokens
+    carry no `tenant_id` claim to default from (a caller's Tenant is
+    resolved from their own Principal row, not a token claim; see
+    docs/admin-guide.md's "Platform administrator" section), so
+    --tenant-id is always required."""
     payload = {
         'tenant_id': str(args.tenant_id),
         'kind': args.kind,
-        'display_name': args.display_name,
         'external_id': args.external_id,
     }
     return await _post_and_show(config, _PRINCIPAL_API_PATH, payload)
 
 
 async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
+    tenant_id = args.tenant_id
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     params = {
-        'tenant_id': str(args.tenant_id),
+        'tenant_id': str(tenant_id),
         'limit': args.limit,
         'offset': args.offset,
     }
@@ -448,19 +475,15 @@ async def principal_show(config: RootConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(config.catalog.api_base_url, token)
+    client = CatalogClient(
+        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
+    )
     try:
         item = await client.get(f'{_PRINCIPAL_API_PATH}/{args.principal_id}')
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_detail(item)
     return 0
-
-
-async def principal_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Update a Principal's display name via the Catalog API."""
-    path = f'{_PRINCIPAL_API_PATH}/{args.principal_id}'
-    return await _patch_and_show(config, path, {'display_name': args.display_name})
 
 
 # --- argparse wiring ---------------------------------------------------
@@ -698,16 +721,21 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
 
     create_parser = sub.add_parser('create', help='Create a Principal')
     create_parser.add_argument(
-        '--tenant-id', dest='tenant_id', type=uuid.UUID, required=True
+        '--tenant-id',
+        dest='tenant_id',
+        type=uuid.UUID,
+        required=True,
+        help=(
+            'The Tenant to provision this Principal in -- no session '
+            "claim to default from, since a caller's Tenant is resolved "
+            'from their own Principal row, not a token claim'
+        ),
     )
     create_parser.add_argument(
         '--kind',
         required=True,
         choices=[k.value for k in PrincipalKind],
         help='What this Principal represents',
-    )
-    create_parser.add_argument(
-        '--display-name', dest='display_name', required=True, help='Human-readable name'
     )
     create_parser.add_argument(
         '--external-id',
@@ -719,7 +747,11 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
 
     list_parser = sub.add_parser('list', help='List Principals in a Tenant')
     list_parser.add_argument(
-        '--tenant-id', dest='tenant_id', type=uuid.UUID, required=True
+        '--tenant-id',
+        dest='tenant_id',
+        type=uuid.UUID,
+        required=True,
+        help='The Tenant to list Principals in',
     )
     list_parser.add_argument(
         '--limit', type=int, default=50, help='Max results, defaults to 50'
@@ -733,18 +765,14 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
     show_parser.add_argument('principal_id', type=uuid.UUID)
     show_parser.set_defaults(func=principal_show)
 
-    update_parser = sub.add_parser('update', help="Update a Principal's display name")
-    update_parser.add_argument('principal_id', type=uuid.UUID)
-    update_parser.add_argument('display_name', help='New display name')
-    update_parser.set_defaults(func=principal_update)
-
 
 def add_catalog_parsers(subparsers: argparse._SubParsersAction) -> None:
     """Register `loom capability|model|agent {create,update,list,show,
-    versions,transition}` and `loom tenant|principal {create,list,show,
-    update}` -- called once from `cli/main.py` so resource knowledge
-    (payload shape, list columns, API path) stays here rather than growing
-    `main.py`'s own argparse setup."""
+    versions,transition}`, `loom tenant {create,list,show,update}`, and
+    `loom principal {create,list,show}` (no `update` -- see
+    `_add_principal_parsers`) -- called once from `cli/main.py` so
+    resource knowledge (payload shape, list columns, API path) stays here
+    rather than growing `main.py`'s own argparse setup."""
     _add_capability_parsers(subparsers)
     _add_model_parsers(subparsers)
     _add_agent_parsers(subparsers)

@@ -15,12 +15,8 @@ def _tenant_and_two_principals(session):
     tenant = Tenant(slug='acme', name='Acme Corp')
     session.add(tenant)
     session.commit()
-    grantor = Principal(
-        tenant_id=tenant.id, kind='user', display_name='Ada', external_id='ada'
-    )
-    subject = Principal(
-        tenant_id=tenant.id, kind='agent', display_name='Bot', external_id='bot'
-    )
+    grantor = Principal(tenant_id=tenant.id, kind='user', external_id='ada')
+    subject = Principal(tenant_id=tenant.id, kind='agent', external_id='bot')
     session.add_all([grantor, subject])
     session.commit()
     return tenant, grantor, subject

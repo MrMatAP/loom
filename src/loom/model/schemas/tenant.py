@@ -25,7 +25,6 @@ class TenantUpdate(BaseModel):
 class PrincipalCreate(BaseModel):
     tenant_id: uuid.UUID
     kind: PrincipalKind
-    display_name: str
     external_id: str
 
 
@@ -35,9 +34,4 @@ class PrincipalRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     kind: PrincipalKind
-    display_name: str
     external_id: str
-
-
-class PrincipalUpdate(BaseModel):
-    display_name: str | None = None

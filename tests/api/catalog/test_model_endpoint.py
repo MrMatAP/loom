@@ -166,7 +166,6 @@ async def test_agent_rejects_model_binding_from_another_tenant(
         other_principal = Principal(
             tenant_id=other_tenant.id,
             kind='user',
-            display_name='Bob',
             external_id='bob',
         )
         session.add(other_principal)

@@ -1,9 +1,11 @@
 import json
+import uuid
 
 import httpx
 import pytest
 
 from loom.catalog_client import CatalogApiError, CatalogClient
+from loom.http_headers import TENANT_HINT_HEADER
 
 
 @pytest.mark.asyncio
@@ -28,6 +30,44 @@ async def test_post_sends_bearer_token_and_returns_json_body():
     assert captured['authorization'] == 'Bearer access-tok'
     assert captured['body'] == {'slug': 'my-agent'}
     assert result == {'entity_id': 'abc-123', 'slug': 'my-agent'}
+
+
+@pytest.mark.asyncio
+async def test_sends_tenant_hint_header_when_tenant_id_given():
+    tenant_id = uuid.uuid4()
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured['tenant_hint'] = request.headers.get(TENANT_HINT_HEADER)
+        return httpx.Response(200, json={})
+
+    client = CatalogClient(
+        'https://api.example.com',
+        'access-tok',
+        tenant_id=tenant_id,
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.get('/api/v1/tenants')
+
+    assert captured['tenant_hint'] == str(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_omits_tenant_hint_header_when_no_tenant_id_given():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured['has_header'] = TENANT_HINT_HEADER in request.headers
+        return httpx.Response(200, json={})
+
+    client = CatalogClient(
+        'https://api.example.com', 'access-tok', transport=httpx.MockTransport(handler)
+    )
+
+    await client.get('/api/v1/tenants')
+
+    assert captured['has_header'] is False
 
 
 @pytest.mark.asyncio

@@ -3,9 +3,10 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loom.api.catalog.audit import AuditActor, get_audit_actor, record_audit_event
 from loom.api.catalog.dependencies import get_session, require_scopes
 from loom.api.catalog.pagination import Page, PaginationParams
-from loom.model.schemas.tenant import PrincipalCreate, PrincipalRead, PrincipalUpdate
+from loom.model.schemas.tenant import PrincipalCreate, PrincipalRead
 
 from .repository import PrincipalRepository
 from .service import PrincipalService
@@ -20,10 +21,21 @@ def _service(session: AsyncSession = Depends(get_session)) -> PrincipalService:
 @router.post('', response_model=PrincipalRead, status_code=201)
 async def create_principal(
     body: PrincipalCreate,
+    session: AsyncSession = Depends(get_session),
     service: PrincipalService = Depends(_service),
+    actor: AuditActor = Depends(get_audit_actor),
     _scopes: None = Depends(require_scopes('catalog:principal:write')),
 ):
-    return await service.create(body)
+    principal = await service.create(body)
+    await record_audit_event(
+        session,
+        tenant_id=principal.tenant_id,
+        actor=actor,
+        action='principal.create',
+        entity_type='principal',
+        entity_id=principal.id,
+    )
+    return principal
 
 
 @router.get('', response_model=Page[PrincipalRead])
@@ -48,13 +60,3 @@ async def get_principal(
     _scopes: None = Depends(require_scopes('catalog:principal:read')),
 ):
     return await service.get(principal_id)
-
-
-@router.patch('/{principal_id}', response_model=PrincipalRead)
-async def update_principal(
-    principal_id: uuid.UUID,
-    body: PrincipalUpdate,
-    service: PrincipalService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:principal:write')),
-):
-    return await service.update(principal_id, body)

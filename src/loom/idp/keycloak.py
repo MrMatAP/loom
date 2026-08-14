@@ -228,30 +228,6 @@ class KeycloakAdminClient:
             },
         )
 
-    async def add_tenant_id_mapper(self, client_ref: str) -> None:
-        """Add a protocol mapper that surfaces a user's `tenant_id` account
-        attribute as a `tenant_id` claim -- required by
-        `dependencies.get_current_principal`, which 401s without it. This
-        only wires the client side; each user still needs a `tenant_id`
-        attribute set on their Keycloak account, which is separate per-user
-        admin work. Idempotent on 409."""
-        await self._add_protocol_mapper(
-            client_ref,
-            payload={
-                'name': 'tenant-id',
-                'protocol': 'openid-connect',
-                'protocolMapper': 'oidc-usermodel-attribute-mapper',
-                'consentRequired': False,
-                'config': {
-                    'user.attribute': 'tenant_id',
-                    'claim.name': 'tenant_id',
-                    'jsonType.label': 'String',
-                    'id.token.claim': 'false',
-                    'access.token.claim': 'true',
-                },
-            },
-        )
-
     async def _add_protocol_mapper(self, client_ref: str, *, payload: dict) -> None:
         """POST a protocol mapper definition to a client; idempotent on 409."""
         headers = {'Authorization': f'Bearer {self._token}'}

@@ -20,7 +20,6 @@ from loom.cli.catalog import (
     principal_create,
     principal_list,
     principal_show,
-    principal_update,
     resource_list,
     resource_show,
     resource_transition,
@@ -619,7 +618,6 @@ async def test_principal_create_posts_expected_payload(tmp_path):
         argparse.Namespace(
             tenant_id=tenant_id,
             kind='user',
-            display_name='Mathieu Imfeld',
             external_id='sub-123',
         ),
     )
@@ -630,7 +628,6 @@ async def test_principal_create_posts_expected_payload(tmp_path):
         'payload': {
             'tenant_id': str(tenant_id),
             'kind': 'user',
-            'display_name': 'Mathieu Imfeld',
             'external_id': 'sub-123',
         },
     }
@@ -666,22 +663,6 @@ async def test_principal_show_gets_by_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_principal_update_patches_display_name_in_place(tmp_path):
-    config = _logged_in_config(tmp_path)
-    principal_id = uuid.uuid4()
-    result = await principal_update(
-        config,
-        argparse.Namespace(principal_id=principal_id, display_name='New Name'),
-    )
-    assert result == 0
-    assert _FakeCatalogClient.last_call == {
-        'method': 'PATCH',
-        'path': f'/api/v1/principals/{principal_id}',
-        'payload': {'display_name': 'New Name'},
-    }
-
-
-@pytest.mark.asyncio
 async def test_tenant_create_requires_login(tmp_path):
     config = RootConfig(config_path=tmp_path / 'config.yaml')
     result = await tenant_create(config, argparse.Namespace(slug='acme', name='Acme'))
@@ -697,7 +678,6 @@ async def test_principal_create_requires_login(tmp_path):
         argparse.Namespace(
             tenant_id=uuid.uuid4(),
             kind='user',
-            display_name='x',
             external_id='y',
         ),
     )
@@ -747,14 +727,23 @@ def test_update_requires_an_entity_id_positional(parser):
     assert isinstance(args.entity_id, uuid.UUID)
 
 
-@pytest.mark.parametrize('resource', ['tenant', 'principal'])
-def test_tenant_and_principal_have_crud_verbs_but_not_versioned_verbs(parser, resource):
-    """Tenant/Principal aren't VersionedEntity -- they get create/list/show/
-    update, but not versions/transition."""
-    sub = parser._subparsers._group_actions[0].choices[resource]
+def test_tenant_has_crud_verbs_but_not_versioned_verbs(parser):
+    """Tenant isn't a VersionedEntity -- create/list/show/update, but not
+    versions/transition."""
+    sub = parser._subparsers._group_actions[0].choices['tenant']
     verb_names = set(sub._subparsers._group_actions[0].choices.keys())
     assert {'create', 'list', 'show', 'update'} <= verb_names
     assert not {'versions', 'transition'} & verb_names
+
+
+def test_principal_has_crud_verbs_but_not_update_or_versioned_verbs(parser):
+    """Principal isn't a VersionedEntity either, and unlike Tenant has no
+    `update` at all -- its only mutable field (display_name) no longer
+    exists (see `src/loom/model/tenant.py`'s `Principal` docstring)."""
+    sub = parser._subparsers._group_actions[0].choices['principal']
+    verb_names = set(sub._subparsers._group_actions[0].choices.keys())
+    assert {'create', 'list', 'show'} <= verb_names
+    assert not {'versions', 'transition', 'update'} & verb_names
 
 
 def test_tenant_update_takes_tenant_id_and_name_positionals(parser):
@@ -764,7 +753,7 @@ def test_tenant_update_takes_tenant_id_and_name_positionals(parser):
     assert args.name == 'Renamed'
 
 
-def test_principal_create_requires_tenant_id_kind_display_name_external_id(parser):
+def test_principal_create_requires_tenant_id_kind_external_id(parser):
     tenant_id = uuid.uuid4()
     args = parser.parse_args(
         [
@@ -774,18 +763,25 @@ def test_principal_create_requires_tenant_id_kind_display_name_external_id(parse
             str(tenant_id),
             '--kind',
             'user',
-            '--display-name',
-            'Mathieu',
             '--external-id',
             'sub-123',
         ]
     )
     assert args.tenant_id == tenant_id
     assert args.kind == 'user'
-    assert args.display_name == 'Mathieu'
     assert args.external_id == 'sub-123'
 
 
-def test_principal_list_requires_tenant_id_flag(parser):
+def test_principal_create_requires_tenant_id_flag_at_parse_time(parser):
+    """No session claim to default from any more (a caller's Tenant is
+    resolved from their own Principal row, not a token claim), so
+    argparse itself must require --tenant-id."""
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ['principal', 'create', '--kind', 'user', '--external-id', 'sub-123']
+        )
+
+
+def test_principal_list_requires_tenant_id_flag_at_parse_time(parser):
     with pytest.raises(SystemExit):
         parser.parse_args(['principal', 'list'])

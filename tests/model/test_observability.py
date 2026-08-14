@@ -17,7 +17,6 @@ def test_metric_scopes_to_exactly_one_entity(session):
     principal = Principal(
         tenant_id=tenant.id,
         kind='user',
-        display_name='Ada',
         external_id='ada',
     )
     session.add(principal)

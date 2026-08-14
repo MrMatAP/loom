@@ -1,3 +1,5 @@
+import uuid
+
 from pydantic import Field, SecretStr, SerializationInfo, field_serializer
 
 from .base import RootConfigAware
@@ -14,6 +16,16 @@ class CliSessionConfig(RootConfigAware):
     )
     expires_at: int | None = Field(
         default=None, description='Unix timestamp the cached access token expires at'
+    )
+    tenant_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            'Locally-selected Tenant, set via `loom auth set-tenant` -- '
+            'disambiguates an identity provisioned in more than one Tenant '
+            '(see docs/admin-guide.md). Sent as the X-Loom-Tenant-Id header '
+            'on every request; has no effect for an identity with only one '
+            'Principal.'
+        ),
     )
 
     @field_serializer('access_token', 'refresh_token')

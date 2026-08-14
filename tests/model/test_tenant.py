@@ -32,7 +32,6 @@ def test_principal_unique_external_id_per_tenant(session):
         **PrincipalCreate(
             tenant_id=tenant.id,
             kind=PrincipalKind.USER,
-            display_name='Ada',
             external_id='ada@acme.example',
         ).model_dump()
     )
@@ -46,7 +45,6 @@ def test_principal_unique_external_id_per_tenant(session):
         Principal(
             tenant_id=tenant.id,
             kind=PrincipalKind.USER,
-            display_name='Ada 2',
             external_id='ada@acme.example',
         )
     )

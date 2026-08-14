@@ -10,7 +10,10 @@ from starlette.routing import Mount
 from loom.api.catalog.mcp import main as mcp_main
 from loom.api.catalog.mcp.main import create_app
 from loom.config import RootConfig
+from loom.http_headers import TENANT_HINT_HEADER
 from loom.idp.catalog_roles import content_scopes, platform_scopes
+from loom.model.enums import PrincipalKind
+from loom.model.tenant import Principal, Tenant
 
 ALL_SCOPES = content_scopes() | platform_scopes()
 
@@ -67,6 +70,42 @@ async def test_healthz_does_not_require_the_lifespan_to_have_run():
         response = await client.get('/healthz')
     assert response.status_code == 200
     assert response.json() == {'status': 'ok'}
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_the_token_validator_against_the_mcp_audience(
+    monkeypatch, async_session_factory
+):
+    """The load-bearing claim of collapsing `idp register` into four
+    clients: the MCP server must validate tokens against `auth.mcp_audience`,
+    not `auth.audience` -- otherwise it's silently still sharing the REST
+    API's resource server and registering it separately
+    (`idp.idp_register`'s MCP step) buys nothing. `TokenValidator` itself is
+    still faked out (real JWKS resolution needs network), but the fake
+    captures the `AuthConfig` it was built with instead of discarding it,
+    so this fails if `mcp.main.create_app`'s lifespan ever goes back to
+    sharing `config.auth` wholesale with the REST API."""
+    captured: dict[str, object] = {}
+
+    def _capture_and_build(config):
+        captured['config'] = config
+        return _FakeTokenValidator({})
+
+    monkeypatch.setattr(mcp_main, 'TokenValidator', _capture_and_build)
+    monkeypatch.setattr(
+        mcp_main, 'get_async_session_factory', lambda config: async_session_factory
+    )
+
+    config = RootConfig(config_path='/dev/null')
+    config.auth.audience = 'loom-catalog-api'
+    config.auth.mcp_audience = 'loom-catalog-api-mcp'
+    app = create_app(config)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert captured['config'].audience == 'loom-catalog-api-mcp'
+    assert captured['config'].audience != config.auth.audience
 
 
 @pytest.mark.asyncio
@@ -129,3 +168,93 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
                 await client.call_tool(
                     'create_capability', {'data': {'slug': 'e2e-cap-2', 'name': 'x'}}
                 )
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_call_over_real_http_reads_the_tenant_hint_header(
+    monkeypatch, async_session_factory
+):
+    """`_tenant_hint()` (`mcp/server.py`) reads `X-Loom-Tenant-Id` off
+    fastmcp's own `get_http_headers()`, which is a guess at how fastmcp
+    keys that dict -- unlike `_bearer_token()`'s identical guess for
+    `authorization`, nothing else exercised it through a real HTTP
+    request. Provision the same `sub` into two Tenants (mirrors
+    `tests/api/test_tenant_isolation.py`'s `multi_tenant_identity`) and
+    confirm the header, sent over a real Streamable HTTP call through the
+    `/mcp` mount, disambiguates to the hinted Tenant -- proving the header
+    key `_tenant_hint()` reads back is the one fastmcp actually populates,
+    not just the one `resolve_principal` expects."""
+    async with async_session_factory() as session:
+        first_tenant = Tenant(slug='mcp-hint-first', name='MCP Hint First')
+        second_tenant = Tenant(slug='mcp-hint-second', name='MCP Hint Second')
+        session.add_all([first_tenant, second_tenant])
+        await session.flush()
+        session.add_all(
+            [
+                Principal(
+                    tenant_id=first_tenant.id,
+                    kind=PrincipalKind.USER,
+                    external_id='mcp-hint-user',
+                ),
+                Principal(
+                    tenant_id=second_tenant.id,
+                    kind=PrincipalKind.USER,
+                    external_id='mcp-hint-user',
+                ),
+            ]
+        )
+        await session.commit()
+        first_tenant_id = first_tenant.id
+
+    token_validator = _FakeTokenValidator(
+        {
+            'valid-all-scopes': {
+                'sub': 'mcp-hint-user',
+                'scope': ' '.join(sorted(ALL_SCOPES)),
+            },
+        }
+    )
+    monkeypatch.setattr(mcp_main, 'TokenValidator', lambda config: token_validator)
+    monkeypatch.setattr(
+        mcp_main, 'get_async_session_factory', lambda config: async_session_factory
+    )
+
+    app = create_app(RootConfig(config_path='/dev/null'))
+
+    def _client_factory(*, headers, auth, follow_redirects, **kwargs):
+        return httpx.AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url='http://test',
+            headers=headers,
+            auth=auth,
+            follow_redirects=follow_redirects,
+            **kwargs,
+        )
+
+    async with app.router.lifespan_context(app):
+        no_hint_transport = StreamableHttpTransport(
+            'http://test/mcp',
+            headers={'Authorization': 'Bearer valid-all-scopes'},
+            httpx_client_factory=_client_factory,
+        )
+        async with Client(no_hint_transport) as client:
+            with pytest.raises(ToolError, match='ambiguous'):
+                await client.call_tool(
+                    'create_capability',
+                    {'data': {'slug': 'mcp-hint-cap', 'name': 'MCP Hint Cap'}},
+                )
+
+        hinted_transport = StreamableHttpTransport(
+            'http://test/mcp',
+            headers={
+                'Authorization': 'Bearer valid-all-scopes',
+                TENANT_HINT_HEADER: str(first_tenant_id),
+            },
+            httpx_client_factory=_client_factory,
+        )
+        async with Client(hinted_transport) as client:
+            result = await client.call_tool(
+                'create_capability',
+                {'data': {'slug': 'mcp-hint-cap', 'name': 'MCP Hint Cap'}},
+            )
+        assert result.data.slug == 'mcp-hint-cap'

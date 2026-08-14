@@ -20,7 +20,20 @@ class Tenant(Base, TimestampMixin):
 
 
 class Principal(Base, TimestampMixin):
-    """A user, agent, or service account that can own entities or hold a RoleBinding."""
+    """A user, agent, or service account that can own entities or hold a
+    RoleBinding. No `display_name` -- a human-readable name lives in the
+    IDP (the token's `name` claim), not duplicated here; see
+    `src/loom/cli/auth.py`'s `auth_whoami`. `tenant_id` here (not a token
+    claim) is the sole source of which Tenant a caller belongs to -- see
+    docs/admin-guide.md's "Platform administrator" section.
+
+    `uq_principal_tenant_external_id` below only enforces uniqueness of
+    `external_id` *per Tenant*, not globally -- the same IDP `sub` may
+    legitimately hold a Principal row in more than one Tenant. That's
+    deliberate, not an oversight: `resolve_principal`
+    (`src/loom/api/catalog/dependencies.py`) disambiguates such an
+    identity at request time via the `X-Loom-Tenant-Id` header, set
+    locally with `loom auth set-tenant`."""
 
     __tablename__ = 'principal'
     __table_args__ = (
@@ -44,5 +57,4 @@ class Principal(Base, TimestampMixin):
             values_callable=lambda obj: [e.value for e in obj],
         )
     )
-    display_name: Mapped[str] = mapped_column(sa.String(255))
     external_id: Mapped[str] = mapped_column(sa.String(255))

@@ -19,9 +19,7 @@ def test_eval_run_requires_exactly_one_target(session):
     tenant = Tenant(slug='acme', name='Acme Corp')
     session.add(tenant)
     session.commit()
-    principal = Principal(
-        tenant_id=tenant.id, kind='user', display_name='Ada', external_id='ada'
-    )
+    principal = Principal(tenant_id=tenant.id, kind='user', external_id='ada')
     session.add(principal)
     session.commit()
 
@@ -55,9 +53,7 @@ def test_eval_run_gates_lifecycle_transition(session):
     tenant = Tenant(slug='acme', name='Acme Corp')
     session.add(tenant)
     session.commit()
-    principal = Principal(
-        tenant_id=tenant.id, kind='user', display_name='Ada', external_id='ada'
-    )
+    principal = Principal(tenant_id=tenant.id, kind='user', external_id='ada')
     session.add(principal)
     session.commit()
 

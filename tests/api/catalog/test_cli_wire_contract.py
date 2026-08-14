@@ -212,7 +212,6 @@ async def test_principal_crud_wire_contract(
         argparse.Namespace(
             tenant_id=tenant_id,
             kind='service_account',
-            display_name='Wire Contract Principal',
             external_id='wire-contract-external-id',
         ),
     )
@@ -230,9 +229,3 @@ async def test_principal_crud_wire_contract(
     )
     assert exit_code == 0
     assert rendered['detail']['external_id'] == 'wire-contract-external-id'
-
-    exit_code = await catalog.principal_update(
-        config, argparse.Namespace(principal_id=principal_id, display_name='Renamed')
-    )
-    assert exit_code == 0
-    assert rendered['detail']['display_name'] == 'Renamed'

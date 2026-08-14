@@ -4,6 +4,7 @@ import pytest
 import pytest_asyncio
 
 from loom.api.catalog.dependencies import get_current_principal, get_current_token
+from loom.http_headers import TENANT_HINT_HEADER
 from loom.idp.catalog_roles import content_scopes, platform_scopes
 from loom.model.agent import Agent
 from loom.model.enums import Layer, MemoryScope, PrincipalKind
@@ -22,7 +23,6 @@ async def other_tenant(async_session_factory) -> tuple[uuid.UUID, uuid.UUID]:
         principal = Principal(
             tenant_id=tenant.id,
             kind=PrincipalKind.USER,
-            display_name='Other User',
             external_id='other-user',
         )
         session.add(principal)
@@ -30,14 +30,52 @@ async def other_tenant(async_session_factory) -> tuple[uuid.UUID, uuid.UUID]:
         return tenant.id, principal.id
 
 
-def _act_as(client, *, sub: str, tenant_id: uuid.UUID) -> None:
-    """Re-point the client at an identity, letting principal resolution run for real."""
+def _act_as(client, *, sub: str, tenant_hint: uuid.UUID | None = None) -> None:
+    """Re-point the client at an identity, letting principal resolution run
+    for real -- Tenant comes from whichever Principal row `sub` resolves
+    to (`Principal.tenant_id`), not a token claim. `tenant_hint`, if
+    given, is sent as the `X-Loom-Tenant-Id` header (see `loom auth
+    set-tenant`) -- only needed to disambiguate an identity provisioned in
+    more than one Tenant."""
     client.app.dependency_overrides.pop(get_current_principal, None)
     client.app.dependency_overrides[get_current_token] = lambda: {
         'sub': sub,
-        'tenant_id': str(tenant_id),
         'scope': EVERY_SCOPE,
     }
+    if tenant_hint is not None:
+        client.headers[TENANT_HINT_HEADER] = str(tenant_hint)
+    else:
+        client.headers.pop(TENANT_HINT_HEADER, None)
+
+
+@pytest_asyncio.fixture
+async def multi_tenant_identity(async_session_factory) -> tuple[uuid.UUID, uuid.UUID]:
+    """The same `sub` (`multi-tenant-user`) provisioned as a Principal in
+    two different Tenants -- the legitimate case `X-Loom-Tenant-Id`
+    disambiguates (`external_id` is only unique per Tenant, not globally;
+    see `src/loom/model/tenant.py`'s `Principal` docstring). Returns
+    (first_tenant_id, second_tenant_id)."""
+    async with async_session_factory() as session:
+        first_tenant = Tenant(slug='first-tenant', name='First Tenant')
+        second_tenant = Tenant(slug='second-tenant', name='Second Tenant')
+        session.add_all([first_tenant, second_tenant])
+        await session.flush()
+        session.add_all(
+            [
+                Principal(
+                    tenant_id=first_tenant.id,
+                    kind=PrincipalKind.USER,
+                    external_id='multi-tenant-user',
+                ),
+                Principal(
+                    tenant_id=second_tenant.id,
+                    kind=PrincipalKind.USER,
+                    external_id='multi-tenant-user',
+                ),
+            ]
+        )
+        await session.commit()
+        return first_tenant.id, second_tenant.id
 
 
 @pytest.mark.asyncio
@@ -51,8 +89,7 @@ async def test_other_tenant_cannot_read_an_entity_it_does_not_own(
     assert create_resp.status_code == 201
     entity_id = create_resp.json()['entity_id']
 
-    other_tenant_id, _ = other_tenant
-    _act_as(api_client, sub='other-user', tenant_id=other_tenant_id)
+    _act_as(api_client, sub='other-user')
 
     get_resp = await api_client.get(f'/api/v1/capabilities/{entity_id}')
     assert get_resp.status_code == 404
@@ -118,8 +155,8 @@ async def test_realization_referencing_another_tenants_agent_is_rejected(
 
 
 @pytest.mark.asyncio
-async def test_unprovisioned_principal_is_rejected_with_401(api_client, fake_principal):
-    _act_as(api_client, sub='never-provisioned', tenant_id=fake_principal.tenant_id)
+async def test_unprovisioned_principal_is_rejected_with_401(api_client):
+    _act_as(api_client, sub='never-provisioned')
 
     resp = await api_client.get('/api/v1/capabilities')
     assert resp.status_code == 401
@@ -127,13 +164,73 @@ async def test_unprovisioned_principal_is_rejected_with_401(api_client, fake_pri
 
 
 @pytest.mark.asyncio
-async def test_token_tenant_claim_must_be_a_uuid(api_client):
-    api_client.app.dependency_overrides.pop(get_current_principal, None)
-    api_client.app.dependency_overrides[get_current_token] = lambda: {
-        'sub': 'test-user',
-        'tenant_id': 'not-a-uuid',
-        'scope': EVERY_SCOPE,
-    }
+async def test_identity_provisioned_in_multiple_tenants_is_rejected_with_401(
+    api_client, multi_tenant_identity
+):
+    """Without an `X-Loom-Tenant-Id` header to disambiguate, an identity
+    matching more than one Principal must fail closed rather than silently
+    picking one -- see `resolve_principal` in
+    `src/loom/api/catalog/dependencies.py`. The error also lists the
+    candidate tenant_ids so the caller can self-service a `loom auth
+    set-tenant <tenant_id>` without an admin's help."""
+    first_tenant_id, second_tenant_id = multi_tenant_identity
+    _act_as(api_client, sub='multi-tenant-user')
 
     resp = await api_client.get('/api/v1/capabilities')
     assert resp.status_code == 401
+    detail = resp.json()['detail'].lower()
+    assert 'ambiguous' in detail
+    assert str(first_tenant_id) in detail
+    assert str(second_tenant_id) in detail
+
+
+@pytest.mark.asyncio
+async def test_tenant_hint_disambiguates_a_multi_tenant_identity(
+    api_client, multi_tenant_identity
+):
+    """`X-Loom-Tenant-Id` (set locally via `loom auth set-tenant`) picks
+    which of the identity's own Principal rows to resolve to -- and each
+    Tenant it picks is isolated from the other, same as any other Tenant."""
+    first_tenant_id, second_tenant_id = multi_tenant_identity
+
+    _act_as(api_client, sub='multi-tenant-user', tenant_hint=first_tenant_id)
+    create_resp = await api_client.post(
+        '/api/v1/capabilities',
+        json={'slug': 'mine', 'name': 'Mine', 'target_metrics': []},
+    )
+    assert create_resp.status_code == 201
+    entity_id = create_resp.json()['entity_id']
+
+    _act_as(api_client, sub='multi-tenant-user', tenant_hint=second_tenant_id)
+    get_resp = await api_client.get(f'/api/v1/capabilities/{entity_id}')
+    assert get_resp.status_code == 404
+
+    _act_as(api_client, sub='multi-tenant-user', tenant_hint=first_tenant_id)
+    get_resp = await api_client.get(f'/api/v1/capabilities/{entity_id}')
+    assert get_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_tenant_hint_for_a_tenant_the_identity_lacks_is_rejected_with_401(
+    api_client, multi_tenant_identity
+):
+    """A hint naming a real Tenant that this identity just isn't
+    provisioned in -- e.g. a stale/copy-pasted `loom auth set-tenant`
+    value -- must 401, not silently fall back to ambiguous-picks-one."""
+    del multi_tenant_identity
+    _act_as(api_client, sub='multi-tenant-user', tenant_hint=uuid.uuid4())
+
+    resp = await api_client.get('/api/v1/capabilities')
+    assert resp.status_code == 401
+    assert 'no principal' in resp.json()['detail'].lower()
+
+
+@pytest.mark.asyncio
+async def test_tenant_hint_is_ignored_for_an_unambiguous_identity(api_client):
+    """A hint is only consulted when it's actually needed to disambiguate
+    -- an identity with exactly one Principal resolves normally even if a
+    stale/incorrect hint is sent alongside it."""
+    _act_as(api_client, sub='test-user', tenant_hint=uuid.uuid4())
+
+    resp = await api_client.get('/api/v1/capabilities')
+    assert resp.status_code == 200

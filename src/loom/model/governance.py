@@ -92,8 +92,11 @@ class AuditEvent(Base):
     occurred_at: Mapped[datetime.datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )
-    actor_principal_id: Mapped[uuid.UUID] = mapped_column(
-        sa.Uuid(), sa.ForeignKey('principal.id')
+    # Nullable: a platform administrator (see docs/admin-guide.md) has no
+    # Principal row. `AuditActor.external_id` (src/loom/api/catalog/audit.py)
+    # keeps such an event attributable to a real identity regardless.
+    actor_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(), sa.ForeignKey('principal.id'), default=None
     )
     acting_as_principal_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(), sa.ForeignKey('principal.id'), default=None

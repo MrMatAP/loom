@@ -35,7 +35,6 @@ def test_tenant_and_principal_round_trip(live_db_session):
     principal = Principal(
         tenant_id=tenant.id,
         kind=PrincipalKind.USER,
-        display_name='Loom Integration Test User',
         external_id=str(uuid.uuid4()),
     )
     live_db_session.add(principal)

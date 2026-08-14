@@ -1,13 +1,13 @@
 """Tier 3 (admin-gated): the centerpiece of this suite.
 
-The three protocol mappers `register-docs-client`/`register-cli-client`
-attach (audience, client-roles, tenant_id -- see
-`KeycloakAdminClient.add_audience_mapper`/`add_client_roles_mapper`/
-`add_tenant_id_mapper`) have been flagged as unverified against a real
-Keycloak across multiple prior sessions: the mocked test suite can only
-assert *that a POST was sent*, never that Keycloak actually honors it and
-issues a token shaped the way `security.expand_claims_to_scopes` and
-`dependencies.get_current_principal` expect.
+The protocol mappers `loom idp register`'s Swagger UI/CLI steps attach
+(two audience mappers -- one per resource server -- plus client-roles; see
+`KeycloakAdminClient.add_audience_mapper`/`add_client_roles_mapper`) have
+been flagged as unverified against a real Keycloak across multiple prior
+sessions: the mocked test suite can only assert *that a POST was sent*,
+never that Keycloak actually honors it and issues a token shaped the way
+`security.expand_claims_to_scopes` and `dependencies.get_current_principal`
+expect.
 
 This closes that gap end to end: real Keycloak-issued, real
 signature-verified JWT -> `TokenValidator.decode()` -> `AuthenticatedPrincipal`
@@ -64,14 +64,17 @@ _TEST_PASSWORD = 'loom-it-throwaway-P4ssword!'  # nosec: throwaway test-only acc
 
 @pytest_asyncio.fixture(scope='module')
 async def probe_client(
-    admin_client, resource_server_client
+    admin_client, resource_server_client, mcp_resource_server_client
 ) -> AsyncGenerator[tuple[str, str]]:
     """A password-grant-enabled public client, deliberately outside
     `KeycloakAdminClient`'s registration API (see module docstring): built
     with a raw Admin API call so the product's own client-creation methods
     never gain a `directAccessGrantsEnabled` toggle a future caller could
-    misuse."""
+    misuse. Mapped against both resource servers, mirroring `swagger_client`/
+    `cli_client` in conftest.py, so its tokens prove the dual-audience shape
+    those clients rely on."""
     resource_server_id, _ = resource_server_client
+    mcp_resource_server_id, _ = mcp_resource_server_client
     client_id = f'{IT_PREFIX}-claims-probe'
     payload = {
         'clientId': client_id,
@@ -94,10 +97,12 @@ async def probe_client(
     await admin_client.add_audience_mapper(
         internal_ref, target_client_id=resource_server_id
     )
+    await admin_client.add_audience_mapper(
+        internal_ref, target_client_id=mcp_resource_server_id
+    )
     await admin_client.add_client_roles_mapper(
         internal_ref, source_client_id=resource_server_id
     )
-    await admin_client.add_tenant_id_mapper(internal_ref)
 
     yield client_id, internal_ref
 
@@ -110,26 +115,20 @@ async def probe_client(
 
 
 @pytest_asyncio.fixture(scope='module')
-async def test_user(
-    admin_client, resource_server_client, tenant_id_user_attribute
-) -> AsyncGenerator[dict]:
-    """A throwaway realm user, tagged with the `tenant_id` attribute the
-    tenant-id mapper reads and granted the `catalog-viewer` client role, so
-    a token issued to it exercises every mapper at once."""
-    del tenant_id_user_attribute
+async def test_user(admin_client, resource_server_client) -> AsyncGenerator[dict]:
+    """A throwaway realm user granted the `catalog-viewer` client role, so
+    a token issued to it exercises every mapper at once. No `tenant_id`
+    account attribute -- a caller's Tenant is resolved from their
+    `Principal` row (`Principal.tenant_id`), not a token claim; see
+    docs/admin-guide.md's "Platform administrator" section."""
     resource_server_id, resource_server_ref = resource_server_client
     del resource_server_id
-    tenant_id = uuid.uuid4()
     username = f'{IT_PREFIX}-user-{uuid.uuid4().hex[:8]}'
 
     async with httpx.AsyncClient(verify=build_ssl_context()) as http:
         create_response = await http.post(
             f'{admin_client._realm_admin_base}/users',
-            json={
-                'username': username,
-                'enabled': True,
-                'attributes': {'tenant_id': [str(tenant_id)]},
-            },
+            json={'username': username, 'enabled': True},
             headers=admin_headers(admin_client),
             timeout=30.0,
         )
@@ -158,7 +157,7 @@ async def test_user(
             timeout=30.0,
         )
 
-    yield {'username': username, 'tenant_id': tenant_id, 'user_id': user_id}
+    yield {'username': username, 'user_id': user_id}
 
     async with httpx.AsyncClient(verify=build_ssl_context()) as http:
         await http.delete(
@@ -188,10 +187,11 @@ async def live_user_token(live_issuer, probe_client, test_user) -> str:
     return response.json()['access_token']
 
 
-def test_live_token_carries_the_expected_audience_roles_and_tenant_id(
-    live_user_token, resource_server_client, test_user
+def test_live_token_carries_the_expected_audience_and_roles(
+    live_user_token, resource_server_client, mcp_resource_server_client
 ):
     resource_server_id, _ = resource_server_client
+    mcp_resource_server_id, _ = mcp_resource_server_client
     claims = jwt.decode(live_user_token, options={'verify_signature': False})
 
     # `aud` is a bare string when there's exactly one audience, a list
@@ -200,8 +200,11 @@ def test_live_token_carries_the_expected_audience_roles_and_tenant_id(
     audiences = claims['aud']
     if isinstance(audiences, str):
         audiences = [audiences]
+    # Both resource servers, from the two `add_audience_mapper` calls in
+    # `probe_client` -- proves `aud` stacks rather than the second mapper
+    # clobbering the first (see `cli.idp._grant_resource_server_claims`).
     assert resource_server_id in audiences
-    assert claims['tenant_id'] == str(test_user['tenant_id'])
+    assert mcp_resource_server_id in audiences
     assert _PROBE_ROLE in claims['roles']
 
     scopes = expand_claims_to_scopes(claims)
@@ -227,7 +230,26 @@ def test_token_validator_verifies_the_live_signature(
     validator = TokenValidator(config.auth)
     claims = validator.decode(live_user_token)
 
-    assert claims['tenant_id']
+    assert claims['sub']
+
+
+def test_token_validator_also_accepts_the_mcp_audience(
+    live_issuer, live_user_token, mcp_resource_server_client
+):
+    """The MCP server builds its own `TokenValidator` against
+    `auth.mcp_audience` (see `mcp.main.create_app`'s lifespan), not
+    `auth.audience` -- proves the same token that satisfies the REST API's
+    validator above also satisfies a validator scoped to the MCP resource
+    server, via the second audience mapper on the public client."""
+    mcp_resource_server_id, _ = mcp_resource_server_client
+    config = RootConfig(config_path='/dev/null')
+    config.auth.issuer = live_issuer
+    config.auth.audience = mcp_resource_server_id
+
+    validator = TokenValidator(config.auth)
+    claims = validator.decode(live_user_token)
+
+    assert claims['sub']
 
 
 @pytest.mark.asyncio
@@ -237,24 +259,26 @@ async def test_live_token_authorizes_a_real_api_request(
     """End to end: a real token, decoded by the real validator, resolved
     to a `Principal` seeded from the token's own `sub` (not a fixture
     constant -- Keycloak generates it, we don't get to choose it), used to
-    answer a real scope-gated route."""
+    answer a real scope-gated route. The Tenant this Principal belongs to
+    is minted locally, not read off the token -- `Principal.tenant_id` is
+    the sole source of that, not a claim; see docs/admin-guide.md's
+    "Platform administrator" section."""
+    del test_user
     resource_server_id, _ = resource_server_client
     sub = jwt.decode(live_user_token, options={'verify_signature': False})['sub']
+    tenant_id = uuid.uuid4()
 
     engine = create_async_engine('sqlite+aiosqlite:///:memory:')
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with session_factory() as session:
-        session.add(
-            Tenant(id=test_user['tenant_id'], slug='loom-it', name='Loom IT Tenant')
-        )
+        session.add(Tenant(id=tenant_id, slug='loom-it', name='Loom IT Tenant'))
         await session.flush()
         session.add(
             Principal(
-                tenant_id=test_user['tenant_id'],
+                tenant_id=tenant_id,
                 kind=PrincipalKind.USER,
-                display_name=test_user['username'],
                 external_id=sub,
             )
         )

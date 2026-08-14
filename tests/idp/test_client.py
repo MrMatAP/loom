@@ -55,9 +55,6 @@ class _FakeIdpAdminClient:
     async def add_client_roles_mapper(self, client_ref, *, source_client_id):
         del client_ref, source_client_id
 
-    async def add_tenant_id_mapper(self, client_ref):
-        del client_ref
-
     async def declare_client_roles(self, client_ref, roles):
         del client_ref, roles
 

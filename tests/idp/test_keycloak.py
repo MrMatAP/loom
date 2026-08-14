@@ -511,54 +511,6 @@ async def test_add_client_roles_mapper_is_idempotent_on_409():
 
 
 @pytest.mark.asyncio
-async def test_add_tenant_id_mapper_posts_protocol_mapper():
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        expected_path = (
-            '/admin/realms/loom/clients/cli-internal-id/protocol-mappers/models'
-        )
-        if path == expected_path and request.method == 'POST':
-            assert request.headers['Authorization'] == 'Bearer t'
-            assert json.loads(request.read()) == {
-                'name': 'tenant-id',
-                'protocol': 'openid-connect',
-                'protocolMapper': 'oidc-usermodel-attribute-mapper',
-                'consentRequired': False,
-                'config': {
-                    'user.attribute': 'tenant_id',
-                    'claim.name': 'tenant_id',
-                    'jsonType.label': 'String',
-                    'id.token.claim': 'false',
-                    'access.token.claim': 'true',
-                },
-            }
-            return httpx.Response(201)
-        raise AssertionError(f'Unexpected request: {request.method} {path}')
-
-    client = KeycloakAdminClient(
-        issuer='https://idp.example/realms/loom',
-        token='t',
-        transport=httpx.MockTransport(handler),
-    )
-
-    await client.add_tenant_id_mapper('cli-internal-id')
-
-
-@pytest.mark.asyncio
-async def test_add_tenant_id_mapper_is_idempotent_on_409():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(409, json={'errorMessage': 'Mapper already exists'})
-
-    client = KeycloakAdminClient(
-        issuer='https://idp.example/realms/loom',
-        token='t',
-        transport=httpx.MockTransport(handler),
-    )
-
-    await client.add_tenant_id_mapper('cli-internal-id')
-
-
-@pytest.mark.asyncio
 async def test_set_access_token_lifespan_merges_into_existing_attributes():
     """Must GET-then-PUT rather than replace `attributes` wholesale, or it
     would silently drop e.g. `oauth2.device.authorization.grant.enabled`

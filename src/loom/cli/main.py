@@ -4,25 +4,30 @@ import enum
 import pathlib
 import sys
 import typing
+import uuid
 
 import pydantic
 import rich.console
 import yaml
 
 from loom import __version__, default_config_path
-from loom.cli.auth import auth_login, auth_logout, auth_status
+from loom.cli.auth import (
+    auth_login,
+    auth_logout,
+    auth_set_tenant,
+    auth_status,
+    auth_whoami,
+)
 from loom.cli.catalog import add_catalog_parsers
 from loom.cli.db import (
     db_current,
     db_downgrade,
     db_history,
     db_revision,
-    db_seed_principal,
     db_upgrade,
 )
 from loom.cli.idp import idp_register
 from loom.config import RootConfig
-from loom.model.enums import PrincipalKind
 
 console = rich.console.Console()
 
@@ -250,47 +255,6 @@ async def main() -> int:
         )
         db_revision_parser.set_defaults(func=db_revision)
 
-        db_seed_principal_parser = db_subparser.add_parser(
-            'seed-principal',
-            help=(
-                'Bootstrap a Tenant/Principal by writing directly to the '
-                'database, bypassing the API/Policy Engine -- for the first '
-                'Principal in a fresh deployment, which `loom principal '
-                'create` cannot create (see its own --help)'
-            ),
-        )
-        db_seed_principal_parser.add_argument(
-            '--tenant-slug',
-            dest='tenant_slug',
-            required=True,
-            help='Reuses an existing Tenant with this slug, else creates one',
-        )
-        db_seed_principal_parser.add_argument(
-            '--tenant-name',
-            dest='tenant_name',
-            default=None,
-            help='Required only if --tenant-slug does not already exist',
-        )
-        db_seed_principal_parser.add_argument(
-            '--kind',
-            required=True,
-            choices=[k.value for k in PrincipalKind],
-            help='What this Principal represents',
-        )
-        db_seed_principal_parser.add_argument(
-            '--display-name',
-            dest='display_name',
-            required=True,
-            help='Human-readable name',
-        )
-        db_seed_principal_parser.add_argument(
-            '--external-id',
-            dest='external_id',
-            required=True,
-            help="The IDP token's `sub` claim this Principal resolves to",
-        )
-        db_seed_principal_parser.set_defaults(func=db_seed_principal)
-
         idp_parser = subparsers.add_parser(
             'idp', help='Identity provider bootstrap commands'
         )
@@ -409,6 +373,39 @@ async def main() -> int:
             'status', help='Show the current CLI session status'
         )
         auth_status_parser.set_defaults(func=auth_status)
+
+        auth_whoami_parser = auth_subparser.add_parser(
+            'whoami',
+            help=(
+                "Show the cached access token's claims (sub, name, "
+                'scopes, ...) -- for diagnosing 401/403s, not just whether '
+                'the session is live'
+            ),
+        )
+        auth_whoami_parser.set_defaults(func=auth_whoami)
+
+        auth_set_tenant_parser = auth_subparser.add_parser(
+            'set-tenant',
+            help=(
+                'Set/clear/show the locally-selected Tenant -- only needed '
+                'when this identity is provisioned in more than one Tenant '
+                '(see docs/admin-guide.md)'
+            ),
+        )
+        auth_set_tenant_parser.add_argument(
+            'tenant_id',
+            type=uuid.UUID,
+            nargs='?',
+            default=None,
+            help='Omit to show the current selection',
+        )
+        auth_set_tenant_parser.add_argument(
+            '--clear',
+            action='store_true',
+            default=False,
+            help='Clear the current selection instead of setting one',
+        )
+        auth_set_tenant_parser.set_defaults(func=auth_set_tenant)
 
         add_catalog_parsers(subparsers)
 

@@ -42,5 +42,12 @@ ROLE_BUNDLES: dict[str, frozenset[str]] = {
         | _scopes_for(CONTENT_RESOURCES, 'transition')
     ),
     'catalog-admin': content_scopes(),
+    # The platform administrator role: onboarding grants this directly to a
+    # human's IDP account (see docs/admin-guide.md's "Platform
+    # administrator" section) rather than provisioning it through the
+    # Catalog API, since `catalog:tenant:write`/`catalog:principal:write`
+    # (below) are exactly what's needed to bootstrap the first Tenant and
+    # Principal in a fresh deployment -- POST /tenants and POST /principals
+    # only check for these scopes, not an already-resolved Principal.
     'catalog-platform-admin': content_scopes() | platform_scopes(),
 }

@@ -68,7 +68,11 @@ class RoleBindingUpdate(BaseModel):
 
 class AuditEventCreate(BaseModel):
     tenant_id: uuid.UUID
-    actor_principal_id: uuid.UUID
+    # None for an actor with no provisioned Principal -- a platform
+    # administrator bootstrapping a Tenant/Principal, most notably (see
+    # docs/admin-guide.md's "Platform administrator" section and
+    # `src/loom/api/catalog/audit.py`).
+    actor_principal_id: uuid.UUID | None = None
     acting_as_principal_id: uuid.UUID | None = None
     action: str
     entity_type: str
@@ -85,7 +89,7 @@ class AuditEventRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     occurred_at: datetime.datetime
-    actor_principal_id: uuid.UUID
+    actor_principal_id: uuid.UUID | None
     acting_as_principal_id: uuid.UUID | None
     action: str
     entity_type: str

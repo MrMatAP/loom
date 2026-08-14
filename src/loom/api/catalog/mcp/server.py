@@ -12,7 +12,7 @@ from loom.api.catalog.agent.service import AgentService
 from loom.api.catalog.capability.repository import CapabilityRepository
 from loom.api.catalog.capability.schemas import CapabilityCreateRequest
 from loom.api.catalog.capability.service import CapabilityService
-from loom.api.catalog.dependencies import resolve_principal
+from loom.api.catalog.dependencies import parse_tenant_hint, resolve_principal
 from loom.api.catalog.model_endpoint.repository import ModelEndpointRepository
 from loom.api.catalog.model_endpoint.schemas import ModelEndpointCreateRequest
 from loom.api.catalog.model_endpoint.service import ModelEndpointService
@@ -23,6 +23,7 @@ from loom.api.catalog.security import (
     TokenValidator,
     assert_scopes,
 )
+from loom.http_headers import TENANT_HINT_HEADER
 from loom.model.enums import LifecycleState
 from loom.model.schemas.agent import AgentRead
 from loom.model.schemas.capability import CapabilityRead
@@ -67,6 +68,14 @@ def _bearer_token() -> str | None:
     return token
 
 
+def _tenant_hint() -> uuid.UUID | None:
+    """The `X-Loom-Tenant-Id` disambiguation header off the underlying HTTP
+    request, if any -- mirrors `dependencies.get_current_principal`'s own
+    extraction for the REST path (see `parse_tenant_hint`)."""
+    headers = get_http_headers(include={TENANT_HINT_HEADER.lower()})
+    return parse_tenant_hint(headers.get(TENANT_HINT_HEADER.lower()))
+
+
 async def _authenticated_principal(
     state: McpState, session: AsyncSession
 ) -> AuthenticatedPrincipal:
@@ -83,7 +92,7 @@ async def _authenticated_principal(
         claims = state.token_validator.decode(token)
     except jwt.PyJWTError as exc:
         raise AuthenticationError(f'Invalid token: {exc}') from exc
-    return await resolve_principal(claims, session)
+    return await resolve_principal(claims, session, tenant_hint=_tenant_hint())
 
 
 @dataclasses.dataclass(frozen=True)

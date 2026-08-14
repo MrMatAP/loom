@@ -24,15 +24,11 @@ class PrincipalRepository:
             sa.select(sa.func.count()).select_from(stmt.subquery())
         )
         rows = await self._session.scalars(
-            stmt.order_by(Principal.display_name).limit(limit).offset(offset)
+            stmt.order_by(Principal.external_id).limit(limit).offset(offset)
         )
         return list(rows), total or 0
 
     async def add(self, principal: Principal) -> Principal:
         self._session.add(principal)
-        await flush_or_raise(self._session)
-        return principal
-
-    async def save(self, principal: Principal) -> Principal:
         await flush_or_raise(self._session)
         return principal

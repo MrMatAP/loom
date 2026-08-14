@@ -13,9 +13,7 @@ def _tenant_and_principal(session):
     tenant = Tenant(slug='acme', name='Acme Corp')
     session.add(tenant)
     session.commit()
-    principal = Principal(
-        tenant_id=tenant.id, kind='user', display_name='Ada', external_id='ada'
-    )
+    principal = Principal(tenant_id=tenant.id, kind='user', external_id='ada')
     session.add(principal)
     session.commit()
     return tenant, principal

@@ -1,7 +1,9 @@
 import typing
+import uuid
 
 import httpx
 
+from loom.http_headers import TENANT_HINT_HEADER
 from loom.tls import build_ssl_context
 
 
@@ -39,10 +41,15 @@ class CatalogClient:
         api_base_url: str,
         access_token: str,
         *,
+        tenant_id: uuid.UUID | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base = api_base_url.rstrip('/')
         self._token = access_token
+        # Disambiguates `resolve_principal` when this identity is
+        # provisioned in more than one Tenant (see `loom auth set-tenant`);
+        # ignored server-side otherwise, so it's always safe to send.
+        self._tenant_id = tenant_id
         self._transport = transport
 
     def _client(self) -> httpx.AsyncClient:
@@ -64,13 +71,16 @@ class CatalogClient:
         clean_params = (
             {k: v for k, v in params.items() if v is not None} if params else None
         )
+        headers = {'Authorization': f'Bearer {self._token}'}
+        if self._tenant_id is not None:
+            headers[TENANT_HINT_HEADER] = str(self._tenant_id)
         async with self._client() as http:
             response = await http.request(
                 method,
                 f'{self._base}{path}',
                 params=clean_params,
                 json=json,
-                headers={'Authorization': f'Bearer {self._token}'},
+                headers=headers,
                 timeout=30.0,
             )
         if response.is_error:
