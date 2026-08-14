@@ -7,7 +7,7 @@ def test_auth_config_defaults():
         issuer='https://idp.example/realms/loom', audience='loom-catalog-api'
     )
     assert config.algorithms == ['RS256']
-    assert config.jwks_uri is None
+    assert config.discovery_url is None
 
 
 def test_root_config_has_auth_section(tmp_path):

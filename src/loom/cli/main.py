@@ -20,11 +20,7 @@ from loom.cli.db import (
     db_seed_principal,
     db_upgrade,
 )
-from loom.cli.idp import (
-    idp_register_cli_client,
-    idp_register_client,
-    idp_register_docs_client,
-)
+from loom.cli.idp import idp_register
 from loom.config import RootConfig
 from loom.model.enums import PrincipalKind
 
@@ -301,86 +297,85 @@ async def main() -> int:
         idp_subparser = idp_parser.add_subparsers(required=True)
 
         idp_register_parser = idp_subparser.add_parser(
-            'register-client',
-            help='Register the Catalog OAuth client and declare its roles',
+            'register',
+            help=(
+                'Register all four Catalog OAuth clients (RESTful API, MCP '
+                'server, Swagger UI, CLI) and declare the role vocabulary, '
+                'in one run'
+            ),
         )
         _add_admin_login_args(idp_register_parser)
         idp_register_parser.add_argument(
             '--client-id',
             dest='client_id',
             required=True,
-            help='OAuth client ID to register',
+            help='OAuth client ID to register for the RESTful API',
         )
         idp_register_parser.add_argument(
             '--client-name',
             dest='client_name',
             default=None,
-            help='Human-readable client name, defaults to --client-id',
+            help="Human-readable API client name, defaults to 'Loom :: RESTful API'",
         )
-        idp_register_parser.set_defaults(func=idp_register_client)
-
-        idp_register_docs_parser = idp_subparser.add_parser(
-            'register-docs-client',
-            help=(
-                'Register the public Swagger UI client (Authorization Code + '
-                'PKCE) for interactive login from /docs'
-            ),
-        )
-        _add_admin_login_args(idp_register_docs_parser)
-        idp_register_docs_parser.add_argument(
-            '--client-id',
-            dest='client_id',
-            required=True,
-            help='OAuth client ID to register',
-        )
-        idp_register_docs_parser.add_argument(
-            '--client-name',
-            dest='client_name',
-            default=None,
-            help='Human-readable client name, defaults to --client-id',
-        )
-        idp_register_docs_parser.add_argument(
+        idp_register_parser.add_argument(
             '--api-base-url',
             dest='api_base_url',
             required=True,
             help=(
                 'Public base URL the Catalog API is served from, e.g. '
-                'https://catalog.example.com (redirect URI is '
+                'https://catalog.example.com (Swagger UI redirect URI is '
                 '{api-base-url}/docs/oauth2-redirect)'
             ),
         )
-        idp_register_docs_parser.set_defaults(func=idp_register_docs_client)
-
-        idp_register_cli_parser = idp_subparser.add_parser(
-            'register-cli-client',
-            help=('Register the public device-flow client used by `loom auth login`'),
-        )
-        _add_admin_login_args(idp_register_cli_parser)
-        idp_register_cli_parser.add_argument(
-            '--client-id',
-            dest='client_id',
-            required=True,
-            help='OAuth client ID to register',
-        )
-        idp_register_cli_parser.add_argument(
-            '--client-name',
-            dest='client_name',
+        idp_register_parser.add_argument(
+            '--mcp-client-id',
+            dest='mcp_client_id',
             default=None,
-            help='Human-readable client name, defaults to --client-id',
+            help='OAuth client ID for the MCP server, defaults to {client-id}-mcp',
         )
-        idp_register_cli_parser.add_argument(
+        idp_register_parser.add_argument(
+            '--mcp-client-name',
+            dest='mcp_client_name',
+            default=None,
+            help="Human-readable MCP client name, defaults to 'Loom :: MCP'",
+        )
+        idp_register_parser.add_argument(
+            '--swagger-client-id',
+            dest='swagger_client_id',
+            default=None,
+            help=('OAuth client ID for Swagger UI, defaults to {client-id}-swagger'),
+        )
+        idp_register_parser.add_argument(
+            '--swagger-client-name',
+            dest='swagger_client_name',
+            default=None,
+            help="Human-readable Swagger UI client name, defaults to 'Loom :: Swagger UI'",
+        )
+        idp_register_parser.add_argument(
+            '--cli-client-id',
+            dest='cli_client_id',
+            default=None,
+            help='OAuth client ID for the CLI, defaults to {client-id}-cli',
+        )
+        idp_register_parser.add_argument(
+            '--cli-client-name',
+            dest='cli_client_name',
+            default=None,
+            help="Human-readable CLI client name, defaults to 'Loom :: CLI'",
+        )
+        idp_register_parser.add_argument(
             '--access-token-lifespan',
             dest='access_token_lifespan',
             type=int,
             default=None,
             help=(
-                "Override this client's access-token lifespan in seconds "
+                "Override the CLI client's access-token lifespan in seconds "
                 '(else LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN, else the realm '
                 'default applies unmodified). Safe to re-run against an '
                 'already-registered client to change it later.'
             ),
         )
-        idp_register_cli_parser.set_defaults(func=idp_register_cli_client)
+        idp_register_parser.set_defaults(func=idp_register)
 
         auth_parser = subparsers.add_parser('auth', help='CLI login/session commands')
         auth_subparser = auth_parser.add_subparsers(required=True)

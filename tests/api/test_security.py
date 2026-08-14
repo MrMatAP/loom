@@ -5,7 +5,11 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from loom.api.catalog.security import TokenValidator, expand_claims_to_scopes
+from loom.api.catalog.security import (
+    OidcDiscoveryDocument,
+    TokenValidator,
+    expand_claims_to_scopes,
+)
 from loom.config.auth_config import AuthConfig
 
 
@@ -22,11 +26,18 @@ def test_token_validator_decodes_valid_token(monkeypatch):
     monkeypatch.setattr('jwt.PyJWKClient.fetch_data', lambda self: {'keys': [jwk]})
 
     config = AuthConfig(
-        issuer='https://idp.example/realms/loom',
-        audience='loom-catalog-api',
+        issuer='https://idp.example/realms/loom', audience='loom-catalog-api'
+    )
+    # Discovery passed in directly rather than pinning `config.discovery_url`
+    # -- `TokenValidator` only reads `jwks_uri` off it, and passing it
+    # explicitly (same as `main.py`'s lifespan does) skips the network
+    # fetch a real discovery document would need here.
+    discovery = OidcDiscoveryDocument(
+        authorization_endpoint='https://idp.example/realms/loom/protocol/openid-connect/auth',
+        token_endpoint='https://idp.example/realms/loom/protocol/openid-connect/token',
         jwks_uri='https://idp.example/realms/loom/protocol/openid-connect/certs',
     )
-    validator = TokenValidator(config)
+    validator = TokenValidator(config, discovery)
 
     token = jwt.encode(
         {

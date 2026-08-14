@@ -1,17 +1,14 @@
 """Tier 1: needs only LOOM_IDP_ISSUER_URL, no admin credentials.
 
 Proves the live issuer is reachable over the TLS trust configured via
-`loom.tls.build_ssl_context` (see README's "CA trust" note), and that the
-Keycloak-conventional endpoint derivation in `security.py` matches what
-this specific instance actually advertises.
+`loom.tls.build_ssl_context` (see README's "CA trust" note), and that its
+discovery document actually advertises the keys `security.py`'s
+`discover_oidc` indexes -- the real KeyError-at-startup guard, now that
+`authorization_endpoint`/`token_endpoint`/`jwks_uri` are read straight out
+of the document instead of guessed from a URL convention.
 """
 
 import pytest
-
-from loom.api.catalog.security import (
-    default_authorization_endpoint,
-    default_token_endpoint,
-)
 
 from .live import ISSUER_ENV_VAR, requires_env_vars
 
@@ -22,16 +19,11 @@ def test_discovery_document_is_reachable(live_issuer, live_discovery_document):
     assert live_discovery_document['issuer'] == live_issuer
 
 
-def test_default_endpoint_helpers_match_the_real_discovery_document(
-    live_issuer, live_discovery_document
+def test_discovery_document_advertises_the_endpoints_this_service_reads(
+    live_discovery_document,
 ):
-    assert (
-        default_authorization_endpoint(live_issuer)
-        == live_discovery_document['authorization_endpoint']
-    )
-    assert (
-        default_token_endpoint(live_issuer) == live_discovery_document['token_endpoint']
-    )
+    for key in ('authorization_endpoint', 'token_endpoint', 'jwks_uri'):
+        assert live_discovery_document[key]
 
 
 def test_discovery_document_advertises_the_device_code_grant(live_discovery_document):

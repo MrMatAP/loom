@@ -35,33 +35,52 @@ class InsufficientScopeError(Exception):
     transport-neutral split as `AuthenticationError`."""
 
 
-def resolve_jwks_uri(issuer: str) -> str:
-    """Discover the JWKS URI from the issuer's OIDC discovery document."""
+@dataclasses.dataclass(frozen=True)
+class OidcDiscoveryDocument:
+    """The subset of an IdP's OIDC discovery document
+    (`.well-known/openid-configuration`) this service depends on."""
+
+    authorization_endpoint: str
+    token_endpoint: str
+    jwks_uri: str
+
+
+def default_discovery_url(issuer: str) -> str:
+    """The spec-defined discovery document location for an OIDC issuer
+    (OpenID Connect Discovery 1.0), used when `AuthConfig.discovery_url`
+    isn't pinned to something else."""
+    return f'{issuer.rstrip("/")}/.well-known/openid-configuration'
+
+
+def discover_oidc(discovery_url: str) -> OidcDiscoveryDocument:
+    """Fetch and parse the IdP's own discovery document -- the spec-defined
+    source for these endpoints, rather than assuming a particular IdP's URL
+    conventions (e.g. Keycloak's `.../protocol/openid-connect/{auth,token}`
+    layout, which doesn't generalize to every OIDC-compliant IdP)."""
     ctx = build_ssl_context()
-    response = httpx.get(
-        f'{issuer}/.well-known/openid-configuration', timeout=10.0, verify=ctx
-    )
+    response = httpx.get(discovery_url, timeout=10.0, verify=ctx)
     response.raise_for_status()
-    return response.json()['jwks_uri']
-
-
-def default_authorization_endpoint(issuer: str) -> str:
-    """The Keycloak-conventional authorization endpoint for an issuer."""
-    return f'{issuer.rstrip("/")}/protocol/openid-connect/auth'
-
-
-def default_token_endpoint(issuer: str) -> str:
-    """The Keycloak-conventional token endpoint for an issuer."""
-    return f'{issuer.rstrip("/")}/protocol/openid-connect/token'
+    doc = response.json()
+    return OidcDiscoveryDocument(
+        authorization_endpoint=doc['authorization_endpoint'],
+        token_endpoint=doc['token_endpoint'],
+        jwks_uri=doc['jwks_uri'],
+    )
 
 
 class TokenValidator:
     """Validates bearer JWTs against a JWKS-published signing key."""
 
-    def __init__(self, config: AuthConfig) -> None:
+    def __init__(
+        self, config: AuthConfig, discovery: OidcDiscoveryDocument | None = None
+    ) -> None:
         self._config = config
-        jwks_uri = config.jwks_uri or resolve_jwks_uri(config.issuer)
-        self._jwk_client = PyJWKClient(jwks_uri, ssl_context=build_ssl_context())
+        if discovery is None:
+            discovery_url = config.discovery_url or default_discovery_url(config.issuer)
+            discovery = discover_oidc(discovery_url)
+        self._jwk_client = PyJWKClient(
+            discovery.jwks_uri, ssl_context=build_ssl_context()
+        )
 
     def decode(self, token: str) -> dict:
         """Verify signature/exp/iss/aud and return the token's claims."""

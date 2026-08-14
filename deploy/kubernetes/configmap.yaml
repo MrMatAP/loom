@@ -22,4 +22,5 @@ data:
   LOOM_DB_USERNAME: loom
   LOOM_AUTH_ISSUER: https://idp.example/realms/loom # CHANGEME
   LOOM_AUTH_AUDIENCE: loom-catalog-api
+  LOOM_AUTH_MCP_AUDIENCE: loom-catalog-api-mcp
   LOOM_CATALOG_API_BASE_URL: https://catalog.example.com # CHANGEME -- externally-reachable URL

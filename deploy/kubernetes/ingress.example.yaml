@@ -5,10 +5,10 @@
 # Gateway API, etc).
 #
 # host must match LOOM_CATALOG_API_BASE_URL in configmap.yaml, and must be
-# the same URL registered via `loom idp register-docs-client
-# --api-base-url` if you want Swagger UI's interactive login to work
-# through this ingress -- a mismatch there is the most common reason that
-# login redirect fails (see README.md).
+# the same URL registered via `loom idp register --api-base-url` if you
+# want Swagger UI's interactive login to work through this ingress -- a
+# mismatch there is the most common reason that login redirect fails (see
+# README.md).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

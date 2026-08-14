@@ -55,16 +55,38 @@ async def _login_as_admin(
     )
 
 
-async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> int:
-    """Register the Catalog OAuth client and declare its role vocabulary."""
-    issuer_url = args.issuer_url or config.auth.issuer
-    if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
-        return 1
+async def _grant_resource_server_claims(
+    client: KeycloakAdminClient,
+    internal_ref: str,
+    *,
+    api_client_id: str,
+    mcp_client_id: str,
+) -> None:
+    """Make tokens from a new public client pass both resource servers'
+    audience checks and carry roles in the shape `expand_claims_to_scopes`
+    reads -- both needed, or requests 401/403 after a successful login.
+    `aud` is natively multivalued, so one audience mapper per resource
+    server stacks rather than conflicts; the client-roles mapper only ever
+    points at the API client, since the role vocabulary is declared once,
+    not duplicated under the MCP client (see `_register_mcp_client`).
+    Deliberately no `tenant_id` mapper: a caller's Tenant now comes from
+    their `Principal` row (`Principal.tenant_id`), not a token claim -- see
+    docs/admin-guide.md's "Platform administrator" section."""
+    await client.add_audience_mapper(internal_ref, target_client_id=api_client_id)
+    await client.add_audience_mapper(internal_ref, target_client_id=mcp_client_id)
+    await client.add_client_roles_mapper(internal_ref, source_client_id=api_client_id)
 
-    client = await _login_as_admin(issuer_url, args)
 
-    client_name = args.client_name or args.client_id
+async def _register_api_client(
+    client: KeycloakAdminClient,
+    config: RootConfig,
+    issuer_url: str,
+    args: argparse.Namespace,
+) -> str:
+    """Register the confidential RESTful API resource-server client and
+    declare the shared scope/role vocabulary under it -- the single source
+    of roles every public client's client-roles mapper reads from."""
+    client_name = args.client_name or 'Loom :: RESTful API'
     result = await client.register_client(
         client_id=args.client_id, client_name=client_name, service_account=True
     )
@@ -73,7 +95,8 @@ async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> i
     await client.declare_client_roles(result.internal_ref, roles)
 
     print(
-        f'Registered client: {result.client_id} (internal ref: {result.internal_ref})'
+        f'Registered API client: {result.client_id} '
+        f'(internal ref: {result.internal_ref})'
     )
     if result.client_secret:
         print('Client secret (store securely, shown once):')
@@ -82,95 +105,99 @@ async def idp_register_client(config: RootConfig, args: argparse.Namespace) -> i
 
     config.auth.issuer = issuer_url
     config.auth.audience = result.client_id
-    config.auth.jwks_uri = None
+    config.auth.discovery_url = None
     config.save()
     print(
         f'Updated local config: auth.issuer={issuer_url}, '
-        f'auth.audience={result.client_id} (auth.jwks_uri reset to re-derive)'
+        f'auth.audience={result.client_id} '
+        '(auth.discovery_url reset to re-derive)'
     )
-    return 0
+    return result.client_id
 
 
-async def _grant_resource_server_claims(
-    client: KeycloakAdminClient, internal_ref: str, config: RootConfig
-) -> None:
-    """Make tokens from a new public client pass the resource server's
-    audience check, carry roles in the shape `expand_claims_to_scopes` reads,
-    and carry a `tenant_id` claim -- all three are needed, or requests
-    401/403 after a successful login."""
-    await client.add_audience_mapper(
-        internal_ref, target_client_id=config.auth.audience
+async def _register_mcp_client(
+    client: KeycloakAdminClient, config: RootConfig, args: argparse.Namespace
+) -> str:
+    """Register the confidential MCP server resource-server client --
+    deliberately no role declarations here; see `_grant_resource_server_claims`
+    for why the vocabulary stays declared once, under the API client."""
+    mcp_client_id = args.mcp_client_id or f'{args.client_id}-mcp'
+    client_name = args.mcp_client_name or 'Loom :: MCP'
+    result = await client.register_client(
+        client_id=mcp_client_id, client_name=client_name, service_account=True
     )
-    await client.add_client_roles_mapper(
-        internal_ref, source_client_id=config.auth.audience
-    )
-    await client.add_tenant_id_mapper(internal_ref)
 
-
-def _require_resource_server_audience(config: RootConfig) -> bool:
-    """Both public-client registrations need an existing resource-server
-    client to grant an audience mapper against."""
-    if config.auth.audience:
-        return True
     print(
-        'config.auth.audience is unset; run `loom idp register-client` first so '
-        'there is a resource-server client to grant this client an audience '
-        'mapper against.'
+        f'Registered MCP client: {result.client_id} '
+        f'(internal ref: {result.internal_ref})'
     )
-    return False
+    if result.client_secret:
+        print('Client secret (store securely, shown once):')
+        print(result.client_secret)
+
+    config.auth.mcp_audience = result.client_id
+    config.save()
+    print(f'Updated local config: auth.mcp_audience={result.client_id}')
+    return result.client_id
 
 
-async def idp_register_docs_client(config: RootConfig, args: argparse.Namespace) -> int:
-    """Register the public Swagger UI client (Authorization Code + PKCE)."""
-    issuer_url = args.issuer_url or config.auth.issuer
-    if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
-        return 1
-    if not _require_resource_server_audience(config):
-        return 1
-
-    client = await _login_as_admin(issuer_url, args)
-
-    client_name = args.client_name or args.client_id
+async def _register_swagger_client(
+    client: KeycloakAdminClient,
+    config: RootConfig,
+    args: argparse.Namespace,
+    api_client_id: str,
+    mcp_client_id: str,
+) -> None:
+    """Register the public Swagger UI client (Authorization Code + PKCE)
+    for interactive login from /docs."""
+    swagger_client_id = args.swagger_client_id or f'{args.client_id}-swagger'
+    client_name = args.swagger_client_name or 'Loom :: Swagger UI'
     api_base_url = args.api_base_url.rstrip('/')
     redirect_uri = f'{api_base_url}/docs/oauth2-redirect'
     result = await client.register_public_client(
-        client_id=args.client_id,
+        client_id=swagger_client_id,
         client_name=client_name,
         standard_flow=True,
         redirect_uris=(redirect_uri,),
         web_origins=(api_base_url,),
     )
-    await _grant_resource_server_claims(client, result.internal_ref, config)
+    await _grant_resource_server_claims(
+        client,
+        result.internal_ref,
+        api_client_id=api_client_id,
+        mcp_client_id=mcp_client_id,
+    )
 
     print(
-        f'Registered docs client: {result.client_id} '
+        f'Registered Swagger UI client: {result.client_id} '
         f'(internal ref: {result.internal_ref})'
     )
     print(f'Redirect URI: {redirect_uri}')
 
-    config.auth.docs_client_id = result.client_id
+    config.auth.swagger_client_id = result.client_id
     config.save()
-    print(f'Updated local config: auth.docs_client_id={result.client_id}')
-    return 0
+    print(f'Updated local config: auth.swagger_client_id={result.client_id}')
 
 
-async def idp_register_cli_client(config: RootConfig, args: argparse.Namespace) -> int:
+async def _register_cli_client(
+    client: KeycloakAdminClient,
+    config: RootConfig,
+    args: argparse.Namespace,
+    api_client_id: str,
+    mcp_client_id: str,
+) -> None:
     """Register the public device-flow client used by `loom auth login`."""
-    issuer_url = args.issuer_url or config.auth.issuer
-    if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
-        return 1
-    if not _require_resource_server_audience(config):
-        return 1
-
-    client = await _login_as_admin(issuer_url, args)
-
-    client_name = args.client_name or args.client_id
+    cli_client_id = args.cli_client_id or f'{args.client_id}-cli'
+    client_name = args.cli_client_name or 'Loom :: CLI'
     result = await client.register_public_client(
-        client_id=args.client_id, client_name=client_name, device_flow=True
+        client_id=cli_client_id, client_name=client_name, device_flow=True
     )
-    await _grant_resource_server_claims(client, result.internal_ref, config)
+    await _grant_resource_server_claims(
+        client,
+        result.internal_ref,
+        api_client_id=api_client_id,
+        mcp_client_id=mcp_client_id,
+    )
 
     print(
         f'Registered CLI device-flow client: {result.client_id} '
@@ -187,4 +214,26 @@ async def idp_register_cli_client(config: RootConfig, args: argparse.Namespace) 
     config.auth.cli_client_id = result.client_id
     config.save()
     print(f'Updated local config: auth.cli_client_id={result.client_id}')
+
+
+async def idp_register(config: RootConfig, args: argparse.Namespace) -> int:
+    """Register all four Catalog OAuth clients -- RESTful API, MCP server,
+    Swagger UI, CLI -- against the IDP in one run, in dependency order: the
+    two resource-server clients first (the public clients need both to
+    exist so they can be granted audience mappers against them), then the
+    two public interactive-login clients. Every step is idempotent-on-409
+    (see `KeycloakAdminClient`), and `config` is saved after each
+    successful step, so a run interrupted partway through is safe to just
+    re-run in full."""
+    issuer_url = args.issuer_url or config.auth.issuer
+    if not issuer_url:
+        print('No --issuer-url given and config.auth.issuer is unset.')
+        return 1
+
+    client = await _login_as_admin(issuer_url, args)
+
+    api_client_id = await _register_api_client(client, config, issuer_url, args)
+    mcp_client_id = await _register_mcp_client(client, config, args)
+    await _register_swagger_client(client, config, args, api_client_id, mcp_client_id)
+    await _register_cli_client(client, config, args, api_client_id, mcp_client_id)
     return 0

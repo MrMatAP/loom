@@ -29,10 +29,10 @@ pytestmark = [
 
 
 @pytest.mark.asyncio
-async def test_docs_client_is_registered_as_a_pkce_public_client(
-    admin_client, docs_client
+async def test_swagger_client_is_registered_as_a_pkce_public_client(
+    admin_client, swagger_client
 ):
-    client_id, internal_ref = docs_client
+    client_id, internal_ref = swagger_client
     async with httpx.AsyncClient(verify=build_ssl_context()) as http:
         response = await http.get(
             f'{admin_client._realm_admin_base}/clients/{internal_ref}',
@@ -54,16 +54,16 @@ async def test_docs_client_is_registered_as_a_pkce_public_client(
 
 
 def test_swagger_ui_oauth_config_matches_the_live_discovery_document(
-    live_issuer, live_discovery_document, docs_client
+    live_issuer, live_discovery_document, swagger_client
 ):
     """What Swagger UI's "Authorize" button actually does: read
     `swagger_ui_init_oauth`/the OpenAPI security scheme `create_app()`
     builds, and confirm they point at this instance's real endpoints --
     the part of a browser login that's ours, not Keycloak's login form."""
-    client_id, _ = docs_client
+    client_id, _ = swagger_client
     config = RootConfig(config_path='/dev/null')
     config.auth.issuer = live_issuer
-    config.auth.docs_client_id = client_id
+    config.auth.swagger_client_id = client_id
 
     app = create_app(config)
 

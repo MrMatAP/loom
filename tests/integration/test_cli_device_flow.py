@@ -85,9 +85,9 @@ async def test_device_flow_start_and_first_poll_against_live_keycloak(
 async def test_set_access_token_lifespan_overrides_client_attribute(
     admin_client, cli_client
 ):
-    """`loom idp register-cli-client --access-token-lifespan` end to end
-    against real Keycloak -- confirms the merge-not-replace GET/PUT doesn't
-    drop `oauth2.device.authorization.grant.enabled` (set at registration,
+    """`loom idp register --access-token-lifespan` end to end against real
+    Keycloak -- confirms the merge-not-replace GET/PUT doesn't drop
+    `oauth2.device.authorization.grant.enabled` (set at registration,
     asserted above) while applying the override."""
     _, internal_ref = cli_client
 

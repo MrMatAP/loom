@@ -33,17 +33,24 @@ class AuthConfig(RootConfigAware):
 
     issuer: str = Field(default='', description='OIDC issuer URL')
     audience: str = Field(default='', description='Expected token audience')
-    jwks_uri: str | None = Field(default=None, description='JWKS URI, derived if unset')
     algorithms: list[str] = Field(
         default=['RS256'], description='Accepted JWT algorithms'
     )
-    authorization_endpoint: str | None = Field(
-        default=None, description='OIDC authorization endpoint, derived if unset'
+    discovery_url: str | None = Field(
+        default=None,
+        description=(
+            "IdP's OIDC discovery document URL (OpenID Connect Discovery "
+            "1.0's `.well-known/openid-configuration`), derived from "
+            '`issuer` if unset. `authorization_endpoint`/`token_endpoint`/'
+            "`jwks_uri` are all read from this one document -- there's no "
+            'per-endpoint override anymore. Only needed as an override when '
+            "the issuer used for token validation isn't also where the "
+            'IdP serves its metadata (e.g. an internal issuer URL behind a '
+            'proxy with a different externally-reachable discovery '
+            'document).'
+        ),
     )
-    token_endpoint: str | None = Field(
-        default=None, description='OIDC token endpoint, derived if unset'
-    )
-    docs_client_id: str = Field(
+    swagger_client_id: str = Field(
         default='',
         description=(
             'Public OAuth client id used by Swagger UI to perform an '
@@ -55,6 +62,15 @@ class AuthConfig(RootConfigAware):
         description=(
             'Public OAuth client id used by `loom auth login` to perform an '
             'interactive Device Authorization Grant login against the IDP'
+        ),
+    )
+    mcp_audience: str = Field(
+        default='',
+        description=(
+            'Expected token audience for the MCP server -- a separate '
+            'resource-server client from the RESTful API, so MCP tool calls '
+            'are validated against their own audience rather than sharing '
+            "the API's"
         ),
     )
     session: CliSessionConfig = Field(default_factory=CliSessionConfig)

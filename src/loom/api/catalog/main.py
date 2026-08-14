@@ -17,9 +17,10 @@ from .exceptions import register_exception_handlers
 from .model_endpoint.router import router as model_endpoint_router
 from .principal.router import router as principal_router
 from .security import (
+    OidcDiscoveryDocument,
     TokenValidator,
-    default_authorization_endpoint,
-    default_token_endpoint,
+    default_discovery_url,
+    discover_oidc,
 )
 from .skill.router import router as skill_router
 from .tenant.router import router as tenant_router
@@ -45,26 +46,35 @@ def create_app(config: RootConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session_factory = get_async_session_factory(config.database)
-        app.state.token_validator = TokenValidator(config.auth)
+        app.state.token_validator = TokenValidator(config.auth, discovery)
         yield
         await app.state.session_factory.kw['bind'].dispose()
 
     # oauth2_scheme is a module-level singleton shared by every route's
     # dependency tree, so its authorizationCode flow URLs are filled in here
     # from the running config rather than at import time.
+    #
+    # Resolved once, here, rather than separately in the lifespan too:
+    # `discovery` is also what `TokenValidator` above reads its `jwks_uri`
+    # from, so a configured issuer costs exactly one discovery-document
+    # fetch, not two. An unconfigured issuer (e.g. tests that never intend
+    # to exercise auth) must still let the app construct, so this stays
+    # `None` -- and the flow URLs stay unset -- rather than fetching against
+    # an empty base URL.
     flow = oauth2_scheme.model.flows.authorizationCode
-    flow.authorizationUrl = (
-        config.auth.authorization_endpoint
-        or default_authorization_endpoint(config.auth.issuer)
-    )
-    flow.tokenUrl = config.auth.token_endpoint or default_token_endpoint(
-        config.auth.issuer
-    )
+    discovery: OidcDiscoveryDocument | None = None
+    if config.auth.issuer:
+        discovery_url = config.auth.discovery_url or default_discovery_url(
+            config.auth.issuer
+        )
+        discovery = discover_oidc(discovery_url)
+        flow.authorizationUrl = discovery.authorization_endpoint
+        flow.tokenUrl = discovery.token_endpoint
 
     swagger_ui_init_oauth = None
-    if config.auth.docs_client_id:
+    if config.auth.swagger_client_id:
         swagger_ui_init_oauth = {
-            'clientId': config.auth.docs_client_id,
+            'clientId': config.auth.swagger_client_id,
             'usePkceWithAuthorizationCodeGrant': True,
         }
 

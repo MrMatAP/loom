@@ -36,10 +36,20 @@ def create_app(config: RootConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Deferred to lifespan, not built at create_app()/import time,
-        # because TokenValidator.__init__ resolves the JWKS URI over the
-        # network -- same reasoning as api.catalog.main's own lifespan.
+        # because TokenValidator.__init__ resolves the IdP's OIDC discovery
+        # document over the network -- same reasoning as api.catalog.main's
+        # own lifespan.
+        #
+        # The MCP server is registered as its own resource-server client
+        # (see `cli.idp.idp_register`), separate from the RESTful API's --
+        # tokens must carry `mcp_audience` in `aud`, not `audience`, so the
+        # validator is built off a copy of `config.auth` with `audience`
+        # overridden rather than sharing the REST API's `TokenValidator`.
         state.session_factory = get_async_session_factory(config.database)
-        state.token_validator = TokenValidator(config.auth)
+        mcp_auth_config = config.auth.model_copy(
+            update={'audience': config.auth.mcp_audience}
+        )
+        state.token_validator = TokenValidator(mcp_auth_config)
         # mcp_asgi_app's own lifespan starts its Streamable HTTP session
         # manager; without running it under the parent's lifespan here,
         # every tool call would fail with "Task group is not initialized".
