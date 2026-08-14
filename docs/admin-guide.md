@@ -71,8 +71,9 @@ YAML. The full mapping:
 | `LOOM_DB_PASSWORD` | `database.password` | yes -- entrypoint.sh refuses to start without it (see below) |
 | `LOOM_AUTH_ISSUER` | `auth.issuer` | yes |
 | `LOOM_AUTH_AUDIENCE` | `auth.audience` | yes |
-| `LOOM_AUTH_JWKS_URI` | `auth.jwks_uri` | no (derived from issuer) |
-| `LOOM_AUTH_DOCS_CLIENT_ID` | `auth.docs_client_id` | no -- only if exposing `/docs` (catalog-api only) |
+| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | no -- derived from `auth.issuer` (`{issuer}/.well-known/openid-configuration`); `authorization_endpoint`/`token_endpoint`/`jwks_uri` are all read from that one document |
+| `LOOM_AUTH_MCP_AUDIENCE` | `auth.mcp_audience` | yes for catalog-mcp -- it validates tokens against this audience, not `auth.audience` (separate resource-server client from the RESTful API, see `loom idp register`) |
+| `LOOM_AUTH_SWAGGER_CLIENT_ID` | `auth.swagger_client_id` | no -- only if exposing `/docs` (catalog-api only) |
 | `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no -- unused by the servers themselves |
 | `LOOM_CATALOG_API_BASE_URL` | `catalog.api_base_url` | no -- only matters if you run `loom` CLI commands *inside* the container |
 | `LOOM_IDP_CA_BUNDLE` | *(not a config key -- read directly by `loom.tls.build_ssl_context`)* | only if your IDP's CA isn't in the image's trust store |
@@ -240,8 +241,97 @@ one -- the default.
 on for the REST API must match `LOOM_CATALOG_API_BASE_URL` in
 `configmap.yaml`, and if you want Swagger UI's interactive login to work
 through it, must also match the `--api-base-url` you registered via
-`loom idp register-docs-client` (see README.md) -- a mismatch there is the
-most common reason that login redirect fails.
+`loom idp register` (see README.md) -- a mismatch there is the most common
+reason that login redirect fails.
+
+## Platform administrator
+
+Every other identity the Catalog knows about -- a Tenant's own users,
+agents, service accounts -- is a `Principal` row scoped to one Tenant. The
+**platform administrator** is the one exception: an IDP account with no
+Tenant scope at all, used to create and manage Tenants and Principals
+across the whole deployment. It's what onboards the very first Tenant, so
+it can't itself depend on one existing yet.
+
+There's no `loom` command for this step by design -- granting
+platform-wide access is a decision for whoever administers your IDP, made
+once per admin, directly in the IDP:
+
+1. Run `loom db upgrade` then `loom idp register` (see README.md) first --
+   the second creates the `catalog-platform-admin` role under the
+   `loom-catalog-api` client (or whatever `--client-id` you used) that the
+   next step grants.
+2. In Keycloak: **Users** → **Add user** → create an account for the
+   person who will administer Tenants (existing users work too). Then
+   **Role mapping** → **Assign role** → filter by **Filter by clients** →
+   find `catalog-platform-admin` under your API client → **Assign**.
+   Nothing else to configure on the account -- no IDP account attribute is
+   involved anywhere in this flow (see "How a caller's Tenant is
+   resolved" below).
+
+From there it's the regular CLI, logged in as that account:
+
+    loom auth login
+    loom tenant create acme "Acme Corp"
+    loom principal create --tenant-id <id from above> --kind user \
+      --external-id <sub from `loom auth whoami`>
+
+`POST /tenants` and `POST /principals` only require the caller's token to
+carry `catalog:tenant:write`/`catalog:principal:write` -- exactly what
+`catalog-platform-admin` grants -- not an already-provisioned `Principal`,
+which is what makes this work on a database that has no Tenants or
+Principals in it yet. Both still write an `AuditEvent` for the action --
+attributed to the caller's token `sub` (`details.actor_external_id`)
+rather than a `Principal` row when, as here, there isn't one yet -- so the
+bootstrap itself isn't a silent, unaudited path (see
+`src/loom/api/catalog/audit.py`). See README.md's "Managing Tenants and
+Principals from the CLI" for the full command reference.
+
+Everything past this point -- Capability/Agent/Skill/Tool/DataSource/
+DataProduct/ModelEndpoint access -- still goes through a Tenant-scoped
+`Principal` the normal way (`resolve_principal` in
+`src/loom/api/catalog/dependencies.py`), including for the platform
+administrator themselves if they also want to act as one: `loom principal
+create` for their own `sub` is all that's needed (see below).
+
+### How a caller's Tenant is resolved
+
+There's no `tenant_id` claim anywhere in this system -- not on a token,
+not as an IDP account attribute. A caller's Tenant comes entirely from
+`Principal.tenant_id`: `resolve_principal` looks up the one `Principal`
+row whose `external_id` matches the token's `sub` and reads its
+`tenant_id` off of that row. This is deliberate: it means onboarding a new
+user is *one* action (`loom principal create`), not two (create the
+Principal, *and* separately remember to tag their IDP account) -- the
+second step was easy to forget and produced a confusing 401 with no
+obvious cause (see Troubleshooting below).
+
+One consequence: `external_id` is only unique *per Tenant*
+(`uq_principal_tenant_external_id` in `src/loom/model/tenant.py`), so the
+same `sub` can legitimately be provisioned in more than one Tenant -- a
+consultant working across two customer Tenants, for instance. When that
+happens, `resolve_principal` can't pick one on its own, and 401s rather
+than guessing (see Troubleshooting below) -- unless the caller
+disambiguates with `loom auth set-tenant`:
+
+    loom auth set-tenant <tenant_id>
+
+This stores the choice locally (`config.auth.session.tenant_id`) and
+sends it as the `X-Loom-Tenant-Id` header on every subsequent request
+(`loom.http_headers.TENANT_HINT_HEADER`); `resolve_principal` only
+consults it to pick among *that identity's own* Principal rows, never to
+grant access to a Tenant it isn't otherwise provisioned in -- an
+incorrect or stale selection just 401s. It's ignored (and unnecessary)
+for an identity provisioned in only one Tenant. `loom auth set-tenant`
+with no arguments shows the current selection; `--clear` removes it;
+`loom auth logout` clears it too, since a fresh login may resolve to a
+different identity. `loom auth whoami` shows it alongside the token's own
+claims.
+
+A Principal also has no stored display name. A human-readable name comes
+from the IDP's own `name` claim, read live off a caller's own token at
+request time (`loom auth whoami`) -- not duplicated in the Catalog's
+database, so it can't drift out of sync with the IDP.
 
 ## Troubleshooting
 
@@ -257,26 +347,30 @@ most common reason that login redirect fails.
 - **HPA shows `<unknown>` for CPU** -- metrics-server isn't installed, or
   the container has no `resources.requests.cpu` set (both Deployments here
   do, by default).
-- **One user gets `401 Not authorized` from every request, even right
-  after `loom auth login` succeeds** -- this is *not* a missing scope (a
-  missing scope is a `403`, not a `401`; see `require_scopes` in
+- **One user gets `401 Not authorized` on Capability/Agent/Skill/Tool/
+  DataSource/DataProduct/ModelEndpoint requests, even right after `loom
+  auth login` succeeds** -- this is *not* a missing scope (a missing scope
+  is a `403`, not a `401`; see `require_scopes` in
   `src/loom/api/catalog/dependencies.py`). A `401` here means
-  `resolve_principal` couldn't resolve the token's identity at all, for
-  one of three reasons, in the order it checks them -- the CLI's error
-  message names which one:
-  1. **No `tenant_id` claim on the token.** `loom idp register-*` only
-     wires the *client-side* mapper that would surface it
-     (`add_tenant_id_mapper` in `src/loom/idp/keycloak.py`); each user
-     still needs a `tenant_id` attribute set on their own IDP account --
-     separate, per-user admin work, easy to miss since assigning scopes/
-     roles to a user doesn't do this.
-  2. **The `tenant_id` claim isn't a valid UUID.**
-  3. **No matching `Principal` row exists yet** for that `(tenant_id,
-     sub)` pair in the Catalog's own database. `POST /api/v1/principals`
-     (what `loom principal create` calls) requires an already-provisioned,
-     already-scoped `Principal` to call it, so it can't bootstrap itself --
-     use `loom db seed-principal` instead, which writes directly to the
-     database (see README's "Managing Tenants and Principals from the
-     CLI") to create the first one.
-  Re-running `loom auth login` does not fix any of these three --  the
-  token it gets back will look identical.
+  `resolve_principal` couldn't resolve the token's `sub` to exactly one
+  `Principal`, for one of two reasons, in the order it checks them -- the
+  CLI's error message names which one. (`/tenants`/`/principals` requests
+  don't go through `resolve_principal` at all -- see "Platform
+  administrator" above -- so this doesn't apply to `loom tenant`/`loom
+  principal` commands.)
+  1. **No `Principal` row exists yet** for that `sub` in the Catalog's own
+     database -- run `loom principal create --tenant-id <their tenant> \
+     --external-id <their sub>` as the platform administrator (see
+     "Platform administrator" above) to provision one.
+  2. **More than one `Principal` row matches that `sub`** (provisioned in
+     more than one Tenant -- `external_id` is only unique per Tenant, see
+     "How a caller's Tenant is resolved" above), **and no `X-Loom-Tenant-Id`
+     header disambiguates it.** This is the expected, legitimate case for
+     an identity provisioned in more than one Tenant on purpose (e.g. a
+     consultant) -- not a bug to fix, just run `loom auth set-tenant
+     <tenant_id>` to pick one. If it's *not* expected (the same person was
+     provisioned twice by accident), that's a provisioning mistake to
+     clean up instead. Either way the CLI's error message names it as
+     ambiguous, not missing, so it's distinguishable from #1 above.
+  Re-running `loom auth login` does not fix either of these -- the token
+  it gets back will look identical.

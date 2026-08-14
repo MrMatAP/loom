@@ -12,10 +12,10 @@ You need two things from your admin: the Catalog's URL, and to be
 registered with its IDP (assigned one of `catalog-viewer`/
 `catalog-editor`/`catalog-approver`/`catalog-admin`/
 `catalog-platform-admin`, or an equivalent set of scopes). Scopes alone
-aren't the whole story -- your admin also needs to have given your IDP
-account a `tenant_id` attribute and provisioned a matching `Principal`
-record for you in the Catalog itself, or every request will `401` no
-matter how many scopes your token carries (see
+aren't the whole story -- your admin also needs to have provisioned a
+matching `Principal` record for you in the Catalog itself (your Tenant
+comes from that record, not from anything on your IDP account), or every
+request will `401` no matter how many scopes your token carries (see
 [docs/admin-guide.md](admin-guide.md)'s Troubleshooting section).
 
 Point the CLI at the API:
@@ -82,23 +82,29 @@ A few things that surprise people the first time:
 
 The same use-cases are also reachable as MCP tools, for an agent to call
 directly rather than a human running CLI commands -- same entities, same
-auth (a bearer JWT from the same IDP), same scope checks; not a separate,
-weaker path. Point your MCP client at `{catalog-mcp URL}/mcp` (your admin
-has this URL -- it's a different service/port than the REST API). Full
-tool list (7 per resource: `create_X`/`get_X`/`list_Xs`/
-`list_X_versions`/`get_X_version`/`update_X`/`transition_X`) is in
-README.md's ["Catalog MCP server"](../README.md#catalog-mcp-server)
-section.
+scope checks; not a separate, weaker path. Auth is still a bearer JWT from
+the same IDP, but the MCP server validates it as its own resource server
+(a separate audience from the REST API's) -- a token from `loom auth
+login` already carries both, so logging in once covers both the CLI/REST
+API and MCP tool calls; nothing extra to do. Point your MCP client at
+`{catalog-mcp URL}/mcp` (your admin has this URL -- it's a different
+service/port than the REST API). Full tool list (7 per resource:
+`create_X`/`get_X`/`list_Xs`/`list_X_versions`/`get_X_version`/
+`update_X`/`transition_X`) is in README.md's ["Catalog MCP
+server"](../README.md#catalog-mcp-server) section.
 
 ## Getting help
 
 `loom <resource> <verb> --help` documents every flag for that command.
 If a command fails with a `401`, read the reason the CLI prints along
 with it: if it names an expired/invalid token, `loom auth login` again;
-if it instead points at your account not being fully provisioned (no
-`tenant_id`, no `Principal` record), logging in again won't help --
-that's an admin-side fix, see [docs/admin-guide.md](admin-guide.md)'s
-Troubleshooting section. If a command fails with anything else, the error
+if it says your identity is ambiguous (provisioned in more than one
+Tenant), run `loom auth set-tenant <tenant_id>` to pick one -- expected
+behavior, not something to report to your admin. If it instead points at
+your account not having a `Principal` record at all, logging in again
+won't help -- that's an admin-side fix, see
+[docs/admin-guide.md](admin-guide.md)'s Troubleshooting section. If a
+command fails with anything else, the error
 message is the API's own rejection reason (a validation error, an illegal
 lifecycle transition, a missing scope) -- for deployment-level issues
 (the API unreachable at all, `500`s on every request), see

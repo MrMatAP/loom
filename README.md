@@ -41,20 +41,31 @@ Run it:
 
 Or directly via uvicorn for development: `uvicorn loom.api.catalog.main:app --reload`.
 
-Every request requires a Bearer JWT carrying a `tenant_id` claim and
-either a `scope` claim (space-separated `catalog:{resource}:{action}`
-scopes) or a `roles` claim (`catalog-viewer`, `catalog-editor`,
-`catalog-approver`, `catalog-admin`, `catalog-platform-admin`). See
+Every request requires a Bearer JWT carrying either a `scope` claim
+(space-separated `catalog:{resource}:{action}` scopes) or a `roles` claim
+(`catalog-viewer`, `catalog-editor`, `catalog-approver`, `catalog-admin`,
+`catalog-platform-admin`). Capability/Agent/Skill/Tool/DataSource/
+DataProduct/ModelEndpoint requests additionally require the token's `sub`
+claim to resolve to a provisioned Principal -- there's no `tenant_id`
+claim; `Principal.tenant_id` (set once, at provisioning time) is the sole
+source of which Tenant a caller belongs to, not anything in the token
+itself. An identity provisioned in more than one Tenant needs one more
+thing to disambiguate which: an `X-Loom-Tenant-Id` header, set locally via
+`loom auth set-tenant` (see "CLI device-code login" below) -- unnecessary,
+and ignored, for the common case of an identity in exactly one Tenant.
+`POST`/`GET` on `/tenants` and `/principals` don't even need any of this --
+see "Managing Tenants and Principals from the CLI" below for what that
+means for bootstrapping. See
 `docs/superpowers/specs/2026-08-08-catalog-api-design.md` for the full
 access-rights model.
 
-### Registering the client with your IDP
+### Registering the OAuth clients with your IDP
 
 For Keycloak, authenticate as an admin (the standard Keycloak superadmin
 realm is `master`):
 
-    loom idp register-client --issuer-url https://idp.example/realms/loom \
-      --client-id loom-catalog-api
+    loom idp register --issuer-url https://idp.example/realms/loom \
+      --client-id loom-catalog-api --api-base-url https://api.example.com
 
 You'll be prompted for the admin username and password. To avoid the
 prompt, set `LOOM_IDP_ADMIN_USERNAME`/`LOOM_IDP_ADMIN_PASSWORD`, or pass
@@ -63,51 +74,68 @@ env vars, which take precedence over the prompt). If the admin account
 lives in a different realm, or the deployment uses a different admin
 client than the default `admin-cli`, pass `--admin-realm`/`--admin-client-id`.
 
-This registers the OAuth client via the Keycloak Admin REST API and
-declares all 27 leaf scopes plus the 5 composite roles (`catalog-viewer`,
-`catalog-editor`, `catalog-approver`, `catalog-admin`,
-`catalog-platform-admin`) as roles under that client, printing the
-generated client secret (store it securely — it is shown once). It also
-sets `auth.issuer`/`auth.audience` in the local config to the values it
-just registered (overwriting whatever was there before), so the manual
-`loom config set auth.issuer`/`auth.audience` step above isn't needed when
-you run this command. It also resets `auth.jwks_uri` to unset so it
-re-derives from the new issuer — if you had pinned it (e.g. an internal
-issuer URL behind a proxy with a different external JWKS endpoint),
-re-pin it after running this command. Assigning those roles to actual users/service
-accounts is a separate step performed in the Keycloak admin console.
+This registers all four OAuth clients in one run, in dependency order:
+
+1. **RESTful API** (`--client-id`, e.g. `loom-catalog-api`) — confidential,
+   with a service account. Declares all 27 leaf scopes plus the 5
+   composite roles (`catalog-viewer`, `catalog-editor`, `catalog-approver`,
+   `catalog-admin`, `catalog-platform-admin`) as roles under this client —
+   the single source of the role vocabulary every other client's tokens
+   read from. Sets `auth.issuer`/`auth.audience` in the local config
+   (overwriting whatever was there before), so the manual
+   `loom config set auth.issuer`/`auth.audience` step above isn't needed
+   when you run this command. Also resets `auth.discovery_url` to unset so
+   it re-derives from the new issuer — if you had pinned it (e.g. an
+   internal issuer URL behind a proxy with a different externally-reachable
+   discovery document), re-pin it after running this command.
+2. **MCP server** (`--mcp-client-id`, defaults to `{client-id}-mcp`) —
+   confidential, its own resource-server client with its own audience
+   (`auth.mcp_audience`), so `loom-catalog-mcp` validates tokens against a
+   different `aud` than `loom-catalog-api` does. Deliberately gets no role
+   declarations of its own — see step 1.
+3. **Swagger UI** (`--swagger-client-id`, defaults to `{client-id}-swagger`)
+   — public, Authorization Code + PKCE, for interactive login from `/docs`.
+4. **CLI** (`--cli-client-id`, defaults to `{client-id}-cli`) — public,
+   OAuth2 Device Authorization Grant, for `loom auth login`.
+
+Each client's generated secret (for the two confidential clients) is
+printed once — store it securely. Every step is idempotent against
+Keycloak (a 409 on an already-registered client is treated as success), so
+a run that fails partway through is safe to just re-run in full. Assigning
+roles to actual users/service accounts is a separate step performed in the
+Keycloak admin console.
+
+Each client's `--*-client-id` is what other config/tooling references and
+what appears in tokens; its human-readable Keycloak "Name" (what you see
+browsing the admin console) is separate and defaults to something
+indicative of what the client is for — `Loom :: RESTful API`,
+`Loom :: MCP`, `Loom :: Swagger UI`, `Loom :: CLI` — rather than echoing
+the id. Override any of them with `--client-name`/`--mcp-client-name`/
+`--swagger-client-name`/`--cli-client-name` if you'd rather name them
+something else.
 
 ### Interactive login via Swagger UI
 
 The Catalog API's `/docs` page can drive a real Authorization Code + PKCE
 login against your IDP instead of requiring you to paste in a bearer token
-by hand. Register a public client for it (needs `auth.audience` already
-set — run `loom idp register-client` first):
-
-    loom idp register-docs-client --issuer-url https://idp.example/realms/loom \
-      --client-id loom-docs --api-base-url https://api.example.com
-
-This sets `auth.docs_client_id` in the local config; `loom-catalog-api`
-picks it up on next start and Swagger UI's "Authorize" button appears.
-Click it, log in against your IDP, and every "Try it out" call on `/docs`
-from then on carries a real bearer token — no manual header-pasting.
-`--api-base-url` must be the externally-reachable URL the browser itself
-loads `/docs` from (it's turned into the OAuth redirect URI
-`{api_base_url}/docs/oauth2-redirect`); a mismatch here is the most common
-reason the login redirect fails.
+by hand — the Swagger UI client registered above (`auth.swagger_client_id`)
+is what makes this work; `loom-catalog-api` picks it up on next start and
+Swagger UI's "Authorize" button appears. Click it, log in against your
+IDP, and every "Try it out" call on `/docs` from then on carries a real
+bearer token — no manual header-pasting. `--api-base-url` above must be
+the externally-reachable URL the browser itself loads `/docs` from (it's
+turned into the OAuth redirect URI `{api_base_url}/docs/oauth2-redirect`);
+a mismatch here is the most common reason the login redirect fails.
 
 ### CLI device-code login
 
 `loom` commands that need to call the Catalog API as a user (e.g.
 `loom capability create`) authenticate via the OAuth2 Device Authorization
 Grant (RFC 8628) — no local browser redirect target needed, so it also
-works over SSH. Register the device-flow client once (same prerequisite as
-above — `auth.audience` must already be set):
-
-    loom idp register-cli-client --issuer-url https://idp.example/realms/loom \
-      --client-id loom-cli
-
-Then log in:
+works over SSH. The CLI client registered above (`auth.cli_client_id`) is
+what makes this work — its tokens carry both the RESTful API's and the MCP
+server's audiences, so the same login also authorizes MCP tool calls (see
+"Catalog MCP server" below). Log in:
 
     loom auth login
 
@@ -119,6 +147,25 @@ access/refresh tokens in the local config (file permissions hardened to
 `0600`, tokens masked whenever the config is printed). Check status with
 `loom auth status`, and clear the session with `loom auth logout`.
 
+`loom auth status` only says whether the session is live -- for *who the
+API thinks you are* (your `sub`, `name`, scopes/roles, and every other
+claim your token carries), use `loom auth whoami`. It decodes the cached
+token locally without a JWKS fetch (it's showing you your own token, not
+making a trust decision), so it also works to diagnose a token the API is
+currently rejecting -- e.g. no `Principal` row provisioned for your `sub`,
+which is the most common cause of a `401 Not authorized` right after a
+successful login (see `docs/admin-guide.md`'s Troubleshooting section).
+`loom auth whoami` also shows your locally-selected Tenant, set via `loom
+auth set-tenant <tenant_id>` -- only needed if `sub` is provisioned in
+more than one Tenant (see `docs/admin-guide.md`'s "How a caller's Tenant
+is resolved" section); `loom auth set-tenant` with no arguments shows the
+current selection, `--clear` removes it.
+
+`--tenant-id` is always required on `loom principal create`/`loom
+principal list` -- there's no `tenant_id` claim on any token to default it
+from; a caller's Tenant is resolved from their own `Principal` row, not a
+token claim (see "Managing Tenants and Principals from the CLI" below).
+
 **Session length**: how long that login lasts before every `loom`
 subcommand demands a fresh one is Keycloak's realm/client "Access Token
 Lifespan" (commonly a few minutes by default) — `loom` doesn't shorten it,
@@ -129,12 +176,15 @@ realm default feels too short, override it for just this client at
 registration time (or re-run against an already-registered one to change
 it later):
 
-    loom idp register-cli-client --issuer-url https://idp.example/realms/loom \
-      --client-id loom-cli --access-token-lifespan 1800
+    loom idp register --issuer-url https://idp.example/realms/loom \
+      --client-id loom-catalog-api --api-base-url https://api.example.com \
+      --access-token-lifespan 1800
 
 (seconds; also settable via `LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN`, flag
-takes precedence). This changes only `loom-cli`'s own token lifespan, not
-the realm default other clients rely on.
+takes precedence). This changes only the CLI client's own token lifespan,
+not the realm default other clients rely on -- re-running `loom idp
+register` is safe (see above), so this doesn't need to be set at first
+registration time.
 
 ### Managing Catalog entities from the CLI
 
@@ -187,9 +237,11 @@ reading the `entity_id` column back out of a prior command's output.
 ### Managing Tenants and Principals from the CLI
 
 `loom tenant`/`loom principal` work the same way, against the same API,
-but aren't `VersionedEntity` -- no `lifecycle_state`/version history, so
-there's `create`/`list`/`show`/`update` and no `versions`/`transition`,
-and `update` is a real in-place `PATCH` rather than a new version:
+but aren't `VersionedEntity` -- no `lifecycle_state`/version history.
+Tenant gets `create`/`list`/`show`/`update` (a real in-place `PATCH`,
+not a new version); Principal has no `update` at all -- its only mutable
+field used to be a stored display name, which no longer exists (see
+below). Neither has `versions`/`transition`:
 
     loom tenant create <slug> <name>
     loom tenant list [--limit N] [--offset N]
@@ -197,40 +249,59 @@ and `update` is a real in-place `PATCH` rather than a new version:
     loom tenant update <tenant_id> <name>
 
     loom principal create --tenant-id <id> --kind {user,agent,service_account} \
-      --display-name <name> --external-id <sub>
+      --external-id <sub>
     loom principal list --tenant-id <id> [--limit N] [--offset N]
     loom principal show <principal_id>
-    loom principal update <principal_id> <display_name>
 
 `--external-id` is the identity a token has to carry (its `sub` claim) for
 `resolve_principal` to match it up at request time -- see
-`src/loom/api/catalog/dependencies.py`. Neither resource has a `delete`
-endpoint.
+`src/loom/api/catalog/dependencies.py`. `--tenant-id` is always required
+on `create`/`list` -- no token carries a `tenant_id` claim to default it
+from. A Principal has no stored display name: a human-readable name comes
+from the IDP's own `name` claim, read live off *your own* token at
+request time (`loom auth whoami`) -- there's no way to look up another
+Principal's name through the API, only their `id`/`external_id`/`kind`.
+Neither resource has a `delete` endpoint.
 
-**Bootstrapping the first one.** `loom principal create` calls `POST
-/principals`, which itself requires an already-authorized, already-
-provisioned caller -- on a fresh deployment nobody is one yet, so this
-command can't create its own prerequisite. `loom db seed-principal` is the
-escape hatch: it writes the Tenant/Principal rows directly to the database
-via `config.database` (the same direct-DB-access story as `loom db
-upgrade`), no bearer token involved, entirely bypassing the API/Policy
-Engine:
+**Bootstrapping the first one.** Unlike every Capability/Agent/Skill/Tool
+endpoint, `POST /tenants` and `POST /principals` don't require an
+already-resolved Principal -- they only check that the caller's token
+carries `catalog:tenant:write`/`catalog:principal:write`. That's exactly
+what the `catalog-platform-admin` role grants (see
+`src/loom/idp/catalog_roles.py`), so a **platform administrator** -- a
+human account in your IDP holding that role, and nothing else provisioned
+in the Catalog's own database -- can bootstrap a fresh deployment entirely
+through the real API:
 
-    loom db seed-principal --tenant-slug acme --tenant-name "Acme Corp" \
-      --kind user --display-name "Mathieu Imfeld" --external-id <sub from the IDP token>
+    loom db upgrade
+    loom idp register --issuer-url https://idp.example/realms/loom \
+      --client-id loom-catalog-api --api-base-url https://api.example.com
 
-Safe to re-run: it reuses an existing Tenant by `--tenant-slug` (only
-needs `--tenant-name` the first time), and reports rather than erroring if
-a Principal for that `(tenant, external_id)` pair already exists. It also
-writes one `AuditEvent` for the bootstrap itself (`actor_principal_id`
-pointing at the Principal it just created, since there's no other actor to
-attribute it to), so the bypass isn't silent -- but every *subsequent*
-Principal should go through `loom principal create` instead, so it's
-actually policy-checked and audit-logged the normal way. This only creates
-the database row -- the matching IDP account still separately needs a
-`tenant_id` attribute set to this Tenant's id (see `docs/admin-guide.md`'s
-Troubleshooting section), or its tokens still won't carry the claim this
-Principal is resolved by.
+    # manual: in your IDP, create a user for the platform administrator
+    # and grant them the `catalog-platform-admin` role under the
+    # loom-catalog-api client (see docs/admin-guide.md's "Platform
+    # administrator" section).
+
+    loom auth login
+
+    loom tenant create acme "Acme Corp"
+    loom principal create --tenant-id <id from above> --kind user \
+      --external-id <sub from `loom auth whoami`>
+
+Every *subsequent* Tenant/Principal should go through the same two
+commands -- there's no separate bootstrap-only code path, so it's always
+policy-checked the normal way, and both write an `AuditEvent`
+(`tenant.create`/`principal.create`) -- attributed to the caller's
+Principal when they have one, or to their token's `sub` claim in
+`details.actor_external_id` when they don't (a platform administrator, on
+the very first bootstrap most notably; see `src/loom/api/catalog/audit.py`).
+`loom principal create` above is also how the platform administrator
+provisions themselves (or anyone else) a real, tenant-scoped Principal
+once they need to act as one -- their platform-administrator token alone
+is enough to manage Tenants/Principals across every Tenant, but
+Capability/Agent/Skill/Tool access still requires a Principal row in the
+specific Tenant being worked in, resolved the normal way from their
+token's `sub` (see `docs/admin-guide.md`'s Troubleshooting section).
 
 ### TLS trust for the IDP connection
 
@@ -243,7 +314,7 @@ installed via a management tool into the login keychain rather than the
 System roots), set an explicit override instead of fighting the OS store:
 
     export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem
-    loom idp register-client ...
+    loom idp register ...
 
 ### Verifying interactively
 
@@ -276,11 +347,13 @@ live credentials). To run it:
 Three tiers, gated independently:
 
 - **`test_discovery.py`** needs only `LOOM_IDP_ISSUER_URL` — confirms the
-  issuer is reachable and that `security.py`'s Keycloak-conventional
-  endpoint derivation matches what the instance actually advertises.
+  issuer is reachable and that its discovery document actually advertises
+  the keys `security.py`'s `discover_oidc` indexes
+  (`authorization_endpoint`, `token_endpoint`, `jwks_uri`) plus the device
+  code grant `loom auth login` needs.
 - **`test_swagger_login.py`** / **`test_cli_device_flow.py`** need admin
   credentials too — register throwaway `loom-it-*` clients (mirroring
-  `register-docs-client`/`register-cli-client`) and confirm their
+  `loom idp register`'s Swagger UI/CLI steps) and confirm their
   Keycloak-side config and the app's own OpenAPI/Swagger wiring line up
   with the live discovery document; the device-flow test also drives one
   real `start()`/`poll()` round trip and confirms it reports RFC 8628's
@@ -291,8 +364,8 @@ Three tiers, gated independently:
   stays hardcoded `False` on both, and this stays true after running these
   tests), decodes it with the real `TokenValidator` against the live
   JWKS, and runs a real bearer token through an in-process FastAPI app to
-  confirm the audience/roles/`tenant_id` protocol mappers produce a token
-  shape `expand_claims_to_scopes`/`get_current_principal` actually accept.
+  confirm the audience/roles protocol mappers produce a token shape
+  `expand_claims_to_scopes`/`get_current_principal` actually accept.
 
 Every object these tests create in the live realm is prefixed `loom-it-`
 and deleted at the end of the run. If a run is interrupted between setup
@@ -319,8 +392,7 @@ constraints). Also self-skips without live credentials:
     pytest tests/integration/ -m live_db
 
 Point it at a disposable database, not production: migrations are applied
-and left in place (additive schema, same reasoning as the IDP suite's
-`tenant_id` User Profile attribute), and each test runs inside a
+and left in place (additive schema), and each test runs inside a
 transaction rolled back on exit so no row it writes persists — but neither
 of those makes it something to run against a database anything else
 depends on.
@@ -376,7 +448,7 @@ on `ModelEndpoint`, not here.
 An alternative interface onto the same use-cases as the REST API above
 (`Capability`, `ModelEndpoint`, `Agent`) — exposed as MCP tools instead of
 HTTP endpoints, so an Agent can invoke them directly. It shares the REST
-API's `database`/`auth` config and calls the exact same Service layer
+API's `database` config and calls the exact same Service layer
 (`CapabilityService`/`ModelEndpointService`/`AgentService`), not a proxy
 over HTTP — see `docs/superpowers/specs/2026-08-08-catalog-api-design.md`.
 Run it:
@@ -384,13 +456,27 @@ Run it:
     loom-catalog-mcp
 
 This serves Streamable HTTP on `http://0.0.0.0:8100/mcp` (a different
-port than `loom-catalog-api`'s 8000, since both can run at once). Point
-any MCP client at it with the same kind of bearer JWT the REST API
-expects — issued by the same IDP client, carrying the same
-`tenant_id`/`roles`/`scope` claims (see `loom idp register-client` above)
-— and it enforces the identical tenant resolution and
-`catalog:{capability,model_endpoint,agent}:{read,write,transition}` scope
-checks the REST routes do; there's no separate, weaker MCP auth path.
+port than `loom-catalog-api`'s 8000, since both can run at once).
+
+Unlike `database`, `auth` is **not** fully shared with the REST API: the
+MCP server is its own resource-server client in the IDP (`loom idp
+register`'s MCP step, above), with its own audience (`auth.mcp_audience`,
+distinct from `auth.audience`) — `loom-catalog-mcp` validates a token's
+`aud` against `mcp_audience`, not `audience`. Point any MCP client at it
+with a bearer JWT carrying `mcp_audience` in `aud` plus the same
+`roles`/`scope` claims the REST API reads; a token from `loom
+auth login` already carries both audiences (the CLI client gets an
+audience mapper for each resource server), so no separate login is needed
+to call both. Once resolved, it enforces the identical tenant resolution
+and `catalog:{capability,model_endpoint,agent}:{read,write,transition}`
+scope checks the REST routes do; there's no separate, weaker MCP auth
+path. That includes the multi-tenant disambiguation described above: if
+`sub` is provisioned in more than one Tenant, the MCP server needs the
+same `X-Loom-Tenant-Id` hint the REST API does. There's no MCP equivalent
+of `loom auth set-tenant` (that command only writes to the CLI's local
+config, which the MCP transport doesn't consult) -- an MCP client with a
+multi-tenant identity must send the `X-Loom-Tenant-Id` header itself on
+every request.
 
 Seven tools are registered per resource (21 total), one per REST
 endpoint, taking the same request shape as the JSON bodies documented
