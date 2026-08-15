@@ -56,9 +56,18 @@ clears the session.
 
 ## Managing entities
 
-Three resources -- `capability`, `model`, `agent` -- each with the same six
-verbs: `create`, `list`, `show`, `update`, `versions`, `transition`.
-Output renders as `rich` tables, styled like `openstack`/`freeipa`'s CLIs.
+Seven `VersionedEntity` resources -- `capability`, `model`, `agent`,
+`skill`, `tool`, `datasource`, `dataproduct` -- each with the same six
+verbs: `create`, `list`, `show`, `update`, `versions`, `transition`. Three
+of them also have their own sub-resource verbs, keyed on
+`(entity_id, version)` rather than `entity_id` alone: `loom skill
+node|edge {add,list}` (a Skill's graph), `loom tool binding {add,list}`
+(a Tool's data bindings), and `loom dataproduct lineage {add,list}` (a
+DataProduct's lineage edges). `loom environment {create,list,show,update}`
+covers the platform-tier Environment -- not versioned, so no `versions`/
+`transition`, and `update` PATCHes in place instead of creating a new
+version row. Output renders as `rich` tables, styled like
+`openstack`/`freeipa`'s CLIs.
 
 A worked example -- register a model endpoint, then an agent bound to it:
 
@@ -106,9 +115,17 @@ URL -- it's a different service/port than the REST API). Every tool call
 takes `tenant_id` as an explicit argument -- there's no separate "selected
 Tenant" state on the MCP side the way there is for the CLI, so your MCP
 client needs to pass it on every call. Seven tools are registered per
-resource (21 total): `create_X`, `get_X`, `list_Xs`, `list_X_versions`,
-`get_X_version`, `update_X`, `transition_X` for `capability`/`model`/
-`agent`.
+`VersionedEntity` resource (49 total): `create_X`, `get_X`, `list_Xs`,
+`list_X_versions`, `get_X_version`, `update_X`, `transition_X` for
+`capability`/`model`/`agent`/`skill`/`tool`/`datasource`/`dataproduct`.
+Skill/Tool/DataProduct add their own sub-resource tools --
+`add_skill_node`/`list_skill_nodes`/`add_skill_edge`/`list_skill_edges`,
+`add_tool_data_binding`/`list_tool_data_bindings`,
+`add_dataproduct_lineage`/`list_dataproduct_lineage` -- and Environment
+adds `create_environment`/`get_environment`/`list_environments`/
+`update_environment` (61 tools in total). Tenant/Principal aren't exposed
+over MCP -- see [docs/architecture.md](architecture.md#whats-implemented)
+for why.
 
 ## Getting help
 

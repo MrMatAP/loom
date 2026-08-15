@@ -27,13 +27,18 @@ runs, not by building three images.
 The registry models Capability, Agent, Skill, Tool, DataSource,
 DataProduct, and ModelEndpoint as `VersionedEntity` rows, plus a
 platform-bootstrap tier (Tenant, Principal, Environment) that isn't
-versioned. All ten have SQLAlchemy models and REST routers. Only
-Capability, ModelEndpoint, and Agent currently have CLI (`loom capability
-|model|agent`) and MCP tool coverage -- Skill, Tool, DataSource,
-DataProduct, and Environment are REST-only for now. Evaluation,
-governance (beyond the audit log), and observability (Trace/Metric) exist
-as SQLAlchemy models (`src/loom/model/evaluation.py`,
-`governance.py`, `observability.py`) with no API surface yet.
+versioned. All ten have SQLAlchemy models and REST routers. Every
+`VersionedEntity` (`loom capability|model|agent|skill|tool|datasource
+|dataproduct`, plus each one's own sub-resource verbs -- `skill node|
+edge`, `tool binding`, `dataproduct lineage`) and Environment (`loom
+environment`, CRUD, not versioned) now also has CLI and MCP tool coverage.
+Tenant and Principal remain REST+CLI only -- they're bootstrapping routes
+with a different auth shape (no already-provisioned Principal required;
+see `cli/catalog.py`'s Tenant/Principal section) that the MCP server
+deliberately doesn't expose. Evaluation, governance (beyond the audit
+log), and observability (Trace/Metric) exist as SQLAlchemy models
+(`src/loom/model/evaluation.py`, `governance.py`, `observability.py`)
+with no API surface yet.
 
 ## Versioning and lifecycle
 

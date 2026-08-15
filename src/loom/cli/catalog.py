@@ -13,11 +13,16 @@ import rich.table
 from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
 from loom.model.enums import (
+    DataBindingAccessMode,
+    DataSourceKind,
+    EnvironmentKind,
+    GraphNodeType,
     Layer,
     LifecycleState,
     MemoryScope,
     ModelProtocol,
     PrincipalKind,
+    SkillKind,
 )
 
 console = rich.console.Console()
@@ -168,6 +173,30 @@ async def _post_and_show_flat(config: RootConfig, path: str, payload: dict) -> i
     return 0
 
 
+async def _patch_and_show(
+    config: RootConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
+) -> int:
+    """Shared PATCH-and-render for Tenant-nested in-place updates (e.g.
+    `environment update`) -- unlike `_patch_and_show_flat` (Tenant itself),
+    `suffix` is relative to the Tenant, like `_post_and_show`. Drops `None`
+    values from `payload` before sending: `EnvironmentUpdate`'s fields are
+    all optional (partial update), and while the server already treats an
+    explicit `null` the same as an absent key (see `EnvironmentService.
+    update`), sending only what the caller actually set keeps the request
+    honest about intent."""
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    clean_payload = {k: v for k, v in payload.items() if v is not None}
+    try:
+        result = await client.patch(client.tenant_path(suffix), clean_payload)
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(result)
+    return 0
+
+
 async def _patch_and_show_flat(config: RootConfig, path: str, payload: dict) -> int:
     """Shared PATCH-and-render for `tenant update` -- unlike Capability/
     ModelEndpoint/Agent's `update`, which POSTs a new version, Tenant
@@ -219,6 +248,22 @@ RESOURCES: dict[str, ResourceSpec] = {
     ),
     'agent': ResourceSpec(
         title='Agent', plural='Agents', article='an', api_path='/agents'
+    ),
+    'skill': ResourceSpec(
+        title='Skill', plural='Skills', article='a', api_path='/skills'
+    ),
+    'tool': ResourceSpec(title='Tool', plural='Tools', article='a', api_path='/tools'),
+    'datasource': ResourceSpec(
+        title='DataSource',
+        plural='DataSources',
+        article='a',
+        api_path='/datasources',
+    ),
+    'dataproduct': ResourceSpec(
+        title='DataProduct',
+        plural='DataProducts',
+        article='a',
+        api_path='/dataproducts',
     ),
 }
 
@@ -424,6 +469,436 @@ async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
         return 1
     suffix = f'{RESOURCES["agent"].api_path}/{args.entity_id}/versions'
     return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+# --- Skill: create/update, plus graph node/edge sub-resources ---------------
+
+
+def _skill_payload(args: argparse.Namespace) -> dict | None:
+    try:
+        atomic_content = (
+            _parse_json(args.atomic_content, '--atomic-content', dict)
+            if args.atomic_content is not None
+            else None
+        )
+    except (ValueError, TypeError) as exc:
+        console.print(f'[red]{exc}[/red]')
+        return None
+    return {
+        'name': args.name,
+        'description': args.description,
+        'layer': args.layer,
+        'kind': args.kind,
+        'is_entry_point': args.is_entry_point,
+        'atomic_content': atomic_content,
+    }
+
+
+async def skill_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a Skill via the Catalog API. A deployable workflow is just a
+    Composite Skill with `--is-entry-point` -- there is no separate
+    "Topology" resource (see CLAUDE.md's entity model)."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _skill_payload(args)
+    if payload is None:
+        return 1
+    return await _post_and_show(config, tenant_id, RESOURCES['skill'].api_path, payload)
+
+
+async def skill_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a new Skill version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _skill_payload(args)
+    if payload is None:
+        return 1
+    suffix = f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+_SKILL_NODE_COLUMNS = (
+    'id',
+    'node_key',
+    'node_type',
+    'agent_id',
+    'skill_ref_id',
+    'tool_id',
+)
+_SKILL_EDGE_COLUMNS = ('id', 'from_node_id', 'to_node_id')
+
+
+async def skill_node_add(config: RootConfig, args: argparse.Namespace) -> int:
+    """Add a node to one version of a Skill's graph via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    try:
+        position = (
+            _parse_json(args.position, '--position', dict)
+            if args.position is not None
+            else None
+        )
+    except (ValueError, TypeError) as exc:
+        console.print(f'[red]{exc}[/red]')
+        return 1
+    payload = {
+        'node_key': args.node_key,
+        'node_type': args.node_type,
+        'agent_id': _uuid_str(args.agent_id),
+        'skill_ref_id': _uuid_str(args.skill_ref_id),
+        'tool_id': _uuid_str(args.tool_id),
+        'position': position,
+    }
+    suffix = (
+        f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions/{args.version}/nodes'
+    )
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+async def skill_node_list(config: RootConfig, args: argparse.Namespace) -> int:
+    """List the nodes of one version of a Skill's graph via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    suffix = (
+        f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions/{args.version}/nodes'
+    )
+    try:
+        items = await client.get(client.tenant_path(suffix))
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_SKILL_NODE_COLUMNS, items)
+    console.print(f'[dim]{len(items)} node(s)[/dim]')
+    return 0
+
+
+async def skill_edge_add(config: RootConfig, args: argparse.Namespace) -> int:
+    """Add an edge to one version of a Skill's graph via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = {
+        'from_node_id': str(args.from_node_id),
+        'to_node_id': str(args.to_node_id),
+    }
+    suffix = (
+        f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions/{args.version}/edges'
+    )
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+async def skill_edge_list(config: RootConfig, args: argparse.Namespace) -> int:
+    """List the edges of one version of a Skill's graph via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    suffix = (
+        f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions/{args.version}/edges'
+    )
+    try:
+        items = await client.get(client.tenant_path(suffix))
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_SKILL_EDGE_COLUMNS, items)
+    console.print(f'[dim]{len(items)} edge(s)[/dim]')
+    return 0
+
+
+# --- Tool: create/update, plus data-binding sub-resource ---------------------
+
+
+def _tool_payload(args: argparse.Namespace) -> dict | None:
+    try:
+        invocation_spec = _parse_json(args.invocation_spec, '--invocation-spec', dict)
+    except (ValueError, TypeError) as exc:
+        console.print(f'[red]{exc}[/red]')
+        return None
+    return {
+        'name': args.name,
+        'description': args.description,
+        'invocation_spec': invocation_spec,
+        'auth_binding_id': _uuid_str(args.auth_binding_id),
+    }
+
+
+async def tool_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a Tool via the Catalog API. Tools bind to DataSource/
+    DataProduct statically at design time (`tool data-binding add`), unlike
+    an Agent, which never gets a direct data binding (see CLAUDE.md)."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _tool_payload(args)
+    if payload is None:
+        return 1
+    return await _post_and_show(config, tenant_id, RESOURCES['tool'].api_path, payload)
+
+
+async def tool_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a new Tool version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _tool_payload(args)
+    if payload is None:
+        return 1
+    suffix = f'{RESOURCES["tool"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+_TOOL_BINDING_COLUMNS = ('id', 'datasource_id', 'dataproduct_id', 'access_mode')
+
+
+async def tool_binding_add(config: RootConfig, args: argparse.Namespace) -> int:
+    """Add a data binding to one version of a Tool via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = {
+        'datasource_id': _uuid_str(args.datasource_id),
+        'dataproduct_id': _uuid_str(args.dataproduct_id),
+        'access_mode': args.access_mode,
+    }
+    suffix = (
+        f'{RESOURCES["tool"].api_path}/{args.entity_id}/versions/{args.version}'
+        '/data-bindings'
+    )
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+async def tool_binding_list(config: RootConfig, args: argparse.Namespace) -> int:
+    """List the data bindings of one version of a Tool via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    suffix = (
+        f'{RESOURCES["tool"].api_path}/{args.entity_id}/versions/{args.version}'
+        '/data-bindings'
+    )
+    try:
+        items = await client.get(client.tenant_path(suffix))
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_TOOL_BINDING_COLUMNS, items)
+    console.print(f'[dim]{len(items)} data binding(s)[/dim]')
+    return 0
+
+
+# --- DataSource: create/update ------------------------------------------
+
+
+def _datasource_payload(args: argparse.Namespace) -> dict:
+    return {
+        'name': args.name,
+        'description': args.description,
+        'kind': args.kind,
+        'connection_binding_id': _uuid_str(args.connection_binding_id),
+    }
+
+
+async def datasource_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a DataSource via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _datasource_payload(args)
+    return await _post_and_show(
+        config, tenant_id, RESOURCES['datasource'].api_path, payload
+    )
+
+
+async def datasource_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a new DataSource version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _datasource_payload(args)
+    suffix = f'{RESOURCES["datasource"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+# --- DataProduct: create/update, plus lineage sub-resource --------------
+
+
+def _dataproduct_payload(args: argparse.Namespace) -> dict | None:
+    try:
+        contract = _parse_json(args.contract, '--contract', dict)
+    except (ValueError, TypeError) as exc:
+        console.print(f'[red]{exc}[/red]')
+        return None
+    return {
+        'name': args.name,
+        'description': args.description,
+        'contract': contract,
+    }
+
+
+async def dataproduct_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a DataProduct via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _dataproduct_payload(args)
+    if payload is None:
+        return 1
+    return await _post_and_show(
+        config, tenant_id, RESOURCES['dataproduct'].api_path, payload
+    )
+
+
+async def dataproduct_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create a new DataProduct version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = _dataproduct_payload(args)
+    if payload is None:
+        return 1
+    suffix = f'{RESOURCES["dataproduct"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+_DATAPRODUCT_LINEAGE_COLUMNS = (
+    'id',
+    'dataproduct_id',
+    'source_datasource_id',
+    'source_dataproduct_id',
+)
+
+
+async def dataproduct_lineage_add(config: RootConfig, args: argparse.Namespace) -> int:
+    """Add a lineage edge to one version of a DataProduct via the Catalog
+    API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = {
+        'source_datasource_id': _uuid_str(args.source_datasource_id),
+        'source_dataproduct_id': _uuid_str(args.source_dataproduct_id),
+    }
+    suffix = (
+        f'{RESOURCES["dataproduct"].api_path}/{args.entity_id}/versions'
+        f'/{args.version}/lineage'
+    )
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
+async def dataproduct_lineage_list(config: RootConfig, args: argparse.Namespace) -> int:
+    """List the lineage edges of one version of a DataProduct via the
+    Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    suffix = (
+        f'{RESOURCES["dataproduct"].api_path}/{args.entity_id}/versions'
+        f'/{args.version}/lineage'
+    )
+    try:
+        items = await client.get(client.tenant_path(suffix))
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_DATAPRODUCT_LINEAGE_COLUMNS, items)
+    console.print(f'[dim]{len(items)} lineage edge(s)[/dim]')
+    return 0
+
+
+# --- Environment: CRUD (not a VersionedEntity) ---------------------------
+#
+# No lifecycle_state/version/transitions -- Environment is the platform-tier
+# "physically isolated execution context" (Sandbox/Staging/Production),
+# not something that goes through Draft->...->Retired. `update` PATCHes in
+# place, like Tenant, but (unlike Tenant) it *is* nested under a Tenant
+# path.
+
+_ENVIRONMENT_API_PATH = '/environments'
+_ENVIRONMENT_LIST_COLUMNS = ('id', 'name', 'kind', 'compute_boundary_ref')
+
+
+async def environment_create(config: RootConfig, args: argparse.Namespace) -> int:
+    """Create an Environment via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = {
+        'name': args.name,
+        'kind': args.kind,
+        'compute_boundary_ref': args.compute_boundary_ref,
+        'network_boundary_ref': args.network_boundary_ref,
+    }
+    return await _post_and_show(config, tenant_id, _ENVIRONMENT_API_PATH, payload)
+
+
+async def environment_list(config: RootConfig, args: argparse.Namespace) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    params = {'limit': args.limit, 'offset': args.offset}
+    try:
+        page = await client.get(
+            client.tenant_path(_ENVIRONMENT_API_PATH), params=params
+        )
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_table(_ENVIRONMENT_LIST_COLUMNS, page['items'])
+    console.print(
+        f'[dim]{len(page["items"])} of {page["total"]} shown '
+        f'(limit={page["limit"]}, offset={page["offset"]})[/dim]'
+    )
+    return 0
+
+
+async def environment_show(config: RootConfig, args: argparse.Namespace) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    try:
+        item = await client.get(
+            client.tenant_path(f'{_ENVIRONMENT_API_PATH}/{args.environment_id}')
+        )
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(item)
+    return 0
+
+
+async def environment_update(config: RootConfig, args: argparse.Namespace) -> int:
+    """Update an Environment's boundary refs in place via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = {
+        'compute_boundary_ref': args.compute_boundary_ref,
+        'network_boundary_ref': args.network_boundary_ref,
+    }
+    suffix = f'{_ENVIRONMENT_API_PATH}/{args.environment_id}'
+    return await _patch_and_show(config, tenant_id, suffix, payload)
 
 
 # --- Tenant/Principal: CRUD ---------------------------------------------
@@ -652,6 +1127,90 @@ def _add_agent_fields(parser: argparse.ArgumentParser) -> None:
     _add_tenant_id_arg(parser)
 
 
+def _add_skill_fields(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('name', help='Human-readable name')
+    parser.add_argument('--description', default=None, help='Free-text description')
+    parser.add_argument(
+        '--layer',
+        required=True,
+        choices=[layer.value for layer in Layer],
+        help='Skill Graph layer this Skill belongs to',
+    )
+    parser.add_argument(
+        '--kind',
+        required=True,
+        choices=[k.value for k in SkillKind],
+        help='Atomic (prompt/code) or composite (a graph of nodes)',
+    )
+    parser.add_argument(
+        '--is-entry-point',
+        dest='is_entry_point',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            'A deployable workflow is a Composite Skill with this set. '
+            "`update` restates the entire payload (see `loom skill --help`'s "
+            'note on versioning) -- pass `--is-entry-point`/'
+            '`--no-is-entry-point` explicitly rather than relying on the '
+            'default when updating a Skill that already has this set.'
+        ),
+    )
+    parser.add_argument(
+        '--atomic-content',
+        dest='atomic_content',
+        default=None,
+        help='Atomic Skill content as a JSON object, required when --kind=atomic',
+    )
+    _add_tenant_id_arg(parser)
+
+
+def _add_tool_fields(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('name', help='Human-readable name')
+    parser.add_argument('--description', default=None, help='Free-text description')
+    parser.add_argument(
+        '--invocation-spec',
+        dest='invocation_spec',
+        required=True,
+        help='The external action interface as a JSON object',
+    )
+    parser.add_argument(
+        '--auth-binding-id',
+        dest='auth_binding_id',
+        type=uuid.UUID,
+        default=None,
+        help='Credential vault binding for this Tool',
+    )
+    _add_tenant_id_arg(parser)
+
+
+def _add_datasource_fields(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('name', help='Human-readable name')
+    parser.add_argument('--description', default=None, help='Free-text description')
+    parser.add_argument(
+        '--kind',
+        required=True,
+        choices=[k.value for k in DataSourceKind],
+        help='What this DataSource connects to',
+    )
+    parser.add_argument(
+        '--connection-binding-id',
+        dest='connection_binding_id',
+        type=uuid.UUID,
+        default=None,
+        help='Credential vault binding for this connection',
+    )
+    _add_tenant_id_arg(parser)
+
+
+def _add_dataproduct_fields(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('name', help='Human-readable name')
+    parser.add_argument('--description', default=None, help='Free-text description')
+    parser.add_argument(
+        '--contract', required=True, help='The publication contract as a JSON object'
+    )
+    _add_tenant_id_arg(parser)
+
+
 def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> None:
     """The four verbs identical in shape across every resource: list, show,
     versions, transition. create/update stay resource-specific (see the
@@ -758,6 +1317,238 @@ def _add_agent_parsers(subparsers: argparse._SubParsersAction) -> None:
     _add_generic_verbs(sub, RESOURCES['agent'])
 
 
+def _add_skill_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('skill', help='Skill commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a Skill')
+    _add_skill_fields(create_parser)
+    create_parser.set_defaults(func=skill_create)
+
+    update_parser = sub.add_parser('update', help='Create a new Skill version')
+    update_parser.add_argument(
+        'entity_id', type=uuid.UUID, help="The Skill's entity_id"
+    )
+    _add_skill_fields(update_parser)
+    update_parser.set_defaults(func=skill_update)
+
+    _add_generic_verbs(sub, RESOURCES['skill'])
+
+    node_parser = sub.add_parser('node', help="A Skill version's graph nodes")
+    node_sub = node_parser.add_subparsers(required=True)
+
+    node_add_parser = node_sub.add_parser('add', help='Add a node')
+    node_add_parser.add_argument('entity_id', type=uuid.UUID)
+    node_add_parser.add_argument('version', type=int)
+    node_add_parser.add_argument(
+        'node_key', help='Unique key of this node in the graph'
+    )
+    node_add_parser.add_argument(
+        '--node-type',
+        dest='node_type',
+        required=True,
+        choices=[t.value for t in GraphNodeType],
+    )
+    node_add_parser.add_argument(
+        '--agent-id', dest='agent_id', type=uuid.UUID, default=None
+    )
+    node_add_parser.add_argument(
+        '--skill-ref-id', dest='skill_ref_id', type=uuid.UUID, default=None
+    )
+    node_add_parser.add_argument(
+        '--tool-id', dest='tool_id', type=uuid.UUID, default=None
+    )
+    node_add_parser.add_argument(
+        '--position', default=None, help='Canvas position as a JSON object'
+    )
+    _add_tenant_id_arg(node_add_parser)
+    node_add_parser.set_defaults(func=skill_node_add)
+
+    node_list_parser = node_sub.add_parser('list', help='List nodes')
+    node_list_parser.add_argument('entity_id', type=uuid.UUID)
+    node_list_parser.add_argument('version', type=int)
+    _add_tenant_id_arg(node_list_parser)
+    node_list_parser.set_defaults(func=skill_node_list)
+
+    edge_parser = sub.add_parser('edge', help="A Skill version's graph edges")
+    edge_sub = edge_parser.add_subparsers(required=True)
+
+    edge_add_parser = edge_sub.add_parser('add', help='Add an edge')
+    edge_add_parser.add_argument('entity_id', type=uuid.UUID)
+    edge_add_parser.add_argument('version', type=int)
+    edge_add_parser.add_argument('from_node_id', type=uuid.UUID)
+    edge_add_parser.add_argument('to_node_id', type=uuid.UUID)
+    _add_tenant_id_arg(edge_add_parser)
+    edge_add_parser.set_defaults(func=skill_edge_add)
+
+    edge_list_parser = edge_sub.add_parser('list', help='List edges')
+    edge_list_parser.add_argument('entity_id', type=uuid.UUID)
+    edge_list_parser.add_argument('version', type=int)
+    _add_tenant_id_arg(edge_list_parser)
+    edge_list_parser.set_defaults(func=skill_edge_list)
+
+
+def _add_tool_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('tool', help='Tool commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a Tool')
+    _add_tool_fields(create_parser)
+    create_parser.set_defaults(func=tool_create)
+
+    update_parser = sub.add_parser('update', help='Create a new Tool version')
+    update_parser.add_argument('entity_id', type=uuid.UUID, help="The Tool's entity_id")
+    _add_tool_fields(update_parser)
+    update_parser.set_defaults(func=tool_update)
+
+    _add_generic_verbs(sub, RESOURCES['tool'])
+
+    binding_parser = sub.add_parser('binding', help="A Tool version's data bindings")
+    binding_sub = binding_parser.add_subparsers(required=True)
+
+    binding_add_parser = binding_sub.add_parser('add', help='Add a data binding')
+    binding_add_parser.add_argument('entity_id', type=uuid.UUID)
+    binding_add_parser.add_argument('version', type=int)
+    binding_add_parser.add_argument(
+        '--datasource-id', dest='datasource_id', type=uuid.UUID, default=None
+    )
+    binding_add_parser.add_argument(
+        '--dataproduct-id', dest='dataproduct_id', type=uuid.UUID, default=None
+    )
+    binding_add_parser.add_argument(
+        '--access-mode',
+        dest='access_mode',
+        required=True,
+        choices=[m.value for m in DataBindingAccessMode],
+    )
+    _add_tenant_id_arg(binding_add_parser)
+    binding_add_parser.set_defaults(func=tool_binding_add)
+
+    binding_list_parser = binding_sub.add_parser('list', help='List data bindings')
+    binding_list_parser.add_argument('entity_id', type=uuid.UUID)
+    binding_list_parser.add_argument('version', type=int)
+    _add_tenant_id_arg(binding_list_parser)
+    binding_list_parser.set_defaults(func=tool_binding_list)
+
+
+def _add_datasource_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('datasource', help='DataSource commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a DataSource')
+    _add_datasource_fields(create_parser)
+    create_parser.set_defaults(func=datasource_create)
+
+    update_parser = sub.add_parser('update', help='Create a new DataSource version')
+    update_parser.add_argument(
+        'entity_id', type=uuid.UUID, help="The DataSource's entity_id"
+    )
+    _add_datasource_fields(update_parser)
+    update_parser.set_defaults(func=datasource_update)
+
+    _add_generic_verbs(sub, RESOURCES['datasource'])
+
+
+def _add_dataproduct_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('dataproduct', help='DataProduct commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create a DataProduct')
+    _add_dataproduct_fields(create_parser)
+    create_parser.set_defaults(func=dataproduct_create)
+
+    update_parser = sub.add_parser('update', help='Create a new DataProduct version')
+    update_parser.add_argument(
+        'entity_id', type=uuid.UUID, help="The DataProduct's entity_id"
+    )
+    _add_dataproduct_fields(update_parser)
+    update_parser.set_defaults(func=dataproduct_update)
+
+    _add_generic_verbs(sub, RESOURCES['dataproduct'])
+
+    lineage_parser = sub.add_parser(
+        'lineage', help="A DataProduct version's lineage edges"
+    )
+    lineage_sub = lineage_parser.add_subparsers(required=True)
+
+    lineage_add_parser = lineage_sub.add_parser('add', help='Add a lineage edge')
+    lineage_add_parser.add_argument('entity_id', type=uuid.UUID)
+    lineage_add_parser.add_argument('version', type=int)
+    lineage_add_parser.add_argument(
+        '--source-datasource-id',
+        dest='source_datasource_id',
+        type=uuid.UUID,
+        default=None,
+    )
+    lineage_add_parser.add_argument(
+        '--source-dataproduct-id',
+        dest='source_dataproduct_id',
+        type=uuid.UUID,
+        default=None,
+    )
+    _add_tenant_id_arg(lineage_add_parser)
+    lineage_add_parser.set_defaults(func=dataproduct_lineage_add)
+
+    lineage_list_parser = lineage_sub.add_parser('list', help='List lineage edges')
+    lineage_list_parser.add_argument('entity_id', type=uuid.UUID)
+    lineage_list_parser.add_argument('version', type=int)
+    _add_tenant_id_arg(lineage_list_parser)
+    lineage_list_parser.set_defaults(func=dataproduct_lineage_list)
+
+
+def _add_environment_parsers(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('environment', help='Environment commands')
+    sub = parser.add_subparsers(required=True)
+
+    create_parser = sub.add_parser('create', help='Create an Environment')
+    create_parser.add_argument('name', help='Human-readable name')
+    create_parser.add_argument(
+        '--kind', required=True, choices=[k.value for k in EnvironmentKind]
+    )
+    create_parser.add_argument(
+        '--compute-boundary-ref',
+        dest='compute_boundary_ref',
+        required=True,
+        help='Reference to the isolated compute boundary (e.g. a cluster/namespace id)',
+    )
+    create_parser.add_argument(
+        '--network-boundary-ref',
+        dest='network_boundary_ref',
+        required=True,
+        help='Reference to the isolated network boundary (e.g. a VPC/subnet id)',
+    )
+    _add_tenant_id_arg(create_parser)
+    create_parser.set_defaults(func=environment_create)
+
+    list_parser = sub.add_parser('list', help='List Environments')
+    list_parser.add_argument(
+        '--limit', type=int, default=50, help='Max results, defaults to 50'
+    )
+    list_parser.add_argument(
+        '--offset', type=int, default=0, help='Pagination offset, defaults to 0'
+    )
+    _add_tenant_id_arg(list_parser)
+    list_parser.set_defaults(func=environment_list)
+
+    show_parser = sub.add_parser('show', help='Show an Environment')
+    show_parser.add_argument('environment_id', type=uuid.UUID)
+    _add_tenant_id_arg(show_parser)
+    show_parser.set_defaults(func=environment_show)
+
+    update_parser = sub.add_parser(
+        'update', help="Update an Environment's boundary refs in place"
+    )
+    update_parser.add_argument('environment_id', type=uuid.UUID)
+    update_parser.add_argument(
+        '--compute-boundary-ref', dest='compute_boundary_ref', default=None
+    )
+    update_parser.add_argument(
+        '--network-boundary-ref', dest='network_boundary_ref', default=None
+    )
+    _add_tenant_id_arg(update_parser)
+    update_parser.set_defaults(func=environment_update)
+
+
 def _add_tenant_parsers(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser('tenant', help='Tenant commands')
     sub = parser.add_subparsers(required=True)
@@ -843,14 +1634,22 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
 
 
 def add_catalog_parsers(subparsers: argparse._SubParsersAction) -> None:
-    """Register `loom capability|model|agent {create,update,list,show,
-    versions,transition}`, `loom tenant {create,list,show,update}`, and
-    `loom principal {create,list,show}` (no `update` -- see
+    """Register `loom capability|model|agent|skill|tool|datasource|
+    dataproduct {create,update,list,show,versions,transition}` (plus each
+    resource's own sub-resource verbs -- `skill node|edge`, `tool
+    binding`, `dataproduct lineage`), `loom environment
+    {create,list,show,update}`, `loom tenant {create,list,show,update}`,
+    and `loom principal {create,list,show}` (no `update` -- see
     `_add_principal_parsers`) -- called once from `cli/main.py` so
     resource knowledge (payload shape, list columns, API path) stays here
     rather than growing `main.py`'s own argparse setup."""
     _add_capability_parsers(subparsers)
     _add_model_parsers(subparsers)
     _add_agent_parsers(subparsers)
+    _add_skill_parsers(subparsers)
+    _add_tool_parsers(subparsers)
+    _add_datasource_parsers(subparsers)
+    _add_dataproduct_parsers(subparsers)
+    _add_environment_parsers(subparsers)
     _add_tenant_parsers(subparsers)
     _add_principal_parsers(subparsers)

@@ -12,7 +12,18 @@ from loom.api.catalog.agent.service import AgentService
 from loom.api.catalog.capability.repository import CapabilityRepository
 from loom.api.catalog.capability.schemas import CapabilityCreateRequest
 from loom.api.catalog.capability.service import CapabilityService
+from loom.api.catalog.dataproduct.repository import DataProductRepository
+from loom.api.catalog.dataproduct.schemas import (
+    DataProductCreateRequest,
+    DataProductLineageCreateRequest,
+)
+from loom.api.catalog.dataproduct.service import DataProductService
+from loom.api.catalog.datasource.repository import DataSourceRepository
+from loom.api.catalog.datasource.schemas import DataSourceCreateRequest
+from loom.api.catalog.datasource.service import DataSourceService
 from loom.api.catalog.dependencies import get_principal_in_tenant
+from loom.api.catalog.environment.repository import EnvironmentRepository
+from loom.api.catalog.environment.service import EnvironmentService
 from loom.api.catalog.model_endpoint.repository import ModelEndpointRepository
 from loom.api.catalog.model_endpoint.schemas import ModelEndpointCreateRequest
 from loom.api.catalog.model_endpoint.service import ModelEndpointService
@@ -22,11 +33,34 @@ from loom.api.catalog.security import (
     AuthenticationError,
     TokenValidator,
     assert_scopes,
+    expand_claims_to_scopes,
 )
+from loom.api.catalog.skill.repository import SkillRepository
+from loom.api.catalog.skill.schemas import (
+    SkillCreateRequest,
+    SkillGraphEdgeCreateRequest,
+    SkillGraphNodeCreateRequest,
+)
+from loom.api.catalog.skill.service import SkillService
+from loom.api.catalog.tool.repository import ToolRepository
+from loom.api.catalog.tool.schemas import (
+    ToolCreateRequest,
+    ToolDataBindingCreateRequest,
+)
+from loom.api.catalog.tool.service import ToolService
 from loom.model.enums import LifecycleState
 from loom.model.schemas.agent import AgentRead
 from loom.model.schemas.capability import CapabilityRead
+from loom.model.schemas.dataproduct import DataProductLineageRead, DataProductRead
+from loom.model.schemas.datasource import DataSourceRead
+from loom.model.schemas.environment import (
+    EnvironmentCreate,
+    EnvironmentRead,
+    EnvironmentUpdate,
+)
 from loom.model.schemas.model_endpoint import ModelEndpointRead
+from loom.model.schemas.skill import SkillGraphEdgeRead, SkillGraphNodeRead, SkillRead
+from loom.model.schemas.tool import ToolDataBindingRead, ToolRead
 
 
 @dataclasses.dataclass
@@ -152,6 +186,54 @@ _BINDINGS = (
         read_scope='catalog:agent:read',
         write_scope='catalog:agent:write',
         transition_scope='catalog:agent:transition',
+    ),
+    ResourceBinding(
+        label='skill',
+        plural='skills',
+        article='a',
+        service_cls=SkillService,
+        repository_cls=SkillRepository,
+        create_request_cls=SkillCreateRequest,
+        read_cls=SkillRead,
+        read_scope='catalog:skill:read',
+        write_scope='catalog:skill:write',
+        transition_scope='catalog:skill:transition',
+    ),
+    ResourceBinding(
+        label='tool',
+        plural='tools',
+        article='a',
+        service_cls=ToolService,
+        repository_cls=ToolRepository,
+        create_request_cls=ToolCreateRequest,
+        read_cls=ToolRead,
+        read_scope='catalog:tool:read',
+        write_scope='catalog:tool:write',
+        transition_scope='catalog:tool:transition',
+    ),
+    ResourceBinding(
+        label='datasource',
+        plural='datasources',
+        article='a',
+        service_cls=DataSourceService,
+        repository_cls=DataSourceRepository,
+        create_request_cls=DataSourceCreateRequest,
+        read_cls=DataSourceRead,
+        read_scope='catalog:datasource:read',
+        write_scope='catalog:datasource:write',
+        transition_scope='catalog:datasource:transition',
+    ),
+    ResourceBinding(
+        label='dataproduct',
+        plural='dataproducts',
+        article='a',
+        service_cls=DataProductService,
+        repository_cls=DataProductRepository,
+        create_request_cls=DataProductCreateRequest,
+        read_cls=DataProductRead,
+        read_scope='catalog:dataproduct:read',
+        write_scope='catalog:dataproduct:write',
+        transition_scope='catalog:dataproduct:transition',
     ),
 )
 
@@ -328,13 +410,318 @@ def _register_resource_tools(
             return binding.read_cls.model_validate(transitioned)
 
 
+def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
+    """Register `add_skill_node`/`list_skill_nodes`/`add_skill_edge`/
+    `list_skill_edges` -- Skill's graph sub-resource, keyed on
+    `(entity_id, version)` rather than `entity_id` alone, so it doesn't fit
+    `_register_resource_tools`'s shape (mirrors `skill/router.py`'s
+    node/edge endpoints)."""
+
+    async def _principal(
+        session: AsyncSession, *, scope: str, tenant_id: uuid.UUID
+    ) -> AuthenticatedPrincipal:
+        principal = await _authenticated_principal(state, session, tenant_id=tenant_id)
+        assert_scopes(principal.scopes, scope)
+        return principal
+
+    @mcp.tool(description="Add a node to one version of a Skill's graph in tenant_id.")
+    async def add_skill_node(
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        data: SkillGraphNodeCreateRequest,
+    ) -> SkillGraphNodeRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:write', tenant_id=tenant_id
+            )
+            service = SkillService(SkillRepository(session))
+            node = await service.add_node(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                data=data,
+            )
+            await session.commit()
+            return SkillGraphNodeRead.model_validate(node)
+
+    @mcp.tool(
+        description="List the nodes of one version of a Skill's graph in tenant_id."
+    )
+    async def list_skill_nodes(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> list[SkillGraphNodeRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            service = SkillService(SkillRepository(session))
+            nodes = await service.list_nodes(principal.tenant_id, entity_id, version)
+            return [SkillGraphNodeRead.model_validate(n) for n in nodes]
+
+    @mcp.tool(description="Add an edge to one version of a Skill's graph in tenant_id.")
+    async def add_skill_edge(
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        data: SkillGraphEdgeCreateRequest,
+    ) -> SkillGraphEdgeRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:write', tenant_id=tenant_id
+            )
+            service = SkillService(SkillRepository(session))
+            edge = await service.add_edge(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                data=data,
+            )
+            await session.commit()
+            return SkillGraphEdgeRead.model_validate(edge)
+
+    @mcp.tool(
+        description="List the edges of one version of a Skill's graph in tenant_id."
+    )
+    async def list_skill_edges(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> list[SkillGraphEdgeRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            service = SkillService(SkillRepository(session))
+            edges = await service.list_edges(principal.tenant_id, entity_id, version)
+            return [SkillGraphEdgeRead.model_validate(e) for e in edges]
+
+
+def _register_tool_data_binding_tools(mcp: FastMCP, state: McpState) -> None:
+    """Register `add_tool_data_binding`/`list_tool_data_bindings` -- Tool's
+    static, design-time-bound `Tool.data_bindings[]` (see CLAUDE.md's
+    deterministic/non-deterministic data-access split), keyed on
+    `(entity_id, version)` like the Skill graph tools above."""
+
+    async def _principal(
+        session: AsyncSession, *, scope: str, tenant_id: uuid.UUID
+    ) -> AuthenticatedPrincipal:
+        principal = await _authenticated_principal(state, session, tenant_id=tenant_id)
+        assert_scopes(principal.scopes, scope)
+        return principal
+
+    @mcp.tool(description='Add a data binding to one version of a Tool in tenant_id.')
+    async def add_tool_data_binding(
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        data: ToolDataBindingCreateRequest,
+    ) -> ToolDataBindingRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:tool:write', tenant_id=tenant_id
+            )
+            service = ToolService(ToolRepository(session))
+            binding = await service.add_data_binding(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                data=data,
+            )
+            await session.commit()
+            return ToolDataBindingRead.model_validate(binding)
+
+    @mcp.tool(
+        description=('List the data bindings of one version of a Tool in tenant_id.')
+    )
+    async def list_tool_data_bindings(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> list[ToolDataBindingRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:tool:read', tenant_id=tenant_id
+            )
+            service = ToolService(ToolRepository(session))
+            bindings = await service.list_data_bindings(
+                principal.tenant_id, entity_id, version
+            )
+            return [ToolDataBindingRead.model_validate(b) for b in bindings]
+
+
+def _register_dataproduct_lineage_tools(mcp: FastMCP, state: McpState) -> None:
+    """Register `add_dataproduct_lineage`/`list_dataproduct_lineage` --
+    DataProduct lineage back to its source DataSource(s)/DataProduct(s),
+    keyed on `(entity_id, version)` like the two sub-resource groups
+    above."""
+
+    async def _principal(
+        session: AsyncSession, *, scope: str, tenant_id: uuid.UUID
+    ) -> AuthenticatedPrincipal:
+        principal = await _authenticated_principal(state, session, tenant_id=tenant_id)
+        assert_scopes(principal.scopes, scope)
+        return principal
+
+    @mcp.tool(
+        description=('Add a lineage edge to one version of a DataProduct in tenant_id.')
+    )
+    async def add_dataproduct_lineage(
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        data: DataProductLineageCreateRequest,
+    ) -> DataProductLineageRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:dataproduct:write', tenant_id=tenant_id
+            )
+            service = DataProductService(DataProductRepository(session))
+            lineage = await service.add_lineage(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                data=data,
+            )
+            await session.commit()
+            return DataProductLineageRead.model_validate(lineage)
+
+    @mcp.tool(
+        description=(
+            'List the lineage edges of one version of a DataProduct in tenant_id.'
+        )
+    )
+    async def list_dataproduct_lineage(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> list[DataProductLineageRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:dataproduct:read', tenant_id=tenant_id
+            )
+            service = DataProductService(DataProductRepository(session))
+            lineage = await service.list_lineage(
+                principal.tenant_id, entity_id, version
+            )
+            return [DataProductLineageRead.model_validate(l) for l in lineage]
+
+
+async def _scopes_from_bearer_token(state: McpState) -> frozenset[str]:
+    """Decode the request's bearer token and expand its claims to scopes,
+    without resolving a Principal -- the Environment tools' auth path
+    mirrors `environment/router.py`'s own `require_scopes(...)` dependency
+    exactly, which (unlike every other router) never calls
+    `get_current_principal`: `tenant_id` there is taken straight from the
+    path, not cross-checked against a Principal row in that Tenant. See
+    `dependencies.require_scopes`, the REST-side equivalent."""
+    if state.token_validator is None:
+        raise RuntimeError('McpState not initialized: token_validator is unset')
+    token = _bearer_token()
+    if token is None:
+        raise AuthenticationError('Missing bearer token')
+    try:
+        claims = state.token_validator.decode(token)
+    except jwt.PyJWTError as exc:
+        raise AuthenticationError(f'Invalid token: {exc}') from exc
+    return expand_claims_to_scopes(claims)
+
+
+def _register_environment_tools(mcp: FastMCP, state: McpState) -> None:
+    """Register `create_environment`/`get_environment`/`list_environments`/
+    `update_environment` -- Environment is platform-tier and not a
+    VersionedEntity (no lifecycle_state/version/transitions), so it fits
+    neither `ResourceBinding` (Capability/ModelEndpoint/.../DataProduct)
+    nor the `(entity_id, version)`-keyed sub-resource groups above (mirrors
+    `environment/router.py`)."""
+
+    async def _require_scope(scope: str) -> None:
+        scopes = await _scopes_from_bearer_token(state)
+        assert_scopes(scopes, scope)
+
+    @mcp.tool(description='Create an Environment in tenant_id.')
+    async def create_environment(
+        tenant_id: uuid.UUID, data: EnvironmentCreate
+    ) -> EnvironmentRead:
+        await _require_scope('catalog:environment:write')
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            service = EnvironmentService(EnvironmentRepository(session))
+            created = await service.create(tenant_id, data)
+            await session.commit()
+            return EnvironmentRead.model_validate(created)
+
+    @mcp.tool(description='Get one Environment in tenant_id.')
+    async def get_environment(
+        tenant_id: uuid.UUID, environment_id: uuid.UUID
+    ) -> EnvironmentRead:
+        await _require_scope('catalog:environment:read')
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            service = EnvironmentService(EnvironmentRepository(session))
+            found = await service.get(tenant_id, environment_id)
+            return EnvironmentRead.model_validate(found)
+
+    @mcp.tool(description='List Environments in tenant_id.')
+    async def list_environments(
+        tenant_id: uuid.UUID, limit: int = 50, offset: int = 0
+    ) -> Page[EnvironmentRead]:
+        await _require_scope('catalog:environment:read')
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            service = EnvironmentService(EnvironmentRepository(session))
+            items, total = await service.list_by_tenant(
+                tenant_id, limit=limit, offset=offset
+            )
+            return Page[EnvironmentRead](
+                items=[EnvironmentRead.model_validate(item) for item in items],
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
+
+    @mcp.tool(
+        description=(
+            "Update an Environment's boundary refs in tenant_id in place "
+            '-- Environment mutates in place, unlike the versioned '
+            'entities above.'
+        )
+    )
+    async def update_environment(
+        tenant_id: uuid.UUID, environment_id: uuid.UUID, data: EnvironmentUpdate
+    ) -> EnvironmentRead:
+        await _require_scope('catalog:environment:write')
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            service = EnvironmentService(EnvironmentRepository(session))
+            updated = await service.update(tenant_id, environment_id, data)
+            await session.commit()
+            return EnvironmentRead.model_validate(updated)
+
+
 def create_mcp_server(state: McpState) -> FastMCP:
     """Build the Catalog MCP server: create/get/list/versions/update/
-    transition tools for Capability, ModelEndpoint, and Agent -- an
-    alternative interface onto the same Service layer the REST API's
-    routers call (see
-    docs/superpowers/specs/2026-08-08-catalog-api-design.md)."""
+    transition tools for every content-plane resource (Capability,
+    ModelEndpoint, Agent, Skill, Tool, DataSource, DataProduct), plus each
+    resource's own sub-resource tools (Skill graph nodes/edges, Tool data
+    bindings, DataProduct lineage) -- an alternative interface onto the
+    same Service layer the REST API's routers call (see
+    docs/superpowers/specs/2026-08-08-catalog-api-design.md), plus CRUD
+    tools for the platform-tier, non-versioned Environment. Tenant/
+    Principal are deliberately left off this server -- they're
+    bootstrapping routes (`loom tenant`/`loom principal` already cover
+    them over REST) with a different auth shape than every tool above
+    (`_authenticated_principal` always resolves a Principal *in*
+    `tenant_id`; `POST /tenants`/`POST /principals` intentionally don't
+    require one -- see `cli/catalog.py`'s Tenant/Principal section for
+    why)."""
     mcp = FastMCP('Loom Catalog')
     for binding in _BINDINGS:
         _register_resource_tools(mcp, state, binding)
+    _register_skill_graph_tools(mcp, state)
+    _register_tool_data_binding_tools(mcp, state)
+    _register_dataproduct_lineage_tools(mcp, state)
+    _register_environment_tools(mcp, state)
     return mcp

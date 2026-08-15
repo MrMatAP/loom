@@ -240,3 +240,304 @@ async def test_principal_crud_wire_contract(
     )
     assert exit_code == 0
     assert rendered['detail']['external_id'] == 'wire-contract-external-id'
+
+
+# --- Skill/Tool/DataSource/DataProduct: create + their sub-resource verbs --
+#
+# `resource_list`/`resource_show`/`resource_versions`/`resource_transition`
+# are exercised against the real app above via Capability alone -- they're
+# the same generic function for every resource (`RESOURCES[...]` only
+# supplies `api_path`), so re-running them per resource wouldn't catch
+# anything new. What's resource-specific and therefore worth its own
+# wire-contract test: each `*_create` function's payload shape, and the
+# sub-resource functions (`skill_node_*`, `skill_edge_*`, `tool_binding_*`,
+# `dataproduct_lineage_*`), which have no generic-verb equivalent at all.
+
+
+@pytest.mark.asyncio
+async def test_datasource_create_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    exit_code = await catalog.datasource_create(
+        config,
+        argparse.Namespace(
+            name='Wire Contract DataSource',
+            description=None,
+            kind='database',
+            connection_binding_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+
+    assert exit_code == 0
+    assert rendered['detail']['name'] == 'Wire Contract DataSource'
+    assert rendered['detail']['kind'] == 'database'
+
+
+@pytest.mark.asyncio
+async def test_dataproduct_create_and_lineage_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    ds_exit_code = await catalog.datasource_create(
+        config,
+        argparse.Namespace(
+            name='Lineage Source',
+            description=None,
+            kind='database',
+            connection_binding_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert ds_exit_code == 0
+    datasource_id = uuid.UUID(rendered['detail']['id'])
+
+    dp_exit_code = await catalog.dataproduct_create(
+        config,
+        argparse.Namespace(
+            name='Wire Contract DataProduct',
+            description=None,
+            contract='{"schema": "v1"}',
+            tenant_id=tenant_id,
+        ),
+    )
+    assert dp_exit_code == 0
+    assert rendered['detail']['contract'] == {'schema': 'v1'}
+    entity_id = uuid.UUID(rendered['detail']['entity_id'])
+
+    add_exit_code = await catalog.dataproduct_lineage_add(
+        config,
+        argparse.Namespace(
+            entity_id=entity_id,
+            version=1,
+            source_datasource_id=datasource_id,
+            source_dataproduct_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert add_exit_code == 0
+    assert rendered['detail']['source_datasource_id'] == str(datasource_id)
+
+    list_exit_code = await catalog.dataproduct_lineage_list(
+        config,
+        argparse.Namespace(entity_id=entity_id, version=1, tenant_id=tenant_id),
+    )
+    assert list_exit_code == 0
+    rows = rendered['table']['rows']
+    assert len(rows) == 1
+    assert rows[0]['source_datasource_id'] == str(datasource_id)
+
+
+@pytest.mark.asyncio
+async def test_skill_create_and_node_edge_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    tool_exit_code = await catalog.tool_create(
+        config,
+        argparse.Namespace(
+            name='Node Tool',
+            description=None,
+            invocation_spec='{}',
+            auth_binding_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert tool_exit_code == 0
+    tool_id = uuid.UUID(rendered['detail']['id'])
+
+    skill_exit_code = await catalog.skill_create(
+        config,
+        argparse.Namespace(
+            name='Wire Contract Skill',
+            description=None,
+            layer='business_ops',
+            kind='composite',
+            is_entry_point=True,
+            atomic_content=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert skill_exit_code == 0
+    assert rendered['detail']['is_entry_point'] is True
+    entity_id = uuid.UUID(rendered['detail']['entity_id'])
+
+    node_add_exit_code = await catalog.skill_node_add(
+        config,
+        argparse.Namespace(
+            entity_id=entity_id,
+            version=1,
+            node_key='step-1',
+            node_type='tool',
+            agent_id=None,
+            skill_ref_id=None,
+            tool_id=tool_id,
+            position=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert node_add_exit_code == 0
+    node_id = uuid.UUID(rendered['detail']['id'])
+
+    node_list_exit_code = await catalog.skill_node_list(
+        config,
+        argparse.Namespace(entity_id=entity_id, version=1, tenant_id=tenant_id),
+    )
+    assert node_list_exit_code == 0
+    assert [row['id'] for row in rendered['table']['rows']] == [str(node_id)]
+
+    second_node_add = await catalog.skill_node_add(
+        config,
+        argparse.Namespace(
+            entity_id=entity_id,
+            version=1,
+            node_key='step-2',
+            node_type='tool',
+            agent_id=None,
+            skill_ref_id=None,
+            tool_id=tool_id,
+            position=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert second_node_add == 0
+    second_node_id = uuid.UUID(rendered['detail']['id'])
+
+    edge_add_exit_code = await catalog.skill_edge_add(
+        config,
+        argparse.Namespace(
+            entity_id=entity_id,
+            version=1,
+            from_node_id=node_id,
+            to_node_id=second_node_id,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert edge_add_exit_code == 0
+    assert rendered['detail']['from_node_id'] == str(node_id)
+
+    edge_list_exit_code = await catalog.skill_edge_list(
+        config,
+        argparse.Namespace(entity_id=entity_id, version=1, tenant_id=tenant_id),
+    )
+    assert edge_list_exit_code == 0
+    assert len(rendered['table']['rows']) == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_create_and_binding_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    ds_exit_code = await catalog.datasource_create(
+        config,
+        argparse.Namespace(
+            name='Binding Source',
+            description=None,
+            kind='api',
+            connection_binding_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert ds_exit_code == 0
+    datasource_id = uuid.UUID(rendered['detail']['id'])
+
+    tool_exit_code = await catalog.tool_create(
+        config,
+        argparse.Namespace(
+            name='Wire Contract Tool',
+            description=None,
+            invocation_spec='{"method": "GET"}',
+            auth_binding_id=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert tool_exit_code == 0
+    entity_id = uuid.UUID(rendered['detail']['entity_id'])
+
+    binding_add_exit_code = await catalog.tool_binding_add(
+        config,
+        argparse.Namespace(
+            entity_id=entity_id,
+            version=1,
+            datasource_id=datasource_id,
+            dataproduct_id=None,
+            access_mode='read',
+            tenant_id=tenant_id,
+        ),
+    )
+    assert binding_add_exit_code == 0
+    assert rendered['detail']['access_mode'] == 'read'
+
+    binding_list_exit_code = await catalog.tool_binding_list(
+        config,
+        argparse.Namespace(entity_id=entity_id, version=1, tenant_id=tenant_id),
+    )
+    assert binding_list_exit_code == 0
+    rows = rendered['table']['rows']
+    assert len(rows) == 1
+    assert rows[0]['datasource_id'] == str(datasource_id)
+
+
+# --- Environment: CRUD, not a VersionedEntity -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_environment_crud_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
+    """`environment create`/`list`/`show`/`update` all nest under
+    `/tenants/{tenant_id}/environments` -- confirms that path, the `Page`
+    envelope `list` reads, and `update`'s PATCH-in-place all round-trip
+    end to end against the real router."""
+    config = _cli_config()
+    tenant_id = fake_principal.tenant_id
+
+    create_exit_code = await catalog.environment_create(
+        config,
+        argparse.Namespace(
+            name='wire-contract-env',
+            kind='sandbox',
+            compute_boundary_ref='cluster-a',
+            network_boundary_ref='vpc-a',
+            tenant_id=tenant_id,
+        ),
+    )
+    assert create_exit_code == 0
+    assert rendered['detail']['name'] == 'wire-contract-env'
+    environment_id = uuid.UUID(rendered['detail']['id'])
+
+    list_exit_code = await catalog.environment_list(
+        config, argparse.Namespace(limit=50, offset=0, tenant_id=tenant_id)
+    )
+    assert list_exit_code == 0
+    assert str(environment_id) in [row['id'] for row in rendered['table']['rows']]
+
+    show_exit_code = await catalog.environment_show(
+        config,
+        argparse.Namespace(environment_id=environment_id, tenant_id=tenant_id),
+    )
+    assert show_exit_code == 0
+    assert rendered['detail']['compute_boundary_ref'] == 'cluster-a'
+
+    update_exit_code = await catalog.environment_update(
+        config,
+        argparse.Namespace(
+            environment_id=environment_id,
+            compute_boundary_ref='cluster-b',
+            network_boundary_ref=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert update_exit_code == 0
+    assert rendered['detail']['compute_boundary_ref'] == 'cluster-b'
+    assert rendered['detail']['network_boundary_ref'] == 'vpc-a'
