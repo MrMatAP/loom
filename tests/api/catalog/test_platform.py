@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 from loom.api.catalog.dependencies import get_current_principal, get_current_token
 from loom.http_headers import TENANT_HINT_HEADER
-from loom.idp.catalog_roles import platform_scopes
+from loom.idp.catalog_roles import ROLE_BUNDLES, content_scopes, platform_scopes
 from loom.model.enums import PrincipalKind
 from loom.model.governance import AuditEvent
 from loom.model.tenant import Principal, Tenant
@@ -136,6 +136,98 @@ async def test_tenant_hint_header_attributes_the_audit_event_correctly(
     assert event is not None
     assert event.actor_principal_id == first_principal_id
     assert event.details == {}
+
+
+@pytest.mark.asyncio
+async def test_list_my_tenants_returns_every_tenant_for_a_platform_admin(
+    api_client, async_session_factory
+):
+    """`GET /tenants/mine` backs `loom auth login`'s tenant-selection step
+    (`src/loom/cli/auth.py`'s `_select_tenant`). A platform admin
+    (`catalog:tenant:read` in scope) may have zero Principals of their own
+    -- it must still show every Tenant, not just ones they happen to be
+    provisioned in (see docs/admin-guide.md's "Platform administrator"
+    section), and must work without `get_current_principal` ever running
+    (`pop`, not override, so a bug that starts requiring principal
+    resolution on this route fails this test).
+
+    The "sees every Tenant" branch is gated purely on `catalog:tenant:read`
+    being in scope, not on a `catalog-platform-admin`-specific check --
+    pin that only `catalog-platform-admin` currently carries it, so an
+    edit to `ROLE_BUNDLES` that grants it to a narrower role fails *this*
+    test (which names the endpoint it would silently widen) instead of
+    going unnoticed."""
+    assert 'catalog:tenant:read' in ROLE_BUNDLES['catalog-platform-admin']
+    assert not any(
+        'catalog:tenant:read' in scopes
+        for role, scopes in ROLE_BUNDLES.items()
+        if role != 'catalog-platform-admin'
+    )
+
+    async with async_session_factory() as session:
+        session.add_all(
+            [Tenant(slug='mine-a', name='Mine A'), Tenant(slug='mine-b', name='Mine B')]
+        )
+        await session.commit()
+
+    api_client.app.dependency_overrides.pop(get_current_principal, None)
+    api_client.app.dependency_overrides[get_current_token] = lambda: {
+        'sub': 'admin-with-no-principal',
+        'scope': ' '.join(sorted(platform_scopes())),
+    }
+
+    resp = await api_client.get('/api/v1/tenants/mine')
+    assert resp.status_code == 200
+    slugs = {t['slug'] for t in resp.json()['items']}
+    assert {'mine-a', 'mine-b'}.issubset(slugs)
+
+
+@pytest.mark.asyncio
+async def test_list_my_tenants_is_scoped_to_the_callers_own_tenants_for_a_regular_user(
+    api_client, async_session_factory
+):
+    """No `catalog:tenant:read` scope -- a regular (non-platform-admin)
+    caller sees only the Tenants where they already have a Principal,
+    never another Tenant's, even one that exists in the same deployment."""
+    async with async_session_factory() as session:
+        own_tenant = Tenant(slug='own-tenant', name='Own Tenant')
+        other_tenant = Tenant(slug='other-tenant', name='Other Tenant')
+        session.add_all([own_tenant, other_tenant])
+        await session.flush()
+        session.add(
+            Principal(
+                tenant_id=own_tenant.id,
+                kind=PrincipalKind.USER,
+                external_id='mine-user',
+            )
+        )
+        await session.commit()
+
+    api_client.app.dependency_overrides.pop(get_current_principal, None)
+    api_client.app.dependency_overrides[get_current_token] = lambda: {
+        'sub': 'mine-user',
+        'scope': ' '.join(sorted(content_scopes())),
+    }
+
+    resp = await api_client.get('/api/v1/tenants/mine')
+    assert resp.status_code == 200
+    assert {t['slug'] for t in resp.json()['items']} == {'own-tenant'}
+
+
+@pytest.mark.asyncio
+async def test_list_my_tenants_is_empty_for_an_unprovisioned_regular_user(api_client):
+    """Zero Principals and no platform scope -- an empty list, not a 401,
+    since this endpoint exists precisely to let a caller discover they
+    have nothing yet (see `_select_tenant`'s "ask your admin" message)."""
+    api_client.app.dependency_overrides.pop(get_current_principal, None)
+    api_client.app.dependency_overrides[get_current_token] = lambda: {
+        'sub': 'nobody-yet',
+        'scope': ' '.join(sorted(content_scopes())),
+    }
+
+    resp = await api_client.get('/api/v1/tenants/mine')
+    assert resp.status_code == 200
+    assert resp.json()['items'] == []
 
 
 @pytest.mark.asyncio

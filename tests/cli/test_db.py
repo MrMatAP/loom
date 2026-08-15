@@ -4,8 +4,10 @@ import pathlib
 import sqlite3
 
 import pytest
+from alembic import command
 
 from loom.cli.db import (
+    _alembic_config,
     db_current,
     db_downgrade,
     db_history,
@@ -45,6 +47,70 @@ async def test_db_upgrade_and_downgrade_via_cli_functions(sqlite_root_config, tm
     }
     conn.close()
     assert 'tenant' not in tables
+
+
+@pytest.mark.asyncio
+async def test_db_upgrade_seeds_a_default_tenant_on_an_empty_database(
+    sqlite_root_config, tmp_path, capsys
+):
+    """Most deployments only ever need one Tenant -- `db upgrade` creates
+    it so a platform admin doesn't need an explicit `loom tenant create`
+    step for that common case (see docs/admin-guide.md's "Platform
+    administrator" section)."""
+    result = await db_upgrade(sqlite_root_config, argparse.Namespace())
+    assert result == 0
+
+    db_path = tmp_path / 'loom_cli_test.db'
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute('SELECT slug, name FROM tenant').fetchall()
+    conn.close()
+    assert rows == [('default', 'Default')]
+    assert 'Created default Tenant' in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_db_upgrade_does_not_duplicate_the_default_tenant_on_a_rerun(
+    sqlite_root_config, tmp_path, capsys
+):
+    await db_upgrade(sqlite_root_config, argparse.Namespace())
+    capsys.readouterr()  # discard first run's "Created default Tenant" output
+
+    result = await db_upgrade(sqlite_root_config, argparse.Namespace())
+    assert result == 0
+
+    db_path = tmp_path / 'loom_cli_test.db'
+    conn = sqlite3.connect(db_path)
+    count = conn.execute('SELECT COUNT(*) FROM tenant').fetchone()[0]
+    conn.close()
+    assert count == 1
+    assert 'Created default Tenant' not in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_db_upgrade_does_not_seed_when_a_tenant_already_exists(
+    sqlite_root_config, tmp_path
+):
+    """Seeding is an empty-table convenience, not an opinion about what a
+    deployment's Tenants should look like -- an admin who already created
+    their own Tenant (schema-migrated, but before this seed step ever ran)
+    must not also get a 'default' one alongside it."""
+    command.upgrade(_alembic_config(sqlite_root_config), 'head')
+    db_path = tmp_path / 'loom_cli_test.db'
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        'INSERT INTO tenant (id, slug, name, created_at, updated_at) '
+        "VALUES ('11111111-1111-1111-1111-111111111111', 'acme', 'Acme', "
+        "'2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    await db_upgrade(sqlite_root_config, argparse.Namespace())
+
+    conn = sqlite3.connect(db_path)
+    slugs = {row[0] for row in conn.execute('SELECT slug FROM tenant')}
+    conn.close()
+    assert slugs == {'acme'}
 
 
 @pytest.mark.asyncio

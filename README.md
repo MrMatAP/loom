@@ -22,6 +22,11 @@ Then apply migrations — no separate `alembic` install or invocation needed:
 
     loom db upgrade
 
+On an empty database, this also creates one Tenant (slug `default`) --
+most deployments only ever need a single Tenant, so this saves an
+explicit `loom tenant create` step; see "Platform administrator" in
+docs/admin-guide.md. A no-op, safe to re-run, once any Tenant exists.
+
 Other database commands: `loom db downgrade <revision>`, `loom db current`,
 `loom db history`, `loom db revision -m "message" [--autogenerate]`.
 
@@ -50,9 +55,11 @@ claim to resolve to a provisioned Principal -- there's no `tenant_id`
 claim; `Principal.tenant_id` (set once, at provisioning time) is the sole
 source of which Tenant a caller belongs to, not anything in the token
 itself. An identity provisioned in more than one Tenant needs one more
-thing to disambiguate which: an `X-Loom-Tenant-Id` header, set locally via
-`loom auth set-tenant` (see "CLI device-code login" below) -- unnecessary,
-and ignored, for the common case of an identity in exactly one Tenant.
+thing to disambiguate which: an `X-Loom-Tenant-Id` header, set locally --
+normally automatically, `loom auth login` prompts for a selection when
+needed; `loom auth set-tenant` sets it directly (see "CLI device-code
+login" below) -- unnecessary, and ignored, for the common case of an
+identity in exactly one Tenant.
 `POST`/`GET` on `/tenants` and `/principals` don't even need any of this --
 see "Managing Tenants and Principals from the CLI" below for what that
 means for bootstrapping. See
@@ -147,6 +154,17 @@ access/refresh tokens in the local config (file permissions hardened to
 `0600`, tokens masked whenever the config is printed). Check status with
 `loom auth status`, and clear the session with `loom auth logout`.
 
+Right after that, it also resolves which Tenant subsequent requests
+should scope to (`GET /tenants/mine` -- every Tenant for a platform
+admin, else only the Tenants the caller already has a Principal in):
+auto-selected with no prompt when there's exactly one available (the
+common case -- e.g. the `default` Tenant `loom db upgrade` creates),
+listed with a required prompt when there's more than one, or skipped with
+a reminder to ask an admin if none are available yet. This never fails
+the login itself -- tokens obtained above are cached either way, even if
+this best-effort step can't reach the API or the identity has nothing
+selectable yet.
+
 `loom auth status` only says whether the session is live -- for *who the
 API thinks you are* (your `sub`, `name`, scopes/roles, and every other
 claim your token carries), use `loom auth whoami`. It decodes the cached
@@ -155,16 +173,17 @@ making a trust decision), so it also works to diagnose a token the API is
 currently rejecting -- e.g. no `Principal` row provisioned for your `sub`,
 which is the most common cause of a `401 Not authorized` right after a
 successful login (see `docs/admin-guide.md`'s Troubleshooting section).
-`loom auth whoami` also shows your locally-selected Tenant, set via `loom
-auth set-tenant <tenant_id>` -- only needed if `sub` is provisioned in
-more than one Tenant (see `docs/admin-guide.md`'s "How a caller's Tenant
-is resolved" section); `loom auth set-tenant` with no arguments shows the
-current selection, `--clear` removes it.
+`loom auth whoami` also shows your locally-selected Tenant (see above --
+normally set automatically by `loom auth login`; `loom auth set-tenant
+<tenant_id>` changes it directly, see `docs/admin-guide.md`'s "How a
+caller's Tenant is resolved" section); `loom auth set-tenant` with no
+arguments shows the current selection, `--clear` removes it.
 
-`--tenant-id` is always required on `loom principal create`/`loom
-principal list` -- there's no `tenant_id` claim on any token to default it
-from; a caller's Tenant is resolved from their own `Principal` row, not a
-token claim (see "Managing Tenants and Principals from the CLI" below).
+`--tenant-id` is always required on `loom principal create` -- there's no
+`tenant_id` claim on any token to default it from; a caller's Tenant is
+resolved from their own `Principal` row, not a token claim. `loom
+principal list` defaults it to the locally-selected Tenant instead (see
+"Managing Tenants and Principals from the CLI" below).
 
 **Session length**: how long that login lasts before every `loom`
 subcommand demands a fresh one is Keycloak's realm/client "Access Token
@@ -250,14 +269,19 @@ below). Neither has `versions`/`transition`:
 
     loom principal create --tenant-id <id> --kind {user,agent,service_account} \
       --external-id <sub>
-    loom principal list --tenant-id <id> [--limit N] [--offset N]
+    loom principal list [--tenant-id <id>] [--limit N] [--offset N]
     loom principal show <principal_id>
 
 `--external-id` is the identity a token has to carry (its `sub` claim) for
 `resolve_principal` to match it up at request time -- see
 `src/loom/api/catalog/dependencies.py`. `--tenant-id` is always required
-on `create`/`list` -- no token carries a `tenant_id` claim to default it
-from. A Principal has no stored display name: a human-readable name comes
+on `create` -- no token carries a `tenant_id` claim to default it from.
+`list` defaults it to the locally-selected Tenant
+(`config.auth.session.tenant_id`, see "CLI device-code login" above)
+instead, so it's only needed there to list a *different* Tenant than the
+one selected -- e.g. a platform administrator checking another Tenant's
+Principals. A Principal has no stored display name: a human-readable name
+comes
 from the IDP's own `name` claim, read live off *your own* token at
 request time (`loom auth whoami`) -- there's no way to look up another
 Principal's name through the API, only their `id`/`external_id`/`kind`.
@@ -271,7 +295,11 @@ what the `catalog-platform-admin` role grants (see
 `src/loom/idp/catalog_roles.py`), so a **platform administrator** -- a
 human account in your IDP holding that role, and nothing else provisioned
 in the Catalog's own database -- can bootstrap a fresh deployment entirely
-through the real API:
+through the real API. `loom db upgrade` already creates one Tenant (slug
+`default`) on an empty database, so a single-Tenant deployment needs no
+`loom tenant create` at all -- `loom auth login` auto-selects it since
+it's the only one `GET /tenants/mine` returns (see "CLI device-code
+login" above):
 
     loom db upgrade
     loom idp register --issuer-url https://idp.example/realms/loom \
@@ -282,10 +310,10 @@ through the real API:
     # loom-catalog-api client (see docs/admin-guide.md's "Platform
     # administrator" section).
 
-    loom auth login
+    loom auth login          # auto-selects the `default` Tenant `db upgrade` made
 
-    loom tenant create acme "Acme Corp"
-    loom principal create --tenant-id <id from above> --kind user \
+    loom tenant create acme "Acme Corp"    # only if `default` isn't enough
+    loom principal create --tenant-id <id from `loom tenant list`> --kind user \
       --external-id <sub from `loom auth whoami`>
 
 Every *subsequent* Tenant/Principal should go through the same two

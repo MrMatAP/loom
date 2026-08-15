@@ -447,13 +447,28 @@ async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
 
 
 async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
-    tenant_id = args.tenant_id
+    """List Principals in a Tenant via the Catalog API. `--tenant-id`
+    defaults to the locally-selected Tenant (`loom auth set-tenant`,
+    normally set automatically by `loom auth login`) -- explicit
+    `--tenant-id` still overrides it, e.g. a platform admin listing a
+    Tenant other than their own selection."""
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    tenant_id = args.tenant_id or config.auth.session.tenant_id
+    if tenant_id is None:
+        console.print(
+            'No --tenant-id given and no Tenant is locally selected. Run '
+            '[bold]loom auth set-tenant <tenant_id>[/bold] or pass '
+            '--tenant-id explicitly.'
+        )
+        return 1
+    # `tenant_id` (not the raw session selection) both as the query filter
+    # and the X-Loom-Tenant-Id hint, so an explicit --tenant-id override
+    # (e.g. a platform admin listing a Tenant other than their own
+    # selection) is consistent between the two rather than silently
+    # disagreeing.
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
     params = {
         'tenant_id': str(tenant_id),
         'limit': args.limit,
@@ -750,8 +765,12 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
         '--tenant-id',
         dest='tenant_id',
         type=uuid.UUID,
-        required=True,
-        help='The Tenant to list Principals in',
+        required=False,
+        default=None,
+        help=(
+            'The Tenant to list Principals in, defaults to the '
+            'locally-selected Tenant (see `loom auth set-tenant`)'
+        ),
     )
     list_parser.add_argument(
         '--limit', type=int, default=50, help='Max results, defaults to 50'

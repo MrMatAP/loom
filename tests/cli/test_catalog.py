@@ -47,11 +47,12 @@ class _FakeCatalogClient:
     own client."""
 
     last_call: typing.ClassVar[dict | None] = None
+    last_init_kwargs: typing.ClassVar[dict] = {}
     response: typing.ClassVar[typing.Any] = {}
     error: typing.ClassVar[CatalogApiError | None] = None
 
     def __init__(self, api_base_url, access_token, **kwargs):
-        del kwargs
+        type(self).last_init_kwargs = kwargs
         self.api_base_url = api_base_url
         self.access_token = access_token
 
@@ -77,6 +78,7 @@ class _FakeCatalogClient:
 @pytest.fixture(autouse=True)
 def _reset_fake_client(monkeypatch):
     _FakeCatalogClient.last_call = None
+    _FakeCatalogClient.last_init_kwargs = {}
     _FakeCatalogClient.response = {'entity_id': str(uuid.uuid4()), 'slug': 'created'}
     _FakeCatalogClient.error = None
     monkeypatch.setattr('loom.cli.catalog.CatalogClient', _FakeCatalogClient)
@@ -650,6 +652,66 @@ async def test_principal_list_requires_tenant_id_query_param(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_principal_list_defaults_to_the_locally_selected_tenant(tmp_path):
+    """No --tenant-id given -- falls back to `config.auth.session.tenant_id`
+    (normally set automatically by `loom auth login`; see
+    `_select_tenant` in `src/loom/cli/auth.py`) rather than erroring."""
+    config = _logged_in_config(tmp_path)
+    selected_tenant_id = uuid.uuid4()
+    config.auth.session.tenant_id = selected_tenant_id
+    _FakeCatalogClient.response = {'items': [], 'total': 0, 'limit': 50, 'offset': 0}
+
+    result = await principal_list(
+        config, argparse.Namespace(tenant_id=None, limit=50, offset=0)
+    )
+
+    assert result == 0
+    assert _FakeCatalogClient.last_call == {
+        'method': 'GET',
+        'path': '/api/v1/principals',
+        'params': {'tenant_id': str(selected_tenant_id), 'limit': 50, 'offset': 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_principal_list_explicit_tenant_id_beats_the_local_selection(tmp_path):
+    """An explicit --tenant-id (e.g. a platform admin listing a Tenant
+    other than their own selection) must win consistently -- both in the
+    query filter and the X-Loom-Tenant-Id hint the client sends, not just
+    one of the two, which would silently disagree with the other."""
+    config = _logged_in_config(tmp_path)
+    config.auth.session.tenant_id = uuid.uuid4()
+    explicit_tenant_id = uuid.uuid4()
+    _FakeCatalogClient.response = {'items': [], 'total': 0, 'limit': 50, 'offset': 0}
+
+    result = await principal_list(
+        config, argparse.Namespace(tenant_id=explicit_tenant_id, limit=50, offset=0)
+    )
+
+    assert result == 0
+    assert _FakeCatalogClient.last_call['params']['tenant_id'] == str(
+        explicit_tenant_id
+    )
+    assert _FakeCatalogClient.last_init_kwargs['tenant_id'] == explicit_tenant_id
+
+
+@pytest.mark.asyncio
+async def test_principal_list_without_tenant_id_or_selection_fails_with_a_message(
+    tmp_path, capsys
+):
+    config = _logged_in_config(tmp_path)
+    assert config.auth.session.tenant_id is None
+
+    result = await principal_list(
+        config, argparse.Namespace(tenant_id=None, limit=50, offset=0)
+    )
+
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+    assert 'set-tenant' in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_principal_show_gets_by_id(tmp_path):
     config = _logged_in_config(tmp_path)
     principal_id = uuid.uuid4()
@@ -782,6 +844,9 @@ def test_principal_create_requires_tenant_id_flag_at_parse_time(parser):
         )
 
 
-def test_principal_list_requires_tenant_id_flag_at_parse_time(parser):
-    with pytest.raises(SystemExit):
-        parser.parse_args(['principal', 'list'])
+def test_principal_list_tenant_id_flag_is_optional_at_parse_time(parser):
+    """Unlike `principal create`, `list` defaults `--tenant-id` to the
+    locally-selected Tenant at runtime (see `principal_list`) -- argparse
+    itself must not require it."""
+    args = parser.parse_args(['principal', 'list'])
+    assert args.tenant_id is None

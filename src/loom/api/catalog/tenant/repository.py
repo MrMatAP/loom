@@ -25,6 +25,17 @@ class TenantRepository:
         )
         return list(rows), total or 0
 
+    async def list_by_ids(self, tenant_ids: set[uuid.UUID]) -> list[Tenant]:
+        """Unordered-by-caller, small-set lookup -- backs `GET
+        /tenants/mine` (`router.py`), never a paginated listing, so no
+        limit/offset."""
+        if not tenant_ids:
+            return []
+        rows = await self._session.scalars(
+            sa.select(Tenant).where(Tenant.id.in_(tenant_ids)).order_by(Tenant.name)
+        )
+        return list(rows)
+
     async def add(self, tenant: Tenant) -> Tenant:
         self._session.add(tenant)
         await flush_or_raise(self._session)

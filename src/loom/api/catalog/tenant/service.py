@@ -26,6 +26,9 @@ class TenantService:
     async def list_all(self, *, limit: int, offset: int) -> tuple[list[Tenant], int]:
         return await self._repository.list_all(limit=limit, offset=offset)
 
+    async def list_by_ids(self, tenant_ids: set[uuid.UUID]) -> list[Tenant]:
+        return await self._repository.list_by_ids(tenant_ids)
+
     async def update(self, tenant_id: uuid.UUID, data: TenantUpdate) -> Tenant:
         tenant = await self.get(tenant_id)
         if data.name is not None:

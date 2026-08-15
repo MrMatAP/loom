@@ -1,9 +1,12 @@
 import argparse
 import time
+import uuid
 
+import httpx
 import jwt
 import pydantic
 
+from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
 from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError
 
@@ -61,7 +64,7 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
     if not client_id:
         print(
             'No --client-id given and config.auth.cli_client_id is unset; run '
-            '`loom idp register-cli-client` first.'
+            '`loom idp register` first.'
         )
         return 1
 
@@ -91,8 +94,72 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
     # selection over onto a new identity's session.
     config.auth.session.tenant_id = None
     config.save()
+
+    await _select_tenant(config, tokens.access_token)
+
     print('Logged in.')
     return 0
+
+
+async def _select_tenant(config: RootConfig, access_token: str) -> None:
+    """Resolve `config.auth.session.tenant_id` right after a fresh login,
+    instead of leaving it unset until either an ambiguous request 401s or
+    someone remembers to run `loom auth set-tenant` -- see
+    `GET /tenants/mine` (`src/loom/api/catalog/tenant/router.py`) for what
+    "available" means here: every Tenant for a platform admin, else only
+    the Tenants this identity already has a Principal in.
+
+    Never fails the login itself -- a Tenant can always be picked
+    afterwards via `loom auth set-tenant`, and a login that already holds
+    valid tokens shouldn't be thrown away just because this best-effort
+    step couldn't reach the API or the caller declined to choose."""
+    client = CatalogClient(config.catalog.api_base_url, access_token)
+    try:
+        page = await client.get('/api/v1/tenants/mine')
+    except (CatalogApiError, httpx.HTTPError) as exc:
+        print(
+            f'Could not list available Tenants ({exc}); run `loom auth '
+            'set-tenant <tenant_id>` once you know which to use.'
+        )
+        return
+
+    tenants = page['items']
+    if not tenants:
+        print(
+            'No Tenant is available to this identity yet -- ask your admin to '
+            'run `loom principal create` for you (see docs/admin-guide.md).'
+        )
+        return
+
+    if len(tenants) == 1:
+        tenant = tenants[0]
+        config.auth.session.tenant_id = uuid.UUID(tenant['id'])
+        config.save()
+        print(
+            f"Selected Tenant '{tenant['slug']}' ({tenant['id']}) -- the only "
+            'one available.'
+        )
+        return
+
+    print('Multiple Tenants are available to this identity -- choose one:')
+    for index, tenant in enumerate(tenants, start=1):
+        print(f'  {index}. {tenant["slug"]} -- {tenant["name"]} ({tenant["id"]})')
+    while True:
+        try:
+            choice = input(f'Select a Tenant [1-{len(tenants)}]: ').strip()
+        except EOFError, KeyboardInterrupt:
+            print(
+                '\nNo Tenant selected; run `loom auth set-tenant <tenant_id>` '
+                'once you know which to use.'
+            )
+            return
+        if choice.isdigit() and 1 <= int(choice) <= len(tenants):
+            tenant = tenants[int(choice) - 1]
+            config.auth.session.tenant_id = uuid.UUID(tenant['id'])
+            config.save()
+            print(f"Selected Tenant '{tenant['slug']}' ({tenant['id']}).")
+            return
+        print(f'Invalid selection {choice!r}, try again.')
 
 
 async def auth_logout(config: RootConfig, args: argparse.Namespace) -> int:

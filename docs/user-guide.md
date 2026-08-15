@@ -31,6 +31,11 @@ any browser, including on a different device):
 loom auth login
 ```
 
+If your `Principal` is registered in more than one Tenant, `loom auth
+login` lists them and asks you to pick one -- otherwise it's selected for
+you automatically, nothing to do. `loom auth set-tenant <tenant_id>`
+changes the selection later if needed.
+
 `loom auth status` shows whether you're logged in; `loom auth logout`
 clears the session. Full detail on this flow, including troubleshooting a
 failed login redirect, is in README.md's ["CLI device-code

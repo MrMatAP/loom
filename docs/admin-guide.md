@@ -269,10 +269,18 @@ once per admin, directly in the IDP:
    involved anywhere in this flow (see "How a caller's Tenant is
    resolved" below).
 
-From there it's the regular CLI, logged in as that account:
+`loom db upgrade` already created one Tenant for you -- slug `default` --
+so a single-Tenant deployment needs nothing further here; skip straight to
+`loom principal create` below with that Tenant's id (`loom tenant list`).
+Create additional/differently-named Tenants only if you actually run more
+than one. Unlike `POST /tenants`/`POST /principals` below, this one write
+is not audited (`db upgrade` runs before any login, so there's no `sub` to
+attribute it to) -- acceptable here since, unlike those two, the row
+grants no identity access by itself; see `_seed_default_tenant` in
+`src/loom/cli/db.py`:
 
     loom auth login
-    loom tenant create acme "Acme Corp"
+    loom tenant create acme "Acme Corp"          # only if `default` isn't enough
     loom principal create --tenant-id <id from above> --kind user \
       --external-id <sub from `loom auth whoami`>
 
@@ -309,24 +317,36 @@ obvious cause (see Troubleshooting below).
 One consequence: `external_id` is only unique *per Tenant*
 (`uq_principal_tenant_external_id` in `src/loom/model/tenant.py`), so the
 same `sub` can legitimately be provisioned in more than one Tenant -- a
-consultant working across two customer Tenants, for instance. When that
-happens, `resolve_principal` can't pick one on its own, and 401s rather
-than guessing (see Troubleshooting below) -- unless the caller
-disambiguates with `loom auth set-tenant`:
+consultant working across two customer Tenants, for instance. `loom auth
+login` handles this proactively rather than waiting for a request to
+401: right after obtaining tokens, it calls `GET /tenants/mine` (every
+Tenant for a platform admin, i.e. anyone whose token carries
+`catalog:tenant:read`; otherwise only the Tenants where the caller
+already has a Principal) and:
 
-    loom auth set-tenant <tenant_id>
+- **Exactly one Tenant available** -- selected automatically, no prompt.
+  This is what makes a fresh single-Tenant deployment work with zero
+  extra steps: the `default` Tenant `db upgrade` created is the only
+  choice, so it's just active.
+- **More than one** -- the CLI lists them and requires picking one before
+  login finishes.
+- **None yet** -- login still succeeds (the tokens are valid), but prints
+  a reminder to ask the platform administrator to run `loom principal
+  create`.
 
-This stores the choice locally (`config.auth.session.tenant_id`) and
-sends it as the `X-Loom-Tenant-Id` header on every subsequent request
+The selection is stored locally (`config.auth.session.tenant_id`) and
+sent as the `X-Loom-Tenant-Id` header on every subsequent request
 (`loom.http_headers.TENANT_HINT_HEADER`); `resolve_principal` only
 consults it to pick among *that identity's own* Principal rows, never to
 grant access to a Tenant it isn't otherwise provisioned in -- an
-incorrect or stale selection just 401s. It's ignored (and unnecessary)
-for an identity provisioned in only one Tenant. `loom auth set-tenant`
-with no arguments shows the current selection; `--clear` removes it;
-`loom auth logout` clears it too, since a fresh login may resolve to a
-different identity. `loom auth whoami` shows it alongside the token's own
-claims.
+incorrect or stale selection just 401s (see Troubleshooting below). Run
+`loom auth set-tenant <tenant_id>` any time afterward to change it --
+also how to resolve a login that couldn't reach the API to list Tenants
+in the first place. With no arguments it shows the current selection;
+`--clear` removes it; `loom auth logout` clears it too, and so does every
+fresh `loom auth login` before it re-selects, since a new login may
+resolve to a different identity. `loom auth whoami` shows the current
+selection alongside the token's own claims.
 
 A Principal also has no stored display name. A human-readable name comes
 from the IDP's own `name` claim, read live off a caller's own token at
@@ -365,12 +385,17 @@ database, so it can't drift out of sync with the IDP.
   2. **More than one `Principal` row matches that `sub`** (provisioned in
      more than one Tenant -- `external_id` is only unique per Tenant, see
      "How a caller's Tenant is resolved" above), **and no `X-Loom-Tenant-Id`
-     header disambiguates it.** This is the expected, legitimate case for
-     an identity provisioned in more than one Tenant on purpose (e.g. a
-     consultant) -- not a bug to fix, just run `loom auth set-tenant
-     <tenant_id>` to pick one. If it's *not* expected (the same person was
-     provisioned twice by accident), that's a provisioning mistake to
-     clean up instead. Either way the CLI's error message names it as
-     ambiguous, not missing, so it's distinguishable from #1 above.
+     header disambiguates it.** `loom auth login` should have already
+     prompted for a selection in this case -- seeing this error usually
+     means that prompt was skipped (a non-interactive login, or the
+     tenant-listing call itself failed, both of which print their own
+     warning at login time) or the local selection was since cleared. This
+     is the expected, legitimate case for an identity provisioned in more
+     than one Tenant on purpose (e.g. a consultant) -- not a bug to fix,
+     just run `loom auth set-tenant <tenant_id>` to pick one. If it's *not*
+     expected (the same person was provisioned twice by accident), that's
+     a provisioning mistake to clean up instead. Either way the CLI's error
+     message names it as ambiguous, not missing, so it's distinguishable
+     from #1 above.
   Re-running `loom auth login` does not fix either of these -- the token
   it gets back will look identical.
