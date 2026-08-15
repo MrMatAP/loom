@@ -89,7 +89,7 @@ cases, so re-authenticating doesn't help either. See
 
 Every content-tier request requires a scope of the form
 `catalog:{resource}:{action}` -- `resource` is one of `capability`,
-`agent`, `skill`, `tool`, `datasource`, `dataproduct`, `model_endpoint`
+`agent`, `skill`, `tool`, `datasource`, `entity`, `model_endpoint`
 (`read`/`write`/`transition`); the platform tier adds `tenant`,
 `principal`, `environment` (`read`/`write` only). `src/loom/idp/
 catalog_roles.py` is the single source of truth for this vocabulary and
