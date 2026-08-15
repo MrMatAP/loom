@@ -18,7 +18,7 @@ from .repository import DataProductRepository
 from .schemas import DataProductCreateRequest, DataProductLineageCreateRequest
 from .service import DataProductService
 
-router = APIRouter(prefix='/dataproducts', tags=['dataproducts'])
+router = APIRouter(prefix='/tenants/{tenant_id}/dataproducts', tags=['dataproducts'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> DataProductService:
@@ -41,7 +41,6 @@ async def create_dataproduct(
 async def list_dataproducts(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: DataProductService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:dataproduct:read')),
@@ -49,7 +48,6 @@ async def list_dataproducts(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

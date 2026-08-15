@@ -23,7 +23,6 @@ class TenantUpdate(BaseModel):
 
 
 class PrincipalCreate(BaseModel):
-    tenant_id: uuid.UUID
     kind: PrincipalKind
     external_id: str
 

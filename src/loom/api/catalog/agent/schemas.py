@@ -6,7 +6,6 @@ from loom.model.enums import Layer, MemoryScope
 
 
 class AgentCreateRequest(BaseModel):
-    slug: str
     name: str
     description: str | None = None
     layer: Layer
@@ -15,4 +14,3 @@ class AgentCreateRequest(BaseModel):
     prompt: str
     memory_scope: MemoryScope
     permission_boundary: dict = {}
-    owner_id: uuid.UUID | None = None

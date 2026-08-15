@@ -2,21 +2,21 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_all_routers_are_mounted(api_client):
+async def test_all_routers_are_mounted(api_client, fake_principal):
+    tenant_id = fake_principal.tenant_id
     for path in (
-        '/api/v1/capabilities',
-        '/api/v1/agents',
-        '/api/v1/skills',
-        '/api/v1/tools',
-        '/api/v1/datasources',
-        '/api/v1/dataproducts',
-        '/api/v1/model-endpoints',
+        f'/api/v1/tenants/{tenant_id}/capabilities',
+        f'/api/v1/tenants/{tenant_id}/agents',
+        f'/api/v1/tenants/{tenant_id}/skills',
+        f'/api/v1/tenants/{tenant_id}/tools',
+        f'/api/v1/tenants/{tenant_id}/datasources',
+        f'/api/v1/tenants/{tenant_id}/dataproducts',
+        f'/api/v1/tenants/{tenant_id}/model-endpoints',
         '/api/v1/tenants',
-        '/api/v1/principals',
-        '/api/v1/environments',
+        f'/api/v1/tenants/{tenant_id}/principals',
+        f'/api/v1/tenants/{tenant_id}/environments',
     ):
-        params = {'tenant_id': '00000000-0000-0000-0000-000000000000'}
-        response = await api_client.get(path, params=params)
+        response = await api_client.get(path)
         assert response.status_code == 200, f'{path} returned {response.status_code}'
 
 
@@ -41,7 +41,9 @@ async def test_missing_token_returns_401(api_client):
     real_app.state.session_factory = get_async_session_factory(config.database)
     transport = ASGITransport(app=real_app)
     async with AsyncClient(transport=transport, base_url='http://test') as client:
-        response = await client.get('/api/v1/capabilities')
+        response = await client.get(
+            '/api/v1/tenants/00000000-0000-0000-0000-000000000000/capabilities'
+        )
     assert response.status_code in (401, 403)
 
 
@@ -86,7 +88,9 @@ def test_openapi_advertises_interactive_idp_login(monkeypatch):
         'https://idp.example/realms/loom/protocol/openid-connect/token'
     )
 
-    capabilities_get = schema['paths']['/api/v1/capabilities']['get']
+    capabilities_get = schema['paths']['/api/v1/tenants/{tenant_id}/capabilities'][
+        'get'
+    ]
     assert capabilities_get['security'] == [{'OAuth2AuthorizationCodeBearer': []}]
 
 

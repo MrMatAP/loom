@@ -22,9 +22,10 @@ class CliSessionConfig(RootConfigAware):
         description=(
             'Locally-selected Tenant, set via `loom auth set-tenant` -- '
             'disambiguates an identity provisioned in more than one Tenant '
-            '(see docs/admin-guide.md). Sent as the X-Loom-Tenant-Id header '
-            'on every request; has no effect for an identity with only one '
-            'Principal.'
+            '(see docs/admin-guide.md). Embedded into the URL path of every '
+            'request (`CatalogClient.tenant_path`, e.g. '
+            '`/api/v1/tenants/{tenant_id}/capabilities`); has no effect for '
+            'an identity with only one Principal.'
         ),
     )
 

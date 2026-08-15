@@ -55,6 +55,10 @@ class _FakeCatalogClient:
         type(self).last_init_kwargs = kwargs
         self.api_base_url = api_base_url
         self.access_token = access_token
+        self._tenant_id = kwargs.get('tenant_id')
+
+    def tenant_path(self, suffix: str) -> str:
+        return f'/api/v1/tenants/{self._tenant_id}{suffix}'
 
     async def get(self, path, params=None):
         type(self).last_call = {'method': 'GET', 'path': path, 'params': params}
@@ -79,14 +83,16 @@ class _FakeCatalogClient:
 def _reset_fake_client(monkeypatch):
     _FakeCatalogClient.last_call = None
     _FakeCatalogClient.last_init_kwargs = {}
-    _FakeCatalogClient.response = {'entity_id': str(uuid.uuid4()), 'slug': 'created'}
+    _FakeCatalogClient.response = {'entity_id': str(uuid.uuid4()), 'name': 'created'}
     _FakeCatalogClient.error = None
     monkeypatch.setattr('loom.cli.catalog.CatalogClient', _FakeCatalogClient)
 
 
+TENANT_ID = uuid.uuid4()
+
+
 def _agent_args(**overrides):
     defaults = {
-        'slug': 'my-agent',
         'name': 'My Agent',
         'description': None,
         'layer': 'business_tech',
@@ -95,7 +101,7 @@ def _agent_args(**overrides):
         'prompt': 'You are a helpful assistant.',
         'memory_scope': 'session',
         'permission_boundary': '{}',
-        'owner_id': None,
+        'tenant_id': TENANT_ID,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -103,11 +109,10 @@ def _agent_args(**overrides):
 
 def _capability_args(**overrides):
     defaults = {
-        'slug': 'my-capability',
         'name': 'My Capability',
         'description': None,
         'target_metrics': '[]',
-        'owner_id': None,
+        'tenant_id': TENANT_ID,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -115,14 +120,13 @@ def _capability_args(**overrides):
 
 def _model_args(**overrides):
     defaults = {
-        'slug': 'my-model',
         'name': 'My Model',
         'description': None,
         'protocol': 'anthropic_messages',
         'base_url': None,
         'model': 'claude-opus-4',
         'auth_binding_id': None,
-        'owner_id': None,
+        'tenant_id': TENANT_ID,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -163,29 +167,34 @@ def test_print_table_and_print_detail_render_without_crashing(capsys):
 @pytest.mark.asyncio
 async def test_capability_create_posts_expected_payload(tmp_path):
     config = _logged_in_config(tmp_path)
-    owner_id = uuid.uuid4()
 
     result = await capability_create(
         config,
         _capability_args(
             description='desc',
             target_metrics='[{"name": "latency"}]',
-            owner_id=owner_id,
         ),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': '/api/v1/capabilities',
+        'path': f'/api/v1/tenants/{TENANT_ID}/capabilities',
         'payload': {
-            'slug': 'my-capability',
             'name': 'My Capability',
             'description': 'desc',
             'target_metrics': [{'name': 'latency'}],
-            'owner_id': str(owner_id),
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_capability_create_requires_a_tenant(tmp_path, capsys):
+    config = _logged_in_config(tmp_path)
+    result = await capability_create(config, _capability_args(tenant_id=None))
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+    assert 'set-tenant' in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -223,16 +232,14 @@ async def test_model_create_posts_expected_payload(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': '/api/v1/model-endpoints',
+        'path': f'/api/v1/tenants/{TENANT_ID}/model-endpoints',
         'payload': {
-            'slug': 'my-model',
             'name': 'My Model',
             'description': None,
             'protocol': 'openai_compatible',
             'base_url': 'https://llm.example.com',
             'model': 'claude-opus-4',
             'auth_binding_id': str(auth_binding_id),
-            'owner_id': None,
         },
     }
 
@@ -254,9 +261,8 @@ async def test_agent_create_posts_expected_payload(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': '/api/v1/agents',
+        'path': f'/api/v1/tenants/{TENANT_ID}/agents',
         'payload': {
-            'slug': 'my-agent',
             'name': 'My Agent',
             'description': None,
             'layer': 'business_tech',
@@ -265,7 +271,6 @@ async def test_agent_create_posts_expected_payload(tmp_path):
             'prompt': 'You are a helpful assistant.',
             'memory_scope': 'session',
             'permission_boundary': {'read': True},
-            'owner_id': None,
         },
     }
 
@@ -294,13 +299,11 @@ async def test_capability_update_posts_to_entity_versions_path(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': f'/api/v1/capabilities/{entity_id}/versions',
+        'path': f'/api/v1/tenants/{TENANT_ID}/capabilities/{entity_id}/versions',
         'payload': {
-            'slug': 'my-capability',
             'name': 'Renamed',
             'description': None,
             'target_metrics': [],
-            'owner_id': None,
         },
     }
 
@@ -324,7 +327,7 @@ async def test_model_update_posts_to_entity_versions_path(tmp_path):
 
     assert result == 0
     assert _FakeCatalogClient.last_call['path'] == (
-        f'/api/v1/model-endpoints/{entity_id}/versions'
+        f'/api/v1/tenants/{TENANT_ID}/model-endpoints/{entity_id}/versions'
     )
 
 
@@ -336,8 +339,8 @@ async def test_agent_update_posts_to_entity_versions_path(tmp_path):
     result = await agent_update(config, _agent_args(entity_id=entity_id))
 
     assert result == 0
-    assert (
-        _FakeCatalogClient.last_call['path'] == f'/api/v1/agents/{entity_id}/versions'
+    assert _FakeCatalogClient.last_call['path'] == (
+        f'/api/v1/tenants/{TENANT_ID}/agents/{entity_id}/versions'
     )
 
 
@@ -351,7 +354,6 @@ async def test_resource_list_gets_with_filters_and_prints_summary(tmp_path, caps
         'items': [
             {
                 'entity_id': 'e1',
-                'slug': 'x',
                 'name': 'X',
                 'version': 1,
                 'lifecycle_state': 'draft',
@@ -366,22 +368,36 @@ async def test_resource_list_gets_with_filters_and_prints_summary(tmp_path, caps
     result = await resource_list(
         RESOURCES['capability'],
         config,
-        argparse.Namespace(lifecycle_state='draft', slug='x', limit=10, offset=0),
+        argparse.Namespace(
+            lifecycle_state='draft', limit=10, offset=0, tenant_id=TENANT_ID
+        ),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': '/api/v1/capabilities',
+        'path': f'/api/v1/tenants/{TENANT_ID}/capabilities',
         'params': {
             'lifecycle_state': 'draft',
-            'slug': 'x',
             'limit': 10,
             'offset': 0,
         },
     }
     out = capsys.readouterr().out
     assert '1 of 1 shown' in out
+
+
+@pytest.mark.asyncio
+async def test_resource_list_requires_a_tenant(tmp_path, capsys):
+    config = _logged_in_config(tmp_path)
+    result = await resource_list(
+        RESOURCES['capability'],
+        config,
+        argparse.Namespace(lifecycle_state=None, limit=50, offset=0, tenant_id=None),
+    )
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+    assert 'set-tenant' in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -392,13 +408,13 @@ async def test_resource_show_gets_current_version_by_default(tmp_path):
     result = await resource_show(
         RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id, version=None),
+        argparse.Namespace(entity_id=entity_id, version=None, tenant_id=TENANT_ID),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': f'/api/v1/capabilities/{entity_id}',
+        'path': f'/api/v1/tenants/{TENANT_ID}/capabilities/{entity_id}',
         'params': None,
     }
 
@@ -411,12 +427,12 @@ async def test_resource_show_gets_specific_version_when_given(tmp_path):
     result = await resource_show(
         RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id, version=2),
+        argparse.Namespace(entity_id=entity_id, version=2, tenant_id=TENANT_ID),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call['path'] == (
-        f'/api/v1/capabilities/{entity_id}/versions/2'
+        f'/api/v1/tenants/{TENANT_ID}/capabilities/{entity_id}/versions/2'
     )
 
 
@@ -427,7 +443,6 @@ async def test_resource_versions_gets_all_versions_and_prints_count(tmp_path, ca
     _FakeCatalogClient.response = [
         {
             'entity_id': str(entity_id),
-            'slug': 'x',
             'name': 'X',
             'version': 1,
             'lifecycle_state': 'draft',
@@ -435,7 +450,6 @@ async def test_resource_versions_gets_all_versions_and_prints_count(tmp_path, ca
         },
         {
             'entity_id': str(entity_id),
-            'slug': 'x',
             'name': 'X v2',
             'version': 2,
             'lifecycle_state': 'in_review',
@@ -444,13 +458,15 @@ async def test_resource_versions_gets_all_versions_and_prints_count(tmp_path, ca
     ]
 
     result = await resource_versions(
-        RESOURCES['capability'], config, argparse.Namespace(entity_id=entity_id)
+        RESOURCES['capability'],
+        config,
+        argparse.Namespace(entity_id=entity_id, tenant_id=TENANT_ID),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': f'/api/v1/capabilities/{entity_id}/versions',
+        'path': f'/api/v1/tenants/{TENANT_ID}/capabilities/{entity_id}/versions',
         'params': None,
     }
     assert '2 version(s)' in capsys.readouterr().out
@@ -464,13 +480,18 @@ async def test_resource_transition_posts_to_state(tmp_path):
     result = await resource_transition(
         RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id, version=1, to_state='in_review'),
+        argparse.Namespace(
+            entity_id=entity_id, version=1, to_state='in_review', tenant_id=TENANT_ID
+        ),
     )
 
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': f'/api/v1/capabilities/{entity_id}/versions/1/transitions',
+        'path': (
+            f'/api/v1/tenants/{TENANT_ID}/capabilities/{entity_id}'
+            '/versions/1/transitions'
+        ),
         'payload': {'to_state': 'in_review'},
     }
 
@@ -486,11 +507,15 @@ async def test_resource_list_works_for_every_resource(tmp_path, label):
     result = await resource_list(
         RESOURCES[label],
         config,
-        argparse.Namespace(lifecycle_state=None, slug=None, limit=50, offset=0),
+        argparse.Namespace(
+            lifecycle_state=None, limit=50, offset=0, tenant_id=TENANT_ID
+        ),
     )
 
     assert result == 0
-    assert _FakeCatalogClient.last_call['path'] == RESOURCES[label].api_path
+    assert _FakeCatalogClient.last_call['path'] == (
+        f'/api/v1/tenants/{TENANT_ID}{RESOURCES[label].api_path}'
+    )
 
 
 # --- Cross-cutting: auth/error handling (verb-agnostic) --------------------
@@ -516,7 +541,7 @@ async def test_create_requires_unexpired_session(tmp_path):
 @pytest.mark.asyncio
 async def test_create_reports_api_error(tmp_path):
     config = _logged_in_config(tmp_path)
-    _FakeCatalogClient.error = CatalogApiError(422, 'slug already exists')
+    _FakeCatalogClient.error = CatalogApiError(422, 'name already exists')
 
     result = await agent_create(config, _agent_args())
 
@@ -542,12 +567,33 @@ async def test_create_reports_401_with_the_servers_detail(tmp_path, capsys):
 
 
 @pytest.mark.asyncio
+async def test_create_reports_403_with_tenant_guidance(tmp_path, capsys):
+    """The common failure under the tenant-path model is 403 (token fine,
+    just no Principal in the named Tenant), not 401 -- must not fall
+    through to the bare status-code line with no actionable guidance."""
+    config = _logged_in_config(tmp_path)
+    _FakeCatalogClient.error = CatalogApiError(
+        403, 'No principal provisioned for this identity in tenant deadbeef'
+    )
+
+    result = await agent_create(config, _agent_args())
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert 'No principal provisioned for this identity in tenant' in out
+    assert '--tenant-id' in out
+    assert 'loom auth set-tenant' in out
+
+
+@pytest.mark.asyncio
 async def test_resource_list_requires_login(tmp_path):
     config = RootConfig(config_path=tmp_path / 'config.yaml')
     result = await resource_list(
         RESOURCES['capability'],
         config,
-        argparse.Namespace(lifecycle_state=None, slug=None, limit=50, offset=0),
+        argparse.Namespace(
+            lifecycle_state=None, limit=50, offset=0, tenant_id=TENANT_ID
+        ),
     )
     assert result == 1
     assert _FakeCatalogClient.last_call is None
@@ -626,12 +672,8 @@ async def test_principal_create_posts_expected_payload(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'POST',
-        'path': '/api/v1/principals',
-        'payload': {
-            'tenant_id': str(tenant_id),
-            'kind': 'user',
-            'external_id': 'sub-123',
-        },
+        'path': f'/api/v1/tenants/{tenant_id}/principals',
+        'payload': {'kind': 'user', 'external_id': 'sub-123'},
     }
 
 
@@ -646,8 +688,8 @@ async def test_principal_list_requires_tenant_id_query_param(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': '/api/v1/principals',
-        'params': {'tenant_id': str(tenant_id), 'limit': 50, 'offset': 0},
+        'path': f'/api/v1/tenants/{tenant_id}/principals',
+        'params': {'limit': 50, 'offset': 0},
     }
 
 
@@ -668,17 +710,16 @@ async def test_principal_list_defaults_to_the_locally_selected_tenant(tmp_path):
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': '/api/v1/principals',
-        'params': {'tenant_id': str(selected_tenant_id), 'limit': 50, 'offset': 0},
+        'path': f'/api/v1/tenants/{selected_tenant_id}/principals',
+        'params': {'limit': 50, 'offset': 0},
     }
 
 
 @pytest.mark.asyncio
 async def test_principal_list_explicit_tenant_id_beats_the_local_selection(tmp_path):
     """An explicit --tenant-id (e.g. a platform admin listing a Tenant
-    other than their own selection) must win consistently -- both in the
-    query filter and the X-Loom-Tenant-Id hint the client sends, not just
-    one of the two, which would silently disagree with the other."""
+    other than their own selection) must win -- both in the URL path and
+    the client's own tenant_id, not just one of the two."""
     config = _logged_in_config(tmp_path)
     config.auth.session.tenant_id = uuid.uuid4()
     explicit_tenant_id = uuid.uuid4()
@@ -689,8 +730,8 @@ async def test_principal_list_explicit_tenant_id_beats_the_local_selection(tmp_p
     )
 
     assert result == 0
-    assert _FakeCatalogClient.last_call['params']['tenant_id'] == str(
-        explicit_tenant_id
+    assert _FakeCatalogClient.last_call['path'] == (
+        f'/api/v1/tenants/{explicit_tenant_id}/principals'
     )
     assert _FakeCatalogClient.last_init_kwargs['tenant_id'] == explicit_tenant_id
 
@@ -714,12 +755,15 @@ async def test_principal_list_without_tenant_id_or_selection_fails_with_a_messag
 @pytest.mark.asyncio
 async def test_principal_show_gets_by_id(tmp_path):
     config = _logged_in_config(tmp_path)
+    tenant_id = uuid.uuid4()
     principal_id = uuid.uuid4()
-    result = await principal_show(config, argparse.Namespace(principal_id=principal_id))
+    result = await principal_show(
+        config, argparse.Namespace(principal_id=principal_id, tenant_id=tenant_id)
+    )
     assert result == 0
     assert _FakeCatalogClient.last_call == {
         'method': 'GET',
-        'path': f'/api/v1/principals/{principal_id}',
+        'path': f'/api/v1/tenants/{tenant_id}/principals/{principal_id}',
         'params': None,
     }
 
@@ -781,12 +825,21 @@ def test_update_requires_an_entity_id_positional(parser):
             'capability',
             'update',
             str(uuid.uuid4()),
-            'my-slug',
             'My Name',
         ]
     )
-    assert args.slug == 'my-slug'
+    assert args.name == 'My Name'
     assert isinstance(args.entity_id, uuid.UUID)
+
+
+@pytest.mark.parametrize('resource', ['capability', 'model', 'agent'])
+@pytest.mark.parametrize('verb', ['list', 'show', 'versions', 'transition'])
+def test_every_generic_verb_takes_an_optional_tenant_id_override(
+    parser, resource, verb
+):
+    sub = parser._subparsers._group_actions[0].choices[resource]
+    verb_parser = sub._subparsers._group_actions[0].choices[verb]
+    assert any(a.dest == 'tenant_id' for a in verb_parser._actions)
 
 
 def test_tenant_has_crud_verbs_but_not_versioned_verbs(parser):
@@ -835,9 +888,8 @@ def test_principal_create_requires_tenant_id_kind_external_id(parser):
 
 
 def test_principal_create_requires_tenant_id_flag_at_parse_time(parser):
-    """No session claim to default from any more (a caller's Tenant is
-    resolved from their own Principal row, not a token claim), so
-    argparse itself must require --tenant-id."""
+    """Principal creation is a durable write -- no session default, unlike
+    `list`/`show` -- so argparse itself must require --tenant-id."""
     with pytest.raises(SystemExit):
         parser.parse_args(
             ['principal', 'create', '--kind', 'user', '--external-id', 'sub-123']
@@ -849,4 +901,9 @@ def test_principal_list_tenant_id_flag_is_optional_at_parse_time(parser):
     locally-selected Tenant at runtime (see `principal_list`) -- argparse
     itself must not require it."""
     args = parser.parse_args(['principal', 'list'])
+    assert args.tenant_id is None
+
+
+def test_principal_show_takes_an_optional_tenant_id_override(parser):
+    args = parser.parse_args(['principal', 'show', str(uuid.uuid4())])
     assert args.tenant_id is None

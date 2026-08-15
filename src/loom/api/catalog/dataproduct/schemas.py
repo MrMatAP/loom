@@ -4,11 +4,9 @@ from pydantic import BaseModel
 
 
 class DataProductCreateRequest(BaseModel):
-    slug: str
     name: str
     description: str | None = None
     contract: dict
-    owner_id: uuid.UUID | None = None
 
 
 class DataProductLineageCreateRequest(BaseModel):

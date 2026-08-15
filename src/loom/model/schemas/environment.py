@@ -6,7 +6,6 @@ from loom.model.enums import EnvironmentKind
 
 
 class EnvironmentCreate(BaseModel):
-    tenant_id: uuid.UUID
     name: str
     kind: EnvironmentKind
     compute_boundary_ref: str

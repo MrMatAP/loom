@@ -26,8 +26,8 @@ def test_migrations_produce_the_expected_tables(live_db_engine):
 def test_tenant_and_principal_round_trip(live_db_session):
     """Writes through the real ORM models against real Postgres types
     (native UUID, the `principal_kind` enum, the tenant/external_id unique
-    constraint) -- exactly what `resolve_principal` reads at request time.
-    Rolled back by `live_db_session`, so nothing here persists."""
+    constraint) -- exactly what `get_principal_in_tenant` reads at request
+    time. Rolled back by `live_db_session`, so nothing here persists."""
     tenant = Tenant(slug=f'{IT_PREFIX}-tenant', name='Loom Integration Test Tenant')
     live_db_session.add(tenant)
     live_db_session.flush()

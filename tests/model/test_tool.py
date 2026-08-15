@@ -12,7 +12,6 @@ def test_tool_round_trip(session):
     session.commit()
 
     payload = ToolCreate(
-        slug='send-email',
         name='Send Email',
         tenant_id=tenant.id,
         owner_id=principal.id,

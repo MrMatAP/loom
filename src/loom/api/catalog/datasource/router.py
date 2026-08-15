@@ -18,7 +18,7 @@ from .repository import DataSourceRepository
 from .schemas import DataSourceCreateRequest
 from .service import DataSourceService
 
-router = APIRouter(prefix='/datasources', tags=['datasources'])
+router = APIRouter(prefix='/tenants/{tenant_id}/datasources', tags=['datasources'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> DataSourceService:
@@ -41,7 +41,6 @@ async def create_datasource(
 async def list_datasources(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: DataSourceService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:datasource:read')),
@@ -49,7 +48,6 @@ async def list_datasources(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

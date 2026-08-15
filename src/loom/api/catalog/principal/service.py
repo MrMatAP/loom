@@ -13,16 +13,16 @@ class PrincipalService:
     def __init__(self, repository: PrincipalRepository) -> None:
         self._repository = repository
 
-    async def create(self, data: PrincipalCreate) -> Principal:
+    async def create(self, tenant_id: uuid.UUID, data: PrincipalCreate) -> Principal:
         principal = Principal(
-            tenant_id=data.tenant_id,
+            tenant_id=tenant_id,
             kind=data.kind,
             external_id=data.external_id,
         )
         return await self._repository.add(principal)
 
-    async def get(self, principal_id: uuid.UUID) -> Principal:
-        principal = await self._repository.get(principal_id)
+    async def get(self, tenant_id: uuid.UUID, principal_id: uuid.UUID) -> Principal:
+        principal = await self._repository.get(tenant_id, principal_id)
         if principal is None:
             raise EntityNotFoundError(f'Principal {principal_id} not found')
         return principal

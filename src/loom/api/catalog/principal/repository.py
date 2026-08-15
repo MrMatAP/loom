@@ -13,8 +13,14 @@ class PrincipalRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, principal_id: uuid.UUID) -> Principal | None:
-        return await self._session.get(Principal, principal_id)
+    async def get(
+        self, tenant_id: uuid.UUID, principal_id: uuid.UUID
+    ) -> Principal | None:
+        return await self._session.scalar(
+            sa.select(Principal).where(
+                Principal.id == principal_id, Principal.tenant_id == tenant_id
+            )
+        )
 
     async def list_by_tenant(
         self, tenant_id: uuid.UUID, *, limit: int, offset: int

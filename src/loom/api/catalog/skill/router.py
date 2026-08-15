@@ -22,7 +22,7 @@ from .schemas import (
 )
 from .service import SkillService
 
-router = APIRouter(prefix='/skills', tags=['skills'])
+router = APIRouter(prefix='/tenants/{tenant_id}/skills', tags=['skills'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> SkillService:
@@ -45,7 +45,6 @@ async def create_skill(
 async def list_skills(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: SkillService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:skill:read')),
@@ -53,7 +52,6 @@ async def list_skills(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

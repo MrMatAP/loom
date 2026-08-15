@@ -13,7 +13,6 @@ def test_datasource_round_trip(session):
     session.commit()
 
     payload = DataSourceCreate(
-        slug='orders-db',
         name='Orders DB',
         tenant_id=tenant.id,
         owner_id=principal.id,

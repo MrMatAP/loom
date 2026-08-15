@@ -29,11 +29,11 @@ def test_principal_unique_external_id_per_tenant(session):
     session.commit()
 
     principal = Principal(
+        tenant_id=tenant.id,
         **PrincipalCreate(
-            tenant_id=tenant.id,
             kind=PrincipalKind.USER,
             external_id='ada@acme.example',
-        ).model_dump()
+        ).model_dump(),
     )
     session.add(principal)
     session.commit()

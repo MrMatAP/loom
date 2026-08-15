@@ -18,7 +18,9 @@ from .repository import ModelEndpointRepository
 from .schemas import ModelEndpointCreateRequest
 from .service import ModelEndpointService
 
-router = APIRouter(prefix='/model-endpoints', tags=['model-endpoints'])
+router = APIRouter(
+    prefix='/tenants/{tenant_id}/model-endpoints', tags=['model-endpoints']
+)
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> ModelEndpointService:
@@ -41,7 +43,6 @@ async def create_model_endpoint(
 async def list_model_endpoints(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: ModelEndpointService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:model_endpoint:read')),
@@ -49,7 +50,6 @@ async def list_model_endpoints(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

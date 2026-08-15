@@ -55,12 +55,10 @@ def mcp_state(async_session_factory, fake_principal):
         {
             'valid-all-scopes': {
                 'sub': 'test-user',
-                'tenant_id': str(fake_principal.tenant_id),
                 'scope': ' '.join(sorted(ALL_SCOPES)),
             },
             'valid-read-only': {
                 'sub': 'test-user',
-                'tenant_id': str(fake_principal.tenant_id),
                 'scope': 'catalog:capability:read',
             },
         }
@@ -71,6 +69,11 @@ def mcp_state(async_session_factory, fake_principal):
 @pytest.fixture
 def mcp_server(mcp_state):
     return create_mcp_server(mcp_state)
+
+
+@pytest.fixture
+def tenant_id(fake_principal) -> str:
+    return str(fake_principal.tenant_id)
 
 
 def _auth_headers(monkeypatch, token: str | None):
@@ -104,29 +107,29 @@ def test_each_resource_registers_its_seven_tools(label, plural):
 
 @pytest.mark.asyncio
 async def test_create_capability_tool_creates_via_the_service(
-    mcp_server, monkeypatch, async_session_factory
+    mcp_server, monkeypatch, async_session_factory, tenant_id
 ):
     _auth_headers(monkeypatch, 'valid-all-scopes')
 
     async with Client(mcp_server) as client:
         result = await client.call_tool(
             'create_capability',
-            {'data': {'slug': 'latency-slo', 'name': 'Latency SLO'}},
+            {'tenant_id': tenant_id, 'data': {'name': 'Latency SLO'}},
         )
 
-    assert result.data.slug == 'latency-slo'
+    assert result.data.name == 'Latency SLO'
     assert result.data.lifecycle_state == 'draft'
 
     async with async_session_factory() as session:
         row = await session.scalar(
-            select(Capability).where(Capability.slug == 'latency-slo')
+            select(Capability).where(Capability.name == 'Latency SLO')
         )
         assert row is not None
 
 
 @pytest.mark.asyncio
 async def test_capability_lifecycle_get_list_versions_update_transition(
-    mcp_server, monkeypatch
+    mcp_server, monkeypatch, tenant_id
 ):
     """One end-to-end run through every capability verb, each building on
     the last -- a stronger check than isolated per-verb calls that a
@@ -137,26 +140,26 @@ async def test_capability_lifecycle_get_list_versions_update_transition(
     async with Client(mcp_server) as client:
         created = await client.call_tool(
             'create_capability',
-            {'data': {'slug': 'availability-slo', 'name': 'Availability SLO'}},
+            {'tenant_id': tenant_id, 'data': {'name': 'Availability SLO'}},
         )
         entity_id = str(created.data.entity_id)
 
-        got = await client.call_tool('get_capability', {'entity_id': entity_id})
-        assert got.data.slug == 'availability-slo'
+        got = await client.call_tool(
+            'get_capability', {'tenant_id': tenant_id, 'entity_id': entity_id}
+        )
+        assert got.data.name == 'Availability SLO'
         assert got.data.version == 1
 
-        listed = await client.call_tool(
-            'list_capabilities', {'slug': 'availability-slo'}
-        )
+        listed = await client.call_tool('list_capabilities', {'tenant_id': tenant_id})
         assert listed.data.total == 1
         assert listed.data.items[0].entity_id == created.data.entity_id
 
         updated = await client.call_tool(
             'update_capability',
             {
+                'tenant_id': tenant_id,
                 'entity_id': entity_id,
                 'data': {
-                    'slug': 'availability-slo',
                     'name': 'Availability SLO v2',
                     'target_metrics': [{'name': 'uptime'}],
                 },
@@ -166,46 +169,58 @@ async def test_capability_lifecycle_get_list_versions_update_transition(
         assert updated.data.name == 'Availability SLO v2'
 
         versions = await client.call_tool(
-            'list_capability_versions', {'entity_id': entity_id}
+            'list_capability_versions', {'tenant_id': tenant_id, 'entity_id': entity_id}
         )
         assert [v.version for v in versions.data] == [1, 2]
 
         version_1 = await client.call_tool(
-            'get_capability_version', {'entity_id': entity_id, 'version': 1}
+            'get_capability_version',
+            {'tenant_id': tenant_id, 'entity_id': entity_id, 'version': 1},
         )
         assert version_1.data.name == 'Availability SLO'
 
         transitioned = await client.call_tool(
             'transition_capability',
-            {'entity_id': entity_id, 'version': 2, 'to_state': 'in_review'},
+            {
+                'tenant_id': tenant_id,
+                'entity_id': entity_id,
+                'version': 2,
+                'to_state': 'in_review',
+            },
         )
         assert transitioned.data.lifecycle_state == 'in_review'
 
 
 @pytest.mark.asyncio
-async def test_get_capability_tool_raises_on_unknown_entity(mcp_server, monkeypatch):
+async def test_get_capability_tool_raises_on_unknown_entity(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, 'valid-all-scopes')
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match='not found'):
             await client.call_tool(
                 'get_capability',
-                {'entity_id': '00000000-0000-0000-0000-000000000000'},
+                {
+                    'tenant_id': tenant_id,
+                    'entity_id': '00000000-0000-0000-0000-000000000000',
+                },
             )
 
 
 @pytest.mark.asyncio
 async def test_transition_capability_tool_raises_on_illegal_transition(
-    mcp_server, monkeypatch
+    mcp_server, monkeypatch, tenant_id
 ):
     _auth_headers(monkeypatch, 'valid-all-scopes')
     async with Client(mcp_server) as client:
         created = await client.call_tool(
-            'create_capability', {'data': {'slug': 'x-cap', 'name': 'X'}}
+            'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'X'}}
         )
         with pytest.raises(ToolError, match='not a legal transition'):
             await client.call_tool(
                 'transition_capability',
                 {
+                    'tenant_id': tenant_id,
                     'entity_id': str(created.data.entity_id),
                     'version': 1,
                     'to_state': 'retired',
@@ -215,7 +230,7 @@ async def test_transition_capability_tool_raises_on_illegal_transition(
 
 @pytest.mark.asyncio
 async def test_read_only_token_cannot_update_or_transition_capability(
-    mcp_server, monkeypatch
+    mcp_server, monkeypatch, tenant_id
 ):
     """`valid-read-only` only carries `catalog:capability:read` -- update
     and transition need `:write`/`:transition` respectively, distinct
@@ -223,27 +238,35 @@ async def test_read_only_token_cannot_update_or_transition_capability(
     _auth_headers(monkeypatch, 'valid-all-scopes')
     async with Client(mcp_server) as client:
         created = await client.call_tool(
-            'create_capability', {'data': {'slug': 'ro-cap', 'name': 'RO'}}
+            'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'RO'}}
         )
     entity_id = str(created.data.entity_id)
 
     _auth_headers(monkeypatch, 'valid-read-only')
     async with Client(mcp_server) as client:
-        got = await client.call_tool('get_capability', {'entity_id': entity_id})
-        assert got.data.slug == 'ro-cap'
+        got = await client.call_tool(
+            'get_capability', {'tenant_id': tenant_id, 'entity_id': entity_id}
+        )
+        assert got.data.name == 'RO'
 
         with pytest.raises(ToolError, match='Missing required scope'):
             await client.call_tool(
                 'update_capability',
                 {
+                    'tenant_id': tenant_id,
                     'entity_id': entity_id,
-                    'data': {'slug': 'ro-cap', 'name': 'RO'},
+                    'data': {'name': 'RO'},
                 },
             )
         with pytest.raises(ToolError, match='Missing required scope'):
             await client.call_tool(
                 'transition_capability',
-                {'entity_id': entity_id, 'version': 1, 'to_state': 'in_review'},
+                {
+                    'tenant_id': tenant_id,
+                    'entity_id': entity_id,
+                    'version': 1,
+                    'to_state': 'in_review',
+                },
             )
 
 
@@ -251,53 +274,59 @@ async def test_read_only_token_cannot_update_or_transition_capability(
 
 
 @pytest.mark.asyncio
-async def test_create_model_tool_creates_via_the_service(mcp_server, monkeypatch):
+async def test_create_model_tool_creates_via_the_service(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, 'valid-all-scopes')
 
     async with Client(mcp_server) as client:
         created = await client.call_tool(
             'create_model',
             {
+                'tenant_id': tenant_id,
                 'data': {
-                    'slug': 'claude-opus',
                     'name': 'Claude Opus',
                     'protocol': 'anthropic_messages',
                     'model': 'claude-opus-4',
-                }
+                },
             },
         )
-        assert created.data.slug == 'claude-opus'
+        assert created.data.name == 'Claude Opus'
         assert created.data.protocol == 'anthropic_messages'
 
         got = await client.call_tool(
-            'get_model', {'entity_id': str(created.data.entity_id)}
+            'get_model',
+            {'tenant_id': tenant_id, 'entity_id': str(created.data.entity_id)},
         )
         assert got.data.model == 'claude-opus-4'
 
 
 @pytest.mark.asyncio
-async def test_create_agent_tool_creates_via_the_service(mcp_server, monkeypatch):
+async def test_create_agent_tool_creates_via_the_service(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, 'valid-all-scopes')
 
     async with Client(mcp_server) as client:
         created = await client.call_tool(
             'create_agent',
             {
+                'tenant_id': tenant_id,
                 'data': {
-                    'slug': 'triage-bot',
                     'name': 'Triage Bot',
                     'layer': 'business_tech',
                     'llm_config': {},
                     'prompt': 'You triage tickets.',
                     'memory_scope': 'session',
-                }
+                },
             },
         )
-        assert created.data.slug == 'triage-bot'
+        assert created.data.name == 'Triage Bot'
         assert created.data.layer == 'business_tech'
 
         got = await client.call_tool(
-            'get_agent', {'entity_id': str(created.data.entity_id)}
+            'get_agent',
+            {'tenant_id': tenant_id, 'entity_id': str(created.data.entity_id)},
         )
         assert got.data.prompt == 'You triage tickets.'
 
@@ -306,40 +335,48 @@ async def test_create_agent_tool_creates_via_the_service(mcp_server, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_tool_call_without_bearer_token_is_rejected(mcp_server, monkeypatch):
+async def test_tool_call_without_bearer_token_is_rejected(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, None)
 
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match='Missing bearer token'):
             await client.call_tool(
-                'create_capability', {'data': {'slug': 'x', 'name': 'X'}}
+                'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'X'}}
             )
 
 
 @pytest.mark.asyncio
-async def test_tool_call_with_invalid_token_is_rejected(mcp_server, monkeypatch):
+async def test_tool_call_with_invalid_token_is_rejected(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, 'not-a-real-token')
 
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match='Invalid token'):
             await client.call_tool(
-                'create_capability', {'data': {'slug': 'x', 'name': 'X'}}
+                'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'X'}}
             )
 
 
 @pytest.mark.asyncio
-async def test_tool_call_without_required_scope_is_rejected(mcp_server, monkeypatch):
+async def test_tool_call_without_required_scope_is_rejected(
+    mcp_server, monkeypatch, tenant_id
+):
     _auth_headers(monkeypatch, 'valid-read-only')
 
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError, match='Missing required scope'):
             await client.call_tool(
-                'create_capability', {'data': {'slug': 'x', 'name': 'X'}}
+                'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'X'}}
             )
 
 
 @pytest.mark.asyncio
-async def test_tool_call_before_lifespan_starts_is_a_clear_error(monkeypatch):
+async def test_tool_call_before_lifespan_starts_is_a_clear_error(
+    monkeypatch, tenant_id
+):
     """An uninitialized McpState (the FastAPI lifespan never ran, e.g. the
     ASGI app was mounted but never started) fails loudly rather than with
     an opaque AttributeError deep in a tool body."""
@@ -350,5 +387,5 @@ async def test_tool_call_before_lifespan_starts_is_a_clear_error(monkeypatch):
     async with Client(mcp) as client:
         with pytest.raises(ToolError, match='not initialized'):
             await client.call_tool(
-                'create_capability', {'data': {'slug': 'x', 'name': 'X'}}
+                'create_capability', {'tenant_id': tenant_id, 'data': {'name': 'X'}}
             )

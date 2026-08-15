@@ -18,7 +18,7 @@ from .repository import AgentRepository
 from .schemas import AgentCreateRequest
 from .service import AgentService
 
-router = APIRouter(prefix='/agents', tags=['agents'])
+router = APIRouter(prefix='/tenants/{tenant_id}/agents', tags=['agents'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> AgentService:
@@ -41,7 +41,6 @@ async def create_agent(
 async def list_agents(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: AgentService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:agent:read')),
@@ -49,7 +48,6 @@ async def list_agents(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

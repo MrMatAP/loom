@@ -5,7 +5,6 @@ from loom.api.catalog.exceptions import EntityNotFoundError, IllegalTransitionEr
 from loom.api.catalog.lifecycle import is_legal_transition
 from loom.model.datasource import DataSource
 from loom.model.enums import LifecycleState
-from loom.model.tenant import Principal
 
 from .repository import DataSourceRepository
 from .schemas import DataSourceCreateRequest
@@ -17,14 +16,6 @@ class DataSourceService:
     def __init__(self, repository: DataSourceRepository) -> None:
         self._repository = repository
 
-    async def _resolve_owner_id(
-        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
-    ) -> uuid.UUID:
-        if owner_id is None:
-            return fallback
-        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
-        return owner_id
-
     async def create(
         self,
         *,
@@ -32,12 +23,10 @@ class DataSourceService:
         created_by_id: uuid.UUID,
         data: DataSourceCreateRequest,
     ) -> DataSource:
-        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         datasource = DataSource(
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            owner_id=created_by_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             kind=data.kind,
@@ -75,14 +64,12 @@ class DataSourceService:
         tenant_id: uuid.UUID,
         *,
         lifecycle_state: LifecycleState | None,
-        slug: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[DataSource], int]:
         return await self._repository.list_current(
             tenant_id,
             lifecycle_state=lifecycle_state,
-            slug=slug,
             limit=limit,
             offset=offset,
         )
@@ -96,9 +83,6 @@ class DataSourceService:
         data: DataSourceCreateRequest,
     ) -> DataSource:
         current = await self.get_current(tenant_id, entity_id)
-        owner_id = await self._resolve_owner_id(
-            tenant_id, data.owner_id, current.owner_id
-        )
         current.is_current = False
         await self._repository.save(current)
         new_version = DataSource(
@@ -106,9 +90,11 @@ class DataSourceService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            # Ownership carries over from the prior version -- there's no
+            # more owner_id input to override it with (always inferred,
+            # never caller-supplied).
+            owner_id=current.owner_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             kind=data.kind,

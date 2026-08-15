@@ -45,8 +45,7 @@ def cli_catalog_client(api_client, monkeypatch) -> httpx.ASGITransport:
     transport = httpx.ASGITransport(app=api_client.app)
 
     def _factory(api_base_url, access_token, **kwargs):
-        del kwargs
-        return CatalogClient(api_base_url, access_token, transport=transport)
+        return CatalogClient(api_base_url, access_token, transport=transport, **kwargs)
 
     monkeypatch.setattr(catalog, 'CatalogClient', _factory)
     return transport
@@ -71,36 +70,40 @@ def rendered(monkeypatch) -> dict:
 
 
 async def _create_capability(
-    config: RootConfig, transport: httpx.ASGITransport, slug: str
+    config: RootConfig,
+    transport: httpx.ASGITransport,
+    tenant_id: uuid.UUID,
+    name: str,
 ) -> dict:
     """Create straight through the real API, bypassing the CLI's own
     create path -- what's under test here is `resource_list`/
     `resource_show`/`resource_versions`, not `capability_create` (already
     covered by the fake-client tests)."""
-    client = CatalogClient(config.catalog.api_base_url, 'tok', transport=transport)
+    client = CatalogClient(
+        config.catalog.api_base_url, 'tok', tenant_id=tenant_id, transport=transport
+    )
     return await client.post(
-        catalog.RESOURCES['capability'].api_path,
-        {
-            'slug': slug,
-            'name': slug.title(),
-            'description': None,
-            'target_metrics': [],
-            'owner_id': None,
-        },
+        client.tenant_path(catalog.RESOURCES['capability'].api_path),
+        {'name': name, 'description': None, 'target_metrics': []},
     )
 
 
 @pytest.mark.asyncio
-async def test_resource_list_wire_contract(cli_catalog_client, rendered) -> None:
+async def test_resource_list_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
     """`resource_list` reads `page['items']`/`['total']`/`['limit']`/
-    `['offset']` and sends `lifecycle_state`/`slug`/`limit`/`offset` as
-    query params -- both must match what `list_capabilities` actually
-    accepts and returns."""
+    `['offset']` and sends `lifecycle_state`/`limit`/`offset` as query
+    params -- both must match what `list_capabilities` actually accepts
+    and returns."""
     config = _cli_config()
-    created = await _create_capability(config, cli_catalog_client, 'wire-contract-list')
+    tenant_id = fake_principal.tenant_id
+    created = await _create_capability(
+        config, cli_catalog_client, tenant_id, 'Wire Contract List'
+    )
 
     args = argparse.Namespace(
-        lifecycle_state=None, slug='wire-contract-list', limit=50, offset=0
+        lifecycle_state=None, limit=50, offset=0, tenant_id=tenant_id
     )
     exit_code = await catalog.resource_list(
         catalog.RESOURCES['capability'], config, args
@@ -109,65 +112,73 @@ async def test_resource_list_wire_contract(cli_catalog_client, rendered) -> None
     assert exit_code == 0
     rows = rendered['table']['rows']
     assert [row['entity_id'] for row in rows] == [created['entity_id']]
-    assert rows[0]['slug'] == 'wire-contract-list'
+    assert rows[0]['name'] == 'Wire Contract List'
 
 
 @pytest.mark.asyncio
 async def test_resource_show_wire_contract_current_and_versioned(
-    cli_catalog_client, rendered
+    cli_catalog_client, rendered, fake_principal
 ) -> None:
     """`resource_show` GETs `{api_path}/{entity_id}` for the current
     version and `{api_path}/{entity_id}/versions/{version}` when
     `--version` is given -- both must be real routes."""
     config = _cli_config()
-    created = await _create_capability(config, cli_catalog_client, 'wire-contract-show')
+    tenant_id = fake_principal.tenant_id
+    created = await _create_capability(
+        config, cli_catalog_client, tenant_id, 'Wire Contract Show'
+    )
     entity_id = uuid.UUID(created['entity_id'])
 
     exit_code = await catalog.resource_show(
         catalog.RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id, version=None),
+        argparse.Namespace(entity_id=entity_id, version=None, tenant_id=tenant_id),
     )
     assert exit_code == 0
-    assert rendered['detail']['slug'] == 'wire-contract-show'
+    assert rendered['detail']['name'] == 'Wire Contract Show'
 
     exit_code = await catalog.resource_show(
         catalog.RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id, version=1),
+        argparse.Namespace(entity_id=entity_id, version=1, tenant_id=tenant_id),
     )
     assert exit_code == 0
-    assert rendered['detail']['slug'] == 'wire-contract-show'
+    assert rendered['detail']['name'] == 'Wire Contract Show'
     assert rendered['detail']['version'] == 1
 
 
 @pytest.mark.asyncio
-async def test_resource_versions_wire_contract(cli_catalog_client, rendered) -> None:
+async def test_resource_versions_wire_contract(
+    cli_catalog_client, rendered, fake_principal
+) -> None:
     """`resource_versions` GETs `{api_path}/{entity_id}/versions`, which
     returns a bare list (not the `Page` envelope `list` uses) -- confirm
     the CLI renders that shape without expecting `items`/`total`."""
     config = _cli_config()
+    tenant_id = fake_principal.tenant_id
     created = await _create_capability(
-        config, cli_catalog_client, 'wire-contract-versions'
+        config, cli_catalog_client, tenant_id, 'Wire Contract Versions'
     )
     entity_id = uuid.UUID(created['entity_id'])
 
     exit_code = await catalog.resource_versions(
         catalog.RESOURCES['capability'],
         config,
-        argparse.Namespace(entity_id=entity_id),
+        argparse.Namespace(entity_id=entity_id, tenant_id=tenant_id),
     )
     assert exit_code == 0
     rows = rendered['table']['rows']
     assert [row['entity_id'] for row in rows] == [created['entity_id']]
-    assert rows[0]['slug'] == 'wire-contract-versions'
+    assert rows[0]['name'] == 'Wire Contract Versions'
 
 
 @pytest.mark.asyncio
 async def test_tenant_crud_wire_contract(cli_catalog_client, rendered) -> None:
     """Tenant isn't a VersionedEntity -- `list` reads the same `Page`
     envelope shape as the trio above, but `show`/`update` hit `{api_path}/
-    {id}` directly (no `/versions/...`), and `update` is a real PATCH."""
+    {id}` directly (no `/versions/...`), and `update` is a real PATCH. Not
+    nested under a Tenant path -- it's the one resource this doesn't apply
+    to."""
     config = _cli_config()
 
     exit_code = await catalog.tenant_create(
@@ -200,10 +211,9 @@ async def test_tenant_crud_wire_contract(cli_catalog_client, rendered) -> None:
 async def test_principal_crud_wire_contract(
     cli_catalog_client, rendered, fake_principal
 ) -> None:
-    """`principal list` sends `tenant_id` as a required query param (not
-    optional like `slug`/`lifecycle_state` on the versioned trio) --
-    confirms `list_principals`' `Query(...)` actually requires it end to
-    end, not just in the CLI's own argparse."""
+    """`principal create`/`list`/`show` all nest under `/tenants/
+    {tenant_id}/principals` now -- confirms that path actually round-trips
+    end to end, not just in the CLI's own argparse."""
     config = _cli_config()
     tenant_id = fake_principal.tenant_id
 
@@ -225,7 +235,8 @@ async def test_principal_crud_wire_contract(
     assert str(principal_id) in [row['id'] for row in rendered['table']['rows']]
 
     exit_code = await catalog.principal_show(
-        config, argparse.Namespace(principal_id=principal_id)
+        config,
+        argparse.Namespace(principal_id=principal_id, tenant_id=tenant_id),
     )
     assert exit_code == 0
     assert rendered['detail']['external_id'] == 'wire-contract-external-id'

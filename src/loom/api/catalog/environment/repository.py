@@ -13,8 +13,14 @@ class EnvironmentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, environment_id: uuid.UUID) -> Environment | None:
-        return await self._session.get(Environment, environment_id)
+    async def get(
+        self, tenant_id: uuid.UUID, environment_id: uuid.UUID
+    ) -> Environment | None:
+        return await self._session.scalar(
+            sa.select(Environment).where(
+                Environment.id == environment_id, Environment.tenant_id == tenant_id
+            )
+        )
 
     async def list_by_tenant(
         self, tenant_id: uuid.UUID, *, limit: int, offset: int

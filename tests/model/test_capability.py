@@ -30,7 +30,6 @@ def test_capability_realization_single_realizer_valid(session):
 
     agent = Agent(
         **AgentCreate(
-            slug='triage-agent',
             name='Triage Agent',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -46,7 +45,6 @@ def test_capability_realization_single_realizer_valid(session):
 
     capability = Capability(
         **CapabilityCreate(
-            slug='ticket-triage',
             name='Ticket Triage',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -76,7 +74,6 @@ def test_capability_realization_zero_realizers_rejected(session):
 
     capability = Capability(
         **CapabilityCreate(
-            slug='ticket-triage',
             name='Ticket Triage',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -104,7 +101,6 @@ def test_capability_realization_multi_realizers_rejected(session):
 
     agent = Agent(
         **AgentCreate(
-            slug='triage-agent',
             name='Triage Agent',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -120,7 +116,6 @@ def test_capability_realization_multi_realizers_rejected(session):
 
     skill = Skill(
         **SkillCreate(
-            slug='triage-flow',
             name='Triage Flow',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -134,7 +129,6 @@ def test_capability_realization_multi_realizers_rejected(session):
 
     capability = Capability(
         **CapabilityCreate(
-            slug='ticket-triage',
             name='Ticket Triage',
             tenant_id=tenant.id,
             owner_id=principal.id,

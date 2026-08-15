@@ -6,7 +6,6 @@ from loom.api.catalog.lifecycle import is_legal_transition
 from loom.model.agent import Agent
 from loom.model.enums import LifecycleState
 from loom.model.skill import Skill, SkillGraphEdge, SkillGraphNode
-from loom.model.tenant import Principal
 from loom.model.tool import Tool
 
 from .repository import SkillRepository
@@ -23,14 +22,6 @@ class SkillService:
     def __init__(self, repository: SkillRepository) -> None:
         self._repository = repository
 
-    async def _resolve_owner_id(
-        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
-    ) -> uuid.UUID:
-        if owner_id is None:
-            return fallback
-        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
-        return owner_id
-
     async def create(
         self,
         *,
@@ -38,12 +29,10 @@ class SkillService:
         created_by_id: uuid.UUID,
         data: SkillCreateRequest,
     ) -> Skill:
-        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         skill = Skill(
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            owner_id=created_by_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             layer=data.layer,
@@ -80,14 +69,12 @@ class SkillService:
         tenant_id: uuid.UUID,
         *,
         lifecycle_state: LifecycleState | None,
-        slug: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[Skill], int]:
         return await self._repository.list_current(
             tenant_id,
             lifecycle_state=lifecycle_state,
-            slug=slug,
             limit=limit,
             offset=offset,
         )
@@ -101,9 +88,6 @@ class SkillService:
         data: SkillCreateRequest,
     ) -> Skill:
         current = await self.get_current(tenant_id, entity_id)
-        owner_id = await self._resolve_owner_id(
-            tenant_id, data.owner_id, current.owner_id
-        )
         current.is_current = False
         await self._repository.save(current)
         new_version = Skill(
@@ -111,9 +95,11 @@ class SkillService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            # Ownership carries over from the prior version -- there's no
+            # more owner_id input to override it with (always inferred,
+            # never caller-supplied).
+            owner_id=current.owner_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             layer=data.layer,

@@ -33,7 +33,6 @@ def _make_tenant_and_principal(session) -> tuple[Tenant, Principal]:
 def test_versioned_entity_defaults_and_fk(session):
     tenant, principal = _make_tenant_and_principal(session)
     widget = _Widget(
-        slug='w',
         name='Widget',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -54,7 +53,6 @@ def test_only_one_current_row_per_entity_id(session):
             entity_id=entity_id,
             version=1,
             is_current=True,
-            slug='w',
             name='Widget v1',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -67,7 +65,6 @@ def test_only_one_current_row_per_entity_id(session):
             entity_id=entity_id,
             version=2,
             is_current=True,
-            slug='w',
             name='Widget v2',
             tenant_id=tenant.id,
             owner_id=principal.id,

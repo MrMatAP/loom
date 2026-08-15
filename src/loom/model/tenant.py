@@ -30,10 +30,12 @@ class Principal(Base, TimestampMixin):
     `uq_principal_tenant_external_id` below only enforces uniqueness of
     `external_id` *per Tenant*, not globally -- the same IDP `sub` may
     legitimately hold a Principal row in more than one Tenant. That's
-    deliberate, not an oversight: `resolve_principal`
-    (`src/loom/api/catalog/dependencies.py`) disambiguates such an
-    identity at request time via the `X-Loom-Tenant-Id` header, set
-    locally with `loom auth set-tenant`."""
+    deliberate, not an oversight: `get_principal_in_tenant`
+    (`src/loom/api/catalog/dependencies.py`) resolves such an identity to
+    exactly one Principal at request time by matching against the
+    `tenant_id` named in the request's own URL path
+    (`/api/v1/tenants/{tenant_id}/...`), set locally with `loom auth
+    set-tenant`/`--tenant-id`."""
 
     __tablename__ = 'principal'
     __table_args__ = (

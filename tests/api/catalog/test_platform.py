@@ -4,7 +4,6 @@ import pytest
 import sqlalchemy as sa
 
 from loom.api.catalog.dependencies import get_current_principal, get_current_token
-from loom.http_headers import TENANT_HINT_HEADER
 from loom.idp.catalog_roles import ROLE_BUNDLES, content_scopes, platform_scopes
 from loom.model.enums import PrincipalKind
 from loom.model.governance import AuditEvent
@@ -20,11 +19,11 @@ async def test_platform_admin_bootstraps_without_a_provisioned_principal(
     create the very first Tenant/Principal in a fresh deployment, where by
     definition no Principal row -- for this caller or anyone else -- exists
     yet. Assert that directly: a token with only the platform scopes must
-    still succeed, without `get_current_principal` (which would 401 on
-    exactly this token, since no Principal row matches its `sub`) ever
-    running -- `pop`, not override, so a bug that starts requiring
-    principal resolution on these routes fails this test rather than
-    silently passing through the fixture's override.
+    still succeed, without `get_current_principal` (which would 403 on
+    exactly this token, since no Principal row matches its `sub` in the
+    target Tenant) ever running -- `pop`, not override, so a bug that
+    starts requiring principal resolution on these routes fails this test
+    rather than silently passing through the fixture's override.
 
     Also asserts the bootstrap is still audited even though there's no
     Principal to attribute it to (see `src/loom/api/catalog/audit.py`) --
@@ -43,12 +42,8 @@ async def test_platform_admin_bootstraps_without_a_provisioned_principal(
     tenant_id = tenant_resp.json()['id']
 
     principal_resp = await api_client.post(
-        '/api/v1/principals',
-        json={
-            'tenant_id': tenant_id,
-            'kind': 'user',
-            'external_id': 'ada@bootstrap-co.example',
-        },
+        f'/api/v1/tenants/{tenant_id}/principals',
+        json={'kind': 'user', 'external_id': 'ada@bootstrap-co.example'},
     )
     assert principal_resp.status_code == 201
     principal_id = principal_resp.json()['id']
@@ -70,61 +65,65 @@ async def test_platform_admin_bootstraps_without_a_provisioned_principal(
 async def test_tenant_create_by_a_provisioned_principal_attributes_the_audit_event(
     api_client, async_session, fake_principal
 ):
-    """The common case (not bootstrap): a caller who already has a
-    Principal row gets it recorded directly on the AuditEvent, with no
-    need for the `details.actor_external_id` fallback."""
+    """`POST /tenants` has no Tenant of its own in its URL path (it's
+    creating one), so audit attribution here (`get_audit_actor_for_new_
+    tenant`) is always via `details.actor_external_id`, never a
+    Principal -- even for a caller who already has one elsewhere. Creating
+    a Tenant is inherently a cross-Tenant, platform-admin action; see
+    `src/loom/api/catalog/audit.py`."""
     create_resp = await api_client.post(
         '/api/v1/tenants', json={'slug': 'acme', 'name': 'Acme Corp'}
     )
     assert create_resp.status_code == 201
 
+    del fake_principal  # kept unused: proves the *default* fixture's Principal is
+    # still ignored for this route, not just absent
     event = await async_session.scalar(
         sa.select(AuditEvent).where(AuditEvent.action == 'tenant.create')
     )
     assert event is not None
-    assert event.actor_principal_id == fake_principal.principal_id
-    assert event.details == {}
+    assert event.actor_principal_id is None
+    assert event.details == {'actor_external_id': 'test-user'}
 
 
 @pytest.mark.asyncio
-async def test_tenant_hint_header_attributes_the_audit_event_correctly(
+async def test_principal_create_attributes_the_audit_event_to_the_path_tenant(
     api_client, async_session, async_session_factory
 ):
-    """The `X-Loom-Tenant-Id` header that disambiguates a multi-tenant
-    identity's auth (see tests/api/test_tenant_isolation.py) must also
-    disambiguate its audit attribution -- `get_audit_actor` delegates to
-    the exact same `resolve_principal` that gated the request, so this
-    can't drift out of sync with what was actually authenticated."""
+    """`POST /tenants/{tenant_id}/principals`'s audit attribution
+    (`get_audit_actor`) must resolve the caller's Principal in exactly the
+    Tenant named by the URL path -- not any other Tenant the same `sub`
+    happens to also have a Principal in. Provisioning the identity in two
+    Tenants and creating in each proves attribution tracks the path, not
+    just "some Principal for this sub"."""
     async with async_session_factory() as session:
-        first_tenant = Tenant(slug='first-hint-co', name='First Hint Co')
-        second_tenant = Tenant(slug='second-hint-co', name='Second Hint Co')
+        first_tenant = Tenant(slug='first-audit-co', name='First Audit Co')
+        second_tenant = Tenant(slug='second-audit-co', name='Second Audit Co')
         session.add_all([first_tenant, second_tenant])
         await session.flush()
         first_principal = Principal(
-            tenant_id=first_tenant.id,
-            kind=PrincipalKind.USER,
-            external_id='hint-user',
+            tenant_id=first_tenant.id, kind=PrincipalKind.USER, external_id='audit-user'
         )
         session.add(first_principal)
         session.add(
             Principal(
                 tenant_id=second_tenant.id,
                 kind=PrincipalKind.USER,
-                external_id='hint-user',
+                external_id='audit-user',
             )
         )
         await session.commit()
-        first_principal_id = first_principal.id
+        first_tenant_id, first_principal_id = first_tenant.id, first_principal.id
 
     api_client.app.dependency_overrides.pop(get_current_principal, None)
     api_client.app.dependency_overrides[get_current_token] = lambda: {
-        'sub': 'hint-user',
+        'sub': 'audit-user',
         'scope': ' '.join(sorted(platform_scopes())),
     }
-    api_client.headers[TENANT_HINT_HEADER] = str(first_tenant.id)
 
     create_resp = await api_client.post(
-        '/api/v1/tenants', json={'slug': 'attributed', 'name': 'Attributed'}
+        f'/api/v1/tenants/{first_tenant_id}/principals',
+        json={'kind': 'user', 'external_id': 'someone-else@first-audit-co.example'},
     )
     assert create_resp.status_code == 201
 
@@ -261,25 +260,53 @@ async def test_principal_crud(api_client):
     tenant_id = tenant_resp.json()['id']
 
     create_resp = await api_client.post(
-        '/api/v1/principals',
-        json={
-            'tenant_id': tenant_id,
-            'kind': 'user',
-            'external_id': 'ada@globex.example',
-        },
+        f'/api/v1/tenants/{tenant_id}/principals',
+        json={'kind': 'user', 'external_id': 'ada@globex.example'},
     )
     assert create_resp.status_code == 201
     principal_id = create_resp.json()['id']
 
-    get_resp = await api_client.get(f'/api/v1/principals/{principal_id}')
+    get_resp = await api_client.get(
+        f'/api/v1/tenants/{tenant_id}/principals/{principal_id}'
+    )
     assert get_resp.status_code == 200
     assert get_resp.json()['external_id'] == 'ada@globex.example'
 
-    list_resp = await api_client.get(
-        '/api/v1/principals', params={'tenant_id': tenant_id}
-    )
+    list_resp = await api_client.get(f'/api/v1/tenants/{tenant_id}/principals')
     assert list_resp.status_code == 200
     assert list_resp.json()['total'] == 1
+
+
+@pytest.mark.asyncio
+async def test_principal_get_is_scoped_to_the_path_tenant(
+    api_client, async_session_factory
+):
+    """A Principal from Tenant A must 404 when looked up through Tenant
+    B's path, even with every scope -- closes a latent gap where `GET
+    /principals/{id}` never checked tenant membership at all before this
+    endpoint gained a `tenant_id` path segment."""
+    async with async_session_factory() as session:
+        owning_tenant = Tenant(slug='owning-co', name='Owning Co')
+        other_tenant = Tenant(slug='other-co-2', name='Other Co 2')
+        session.add_all([owning_tenant, other_tenant])
+        await session.flush()
+        principal = Principal(
+            tenant_id=owning_tenant.id, kind=PrincipalKind.USER, external_id='carl'
+        )
+        session.add(principal)
+        await session.commit()
+        owning_tenant_id, other_tenant_id = owning_tenant.id, other_tenant.id
+        principal_id = principal.id
+
+    resp = await api_client.get(
+        f'/api/v1/tenants/{other_tenant_id}/principals/{principal_id}'
+    )
+    assert resp.status_code == 404
+
+    resp = await api_client.get(
+        f'/api/v1/tenants/{owning_tenant_id}/principals/{principal_id}'
+    )
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -290,9 +317,8 @@ async def test_environment_crud(api_client):
     tenant_id = tenant_resp.json()['id']
 
     create_resp = await api_client.post(
-        '/api/v1/environments',
+        f'/api/v1/tenants/{tenant_id}/environments',
         json={
-            'tenant_id': tenant_id,
             'name': 'prod',
             'kind': 'production',
             'compute_boundary_ref': 'vpc-prod-compute',
@@ -302,14 +328,12 @@ async def test_environment_crud(api_client):
     assert create_resp.status_code == 201
     environment_id = create_resp.json()['id']
 
-    list_resp = await api_client.get(
-        '/api/v1/environments', params={'tenant_id': tenant_id}
-    )
+    list_resp = await api_client.get(f'/api/v1/tenants/{tenant_id}/environments')
     assert list_resp.status_code == 200
     assert list_resp.json()['total'] == 1
 
     update_resp = await api_client.patch(
-        f'/api/v1/environments/{environment_id}',
+        f'/api/v1/tenants/{tenant_id}/environments/{environment_id}',
         json={'compute_boundary_ref': 'vpc-prod-compute-v2'},
     )
     assert update_resp.status_code == 200

@@ -6,12 +6,10 @@ from loom.model.enums import DataBindingAccessMode
 
 
 class ToolCreateRequest(BaseModel):
-    slug: str
     name: str
     description: str | None = None
     invocation_spec: dict
     auth_binding_id: uuid.UUID | None = None
-    owner_id: uuid.UUID | None = None
 
 
 class ToolDataBindingCreateRequest(BaseModel):

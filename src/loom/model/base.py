@@ -72,7 +72,10 @@ class VersionedEntityMixin:
     # is_current is the one field that mutates on prior row as bookkeeping when
     # a new version is inserted (not a content or lifecycle edit).
     is_current: Mapped[bool] = mapped_column(sa.Boolean(), default=True)
-    slug: Mapped[str] = mapped_column(sa.String(255), index=True)
+    # No `slug` -- unlike `Tenant.slug`, nothing ever looks a versioned
+    # entity up by a human-chosen string; every read/update/transition
+    # route addresses it by `entity_id` (UUID). `name` alone covers the
+    # human-readable label.
     name: Mapped[str] = mapped_column(sa.String(255))
     description: Mapped[str | None] = mapped_column(sa.Text(), default=None)
     lifecycle_state: Mapped[LifecycleState] = mapped_column(

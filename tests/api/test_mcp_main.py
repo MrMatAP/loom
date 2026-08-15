@@ -1,3 +1,5 @@
+import uuid
+
 import httpx
 import jwt
 import pytest
@@ -10,7 +12,6 @@ from starlette.routing import Mount
 from loom.api.catalog.mcp import main as mcp_main
 from loom.api.catalog.mcp.main import create_app
 from loom.config import RootConfig
-from loom.http_headers import TENANT_HINT_HEADER
 from loom.idp.catalog_roles import content_scopes, platform_scopes
 from loom.model.enums import PrincipalKind
 from loom.model.tenant import Principal, Tenant
@@ -126,7 +127,6 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
         {
             'valid-all-scopes': {
                 'sub': 'test-user',
-                'tenant_id': str(fake_principal.tenant_id),
                 'scope': ' '.join(sorted(ALL_SCOPES)),
             },
         }
@@ -137,6 +137,7 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
     )
 
     app = create_app(RootConfig(config_path='/dev/null'))
+    tenant_id = str(fake_principal.tenant_id)
 
     def _client_factory(*, headers, auth, follow_redirects, **kwargs):
         return httpx.AsyncClient(
@@ -156,9 +157,10 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
         )
         async with Client(authed_transport) as client:
             result = await client.call_tool(
-                'create_capability', {'data': {'slug': 'e2e-cap', 'name': 'E2E Cap'}}
+                'create_capability',
+                {'tenant_id': tenant_id, 'data': {'name': 'E2E Cap'}},
             )
-        assert result.data.slug == 'e2e-cap'
+        assert result.data.name == 'E2E Cap'
 
         unauthed_transport = StreamableHttpTransport(
             'http://test/mcp', httpx_client_factory=_client_factory
@@ -166,24 +168,21 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
         async with Client(unauthed_transport) as client:
             with pytest.raises(ToolError, match='Missing bearer token'):
                 await client.call_tool(
-                    'create_capability', {'data': {'slug': 'e2e-cap-2', 'name': 'x'}}
+                    'create_capability',
+                    {'tenant_id': tenant_id, 'data': {'name': 'x'}},
                 )
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_call_over_real_http_reads_the_tenant_hint_header(
+async def test_mcp_tool_call_over_real_http_targets_the_given_tenant(
     monkeypatch, async_session_factory
 ):
-    """`_tenant_hint()` (`mcp/server.py`) reads `X-Loom-Tenant-Id` off
-    fastmcp's own `get_http_headers()`, which is a guess at how fastmcp
-    keys that dict -- unlike `_bearer_token()`'s identical guess for
-    `authorization`, nothing else exercised it through a real HTTP
-    request. Provision the same `sub` into two Tenants (mirrors
+    """`tenant_id` is a plain tool argument now (see `mcp/server.py`'s
+    `_register_resource_tools`), not a header fastmcp has to be trusted to
+    forward -- provision the same `sub` into two Tenants (mirrors
     `tests/api/test_tenant_isolation.py`'s `multi_tenant_identity`) and
-    confirm the header, sent over a real Streamable HTTP call through the
-    `/mcp` mount, disambiguates to the hinted Tenant -- proving the header
-    key `_tenant_hint()` reads back is the one fastmcp actually populates,
-    not just the one `resolve_principal` expects."""
+    confirm a real Streamable HTTP call through the `/mcp` mount only ever
+    resolves to the Tenant named in the call, both directions."""
     async with async_session_factory() as session:
         first_tenant = Tenant(slug='mcp-hint-first', name='MCP Hint First')
         second_tenant = Tenant(slug='mcp-hint-second', name='MCP Hint Second')
@@ -204,7 +203,7 @@ async def test_mcp_tool_call_over_real_http_reads_the_tenant_hint_header(
             ]
         )
         await session.commit()
-        first_tenant_id = first_tenant.id
+        first_tenant_id, second_tenant_id = first_tenant.id, second_tenant.id
 
     token_validator = _FakeTokenValidator(
         {
@@ -232,29 +231,32 @@ async def test_mcp_tool_call_over_real_http_reads_the_tenant_hint_header(
         )
 
     async with app.router.lifespan_context(app):
-        no_hint_transport = StreamableHttpTransport(
+        transport = StreamableHttpTransport(
             'http://test/mcp',
             headers={'Authorization': 'Bearer valid-all-scopes'},
             httpx_client_factory=_client_factory,
         )
-        async with Client(no_hint_transport) as client:
-            with pytest.raises(ToolError, match='ambiguous'):
-                await client.call_tool(
-                    'create_capability',
-                    {'data': {'slug': 'mcp-hint-cap', 'name': 'MCP Hint Cap'}},
-                )
-
-        hinted_transport = StreamableHttpTransport(
-            'http://test/mcp',
-            headers={
-                'Authorization': 'Bearer valid-all-scopes',
-                TENANT_HINT_HEADER: str(first_tenant_id),
-            },
-            httpx_client_factory=_client_factory,
-        )
-        async with Client(hinted_transport) as client:
+        async with Client(transport) as client:
             result = await client.call_tool(
                 'create_capability',
-                {'data': {'slug': 'mcp-hint-cap', 'name': 'MCP Hint Cap'}},
+                {'tenant_id': str(first_tenant_id), 'data': {'name': 'MCP Hint Cap'}},
             )
-        assert result.data.slug == 'mcp-hint-cap'
+            assert result.data.name == 'MCP Hint Cap'
+
+            with pytest.raises(ToolError, match='No principal'):
+                await client.call_tool(
+                    'get_capability',
+                    {
+                        'tenant_id': str(uuid.uuid4()),
+                        'entity_id': str(result.data.entity_id),
+                    },
+                )
+
+            with pytest.raises(ToolError, match='not found'):
+                await client.call_tool(
+                    'get_capability',
+                    {
+                        'tenant_id': str(second_tenant_id),
+                        'entity_id': str(result.data.entity_id),
+                    },
+                )

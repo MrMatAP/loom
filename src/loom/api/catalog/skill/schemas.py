@@ -6,14 +6,12 @@ from loom.model.enums import GraphNodeType, Layer, SkillKind
 
 
 class SkillCreateRequest(BaseModel):
-    slug: str
     name: str
     description: str | None = None
     layer: Layer
     kind: SkillKind
     is_entry_point: bool = False
     atomic_content: dict | None = None
-    owner_id: uuid.UUID | None = None
 
 
 class SkillGraphNodeCreateRequest(BaseModel):

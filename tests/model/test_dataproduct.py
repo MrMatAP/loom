@@ -23,7 +23,6 @@ def _tenant_and_principal(session):
 def test_dataproduct_and_lineage(session):
     tenant, principal = _tenant_and_principal(session)
     datasource = DataSource(
-        slug='orders-db',
         name='Orders DB',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -34,7 +33,6 @@ def test_dataproduct_and_lineage(session):
     session.commit()
 
     payload = DataProductCreate(
-        slug='orders-curated',
         name='Curated Orders',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -63,7 +61,6 @@ def test_dataproduct_and_lineage(session):
 def test_tool_data_binding_is_version_pinned_and_exclusive(session):
     tenant, principal = _tenant_and_principal(session)
     datasource = DataSource(
-        slug='orders-db',
         name='Orders DB',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -72,7 +69,6 @@ def test_tool_data_binding_is_version_pinned_and_exclusive(session):
     )
     tool = Tool(
         **ToolCreate(
-            slug='query-orders',
             name='Query Orders',
             tenant_id=tenant.id,
             owner_id=principal.id,

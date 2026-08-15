@@ -13,13 +13,13 @@ def test_environment_round_trip(session):
     session.commit()
 
     env = Environment(
+        tenant_id=tenant.id,
         **EnvironmentCreate(
-            tenant_id=tenant.id,
             name='prod',
             kind=EnvironmentKind.PRODUCTION,
             compute_boundary_ref='vpc-prod-compute',
             network_boundary_ref='vpc-prod-net',
-        ).model_dump()
+        ).model_dump(),
     )
     session.add(env)
     session.commit()

@@ -1,36 +1,37 @@
-import uuid
-
 import pytest
 
 from loom.api.catalog.dependencies import get_current_token
 from loom.idp.catalog_roles import content_scopes, platform_scopes
 
 ALL_SCOPES = content_scopes() | platform_scopes()
-ANY_TENANT = str(uuid.uuid4())
 
+# Path suffixes (after `/api/v1/tenants/{tenant_id}`) and the scope each
+# route's read/write should require -- built against the real
+# `fake_principal.tenant_id` inside the test, not a module-level constant,
+# since every one of these (Tenant's own two aside) now needs a real,
+# resolvable Tenant in the URL path for the "full access succeeds" half of
+# each read test to mean anything.
 READ_ROUTES = [
-    ('/api/v1/capabilities', 'catalog:capability:read'),
-    ('/api/v1/agents', 'catalog:agent:read'),
-    ('/api/v1/skills', 'catalog:skill:read'),
-    ('/api/v1/tools', 'catalog:tool:read'),
-    ('/api/v1/datasources', 'catalog:datasource:read'),
-    ('/api/v1/dataproducts', 'catalog:dataproduct:read'),
-    ('/api/v1/tenants', 'catalog:tenant:read'),
-    (f'/api/v1/principals?tenant_id={ANY_TENANT}', 'catalog:principal:read'),
-    (f'/api/v1/environments?tenant_id={ANY_TENANT}', 'catalog:environment:read'),
+    ('/capabilities', 'catalog:capability:read'),
+    ('/agents', 'catalog:agent:read'),
+    ('/skills', 'catalog:skill:read'),
+    ('/tools', 'catalog:tool:read'),
+    ('/datasources', 'catalog:datasource:read'),
+    ('/dataproducts', 'catalog:dataproduct:read'),
+    ('/principals', 'catalog:principal:read'),
+    ('/environments', 'catalog:environment:read'),
 ]
 
 WRITE_ROUTES = [
     (
-        '/api/v1/capabilities',
+        '/capabilities',
         'catalog:capability:write',
-        {'slug': 's', 'name': 'n', 'target_metrics': []},
+        {'name': 'n', 'target_metrics': []},
     ),
     (
-        '/api/v1/agents',
+        '/agents',
         'catalog:agent:write',
         {
-            'slug': 's',
             'name': 'n',
             'layer': 'business_ops',
             'llm_config': {},
@@ -39,41 +40,34 @@ WRITE_ROUTES = [
         },
     ),
     (
-        '/api/v1/skills',
+        '/skills',
         'catalog:skill:write',
-        {'slug': 's', 'name': 'n', 'layer': 'business_ops', 'kind': 'composite'},
+        {'name': 'n', 'layer': 'business_ops', 'kind': 'composite'},
     ),
     (
-        '/api/v1/tools',
+        '/tools',
         'catalog:tool:write',
-        {'slug': 's', 'name': 'n', 'invocation_spec': {}},
+        {'name': 'n', 'invocation_spec': {}},
     ),
     (
-        '/api/v1/datasources',
+        '/datasources',
         'catalog:datasource:write',
-        {'slug': 's', 'name': 'n', 'kind': 'database'},
+        {'name': 'n', 'kind': 'database'},
     ),
     (
-        '/api/v1/dataproducts',
+        '/dataproducts',
         'catalog:dataproduct:write',
-        {'slug': 's', 'name': 'n', 'contract': {}},
+        {'name': 'n', 'contract': {}},
     ),
-    ('/api/v1/tenants', 'catalog:tenant:write', {'slug': 's', 'name': 'n'}),
     (
-        '/api/v1/principals',
+        '/principals',
         'catalog:principal:write',
-        {
-            'tenant_id': ANY_TENANT,
-            'kind': 'user',
-            'display_name': 'n',
-            'external_id': 'x',
-        },
+        {'kind': 'user', 'external_id': 'x'},
     ),
     (
-        '/api/v1/environments',
+        '/environments',
         'catalog:environment:write',
         {
-            'tenant_id': ANY_TENANT,
             'name': 'n',
             'kind': 'sandbox',
             'compute_boundary_ref': 'c',
@@ -88,16 +82,16 @@ def _withhold(client, scope: str, fake_principal) -> None:
     granted = ' '.join(sorted(ALL_SCOPES - {scope}))
     client.app.dependency_overrides[get_current_token] = lambda: {
         'sub': 'test-user',
-        'tenant_id': str(fake_principal.tenant_id),
         'scope': granted,
     }
 
 
-@pytest.mark.parametrize(('path', 'scope'), READ_ROUTES)
+@pytest.mark.parametrize(('suffix', 'scope'), READ_ROUTES)
 @pytest.mark.asyncio
 async def test_read_route_requires_its_own_scope(
-    api_client, fake_principal, path, scope
+    api_client, fake_principal, suffix, scope
 ):
+    path = f'/api/v1/tenants/{fake_principal.tenant_id}{suffix}'
     assert (await api_client.get(path)).status_code == 200
 
     _withhold(api_client, scope, fake_principal)
@@ -106,12 +100,31 @@ async def test_read_route_requires_its_own_scope(
     assert scope in resp.json()['detail']
 
 
-@pytest.mark.parametrize(('path', 'scope', 'body'), WRITE_ROUTES)
+@pytest.mark.asyncio
+async def test_tenant_read_requires_its_own_scope(api_client, fake_principal):
+    assert (await api_client.get('/api/v1/tenants')).status_code == 200
+
+    _withhold(api_client, 'catalog:tenant:read', fake_principal)
+    resp = await api_client.get('/api/v1/tenants')
+    assert resp.status_code == 403
+    assert 'catalog:tenant:read' in resp.json()['detail']
+
+
+@pytest.mark.parametrize(('suffix', 'scope', 'body'), WRITE_ROUTES)
 @pytest.mark.asyncio
 async def test_write_route_requires_its_own_scope(
-    api_client, fake_principal, path, scope, body
+    api_client, fake_principal, suffix, scope, body
 ):
+    path = f'/api/v1/tenants/{fake_principal.tenant_id}{suffix}'
     _withhold(api_client, scope, fake_principal)
     resp = await api_client.post(path, json=body)
     assert resp.status_code == 403
     assert scope in resp.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_tenant_write_requires_its_own_scope(api_client, fake_principal):
+    _withhold(api_client, 'catalog:tenant:write', fake_principal)
+    resp = await api_client.post('/api/v1/tenants', json={'slug': 's', 'name': 'n'})
+    assert resp.status_code == 403
+    assert 'catalog:tenant:write' in resp.json()['detail']

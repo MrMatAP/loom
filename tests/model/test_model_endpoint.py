@@ -20,7 +20,6 @@ def _tenant_and_principal(session) -> tuple[Tenant, Principal]:
 def test_model_endpoint_round_trip(session):
     tenant, principal = _tenant_and_principal(session)
     payload = ModelEndpointCreate(
-        slug='self-hosted-llama',
         name='Self-Hosted Llama',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -46,7 +45,6 @@ def test_openai_compatible_requires_base_url(session):
         tenant_id=tenant.id,
         owner_id=principal.id,
         created_by_id=principal.id,
-        slug='no-base-url',
         name='No Base URL',
         protocol=ModelProtocol.OPENAI_COMPATIBLE,
         base_url=None,
@@ -63,7 +61,6 @@ def test_anthropic_messages_does_not_require_base_url(session):
         tenant_id=tenant.id,
         owner_id=principal.id,
         created_by_id=principal.id,
-        slug='claude',
         name='Claude',
         protocol=ModelProtocol.ANTHROPIC_MESSAGES,
         base_url=None,

@@ -12,8 +12,9 @@ from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError
 
 # Claims worth calling out by name in `whoami` -- everything else in the
 # token still gets printed, just without a caption. `sub` is first since
-# it's what `resolve_principal` (`src/loom/api/catalog/dependencies.py`)
-# looks a Principal up by -- a missing/unprovisioned Principal for `sub` is
+# it's what `get_principal_in_tenant`
+# (`src/loom/api/catalog/dependencies.py`) looks a Principal up by -- a
+# missing/unprovisioned Principal for `sub` is
 # the most common cause of a confusing 401, and this command exists
 # specifically so that's visible without hand-decoding a JWT. `name` is
 # what a Principal's display name is read from at request time (there's no
@@ -177,19 +178,21 @@ async def auth_logout(config: RootConfig, args: argparse.Namespace) -> int:
 
 
 async def auth_set_tenant(config: RootConfig, args: argparse.Namespace) -> int:
-    """Set, clear, or show the locally-selected Tenant used to disambiguate
-    this identity when it's provisioned in more than one Tenant (see
+    """Set, clear, or show the locally-selected Tenant used when this
+    identity is provisioned in more than one Tenant (see
     docs/admin-guide.md's "How a caller's Tenant is resolved" section).
 
     There's no `tenant_id` claim on any token for the CLI to read this
-    from, so it's tracked purely client-side and sent as the
-    `X-Loom-Tenant-Id` header (`loom.http_headers.TENANT_HINT_HEADER`) on
-    every subsequent request -- `resolve_principal` only ever consults it
-    to disambiguate among *this identity's own* Principal rows, never to
-    grant access to a Tenant it isn't otherwise provisioned in, so an
-    incorrect selection just 401s rather than leaking anything. Has no
-    effect (and isn't needed) for an identity provisioned in only one
-    Tenant."""
+    from, so it's tracked purely client-side (`config.auth.session.
+    tenant_id`) and embedded directly into the URL path of every
+    subsequent request (`CatalogClient.tenant_path`, e.g.
+    `/api/v1/tenants/{tenant_id}/capabilities`) -- `get_current_principal`
+    only ever resolves the caller's Principal within *that* Tenant, never
+    granting access to one it isn't otherwise provisioned in, so an
+    incorrect selection just 403s rather than leaking anything. `--tenant-
+    id` on individual commands overrides this selection for just that
+    call; has no effect (and isn't needed) for an identity provisioned in
+    only one Tenant."""
     if args.clear:
         config.auth.session.tenant_id = None
         config.save()
@@ -224,10 +227,10 @@ async def auth_whoami(config: RootConfig, args: argparse.Namespace) -> int:
     are, not just whether the CLI thinks you're logged in (that's `status`).
     Existed as a gap: diagnosing "why does the API 401/403 me" previously
     meant decoding the token by hand; this surfaces exactly the claims
-    `resolve_principal`/`require_scopes` actually check, most importantly
-    `sub`, whose absence of a matching Principal is the most common cause
-    of a confusing 401 (see docs/admin-guide.md's Troubleshooting
-    section)."""
+    `get_principal_in_tenant`/`require_scopes` actually check, most
+    importantly `sub`, whose absence of a matching Principal is the most
+    common cause of a confusing 401/403 (see docs/admin-guide.md's
+    Troubleshooting section)."""
     del args
     claims = decode_cached_claims(config)
     if claims is None:

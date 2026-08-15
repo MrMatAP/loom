@@ -13,9 +13,11 @@ class EnvironmentService:
     def __init__(self, repository: EnvironmentRepository) -> None:
         self._repository = repository
 
-    async def create(self, data: EnvironmentCreate) -> Environment:
+    async def create(
+        self, tenant_id: uuid.UUID, data: EnvironmentCreate
+    ) -> Environment:
         environment = Environment(
-            tenant_id=data.tenant_id,
+            tenant_id=tenant_id,
             name=data.name,
             kind=data.kind,
             compute_boundary_ref=data.compute_boundary_ref,
@@ -23,8 +25,8 @@ class EnvironmentService:
         )
         return await self._repository.add(environment)
 
-    async def get(self, environment_id: uuid.UUID) -> Environment:
-        environment = await self._repository.get(environment_id)
+    async def get(self, tenant_id: uuid.UUID, environment_id: uuid.UUID) -> Environment:
+        environment = await self._repository.get(tenant_id, environment_id)
         if environment is None:
             raise EntityNotFoundError(f'Environment {environment_id} not found')
         return environment
@@ -37,9 +39,9 @@ class EnvironmentService:
         )
 
     async def update(
-        self, environment_id: uuid.UUID, data: EnvironmentUpdate
+        self, tenant_id: uuid.UUID, environment_id: uuid.UUID, data: EnvironmentUpdate
     ) -> Environment:
-        environment = await self.get(environment_id)
+        environment = await self.get(tenant_id, environment_id)
         if data.compute_boundary_ref is not None:
             environment.compute_boundary_ref = data.compute_boundary_ref
         if data.network_boundary_ref is not None:

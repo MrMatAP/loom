@@ -35,6 +35,17 @@ class InsufficientScopeError(Exception):
     transport-neutral split as `AuthenticationError`."""
 
 
+class PrincipalNotInTenantError(Exception):
+    """Raised when a token resolves to a real identity (`sub`), but that
+    identity has no Principal in the specific Tenant the request targets
+    (`tenant_id`, from the URL path -- see `dependencies.get_current_
+    principal`). Deliberately distinct from `AuthenticationError`: the
+    token itself is fine, so re-authenticating won't fix this, which is
+    exactly why it maps to 403, not 401 -- same reasoning as
+    `InsufficientScopeError`, just gated on tenant membership instead of
+    scope. Same transport-neutral split as the other two."""
+
+
 @dataclasses.dataclass(frozen=True)
 class OidcDiscoveryDocument:
     """The subset of an IdP's OIDC discovery document

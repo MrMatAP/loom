@@ -12,7 +12,6 @@ class VersionedEntityCreate(BaseModel):
     entity_id: uuid.UUID | None = None
     version: int = 1
     is_current: bool = True
-    slug: str
     name: str
     description: str | None = None
     lifecycle_state: LifecycleState = LifecycleState.DRAFT
@@ -33,7 +32,6 @@ class VersionedEntityRead(BaseModel):
     entity_id: uuid.UUID
     version: int
     is_current: bool
-    slug: str
     name: str
     description: str | None
     lifecycle_state: LifecycleState

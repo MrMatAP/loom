@@ -7,7 +7,6 @@ from loom.model.agent import Agent
 from loom.model.capability import Capability, CapabilityRealization
 from loom.model.enums import LifecycleState
 from loom.model.skill import Skill
-from loom.model.tenant import Principal
 from loom.model.tool import Tool
 
 from .repository import CapabilityRepository
@@ -20,14 +19,6 @@ class CapabilityService:
     def __init__(self, repository: CapabilityRepository) -> None:
         self._repository = repository
 
-    async def _resolve_owner_id(
-        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
-    ) -> uuid.UUID:
-        if owner_id is None:
-            return fallback
-        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
-        return owner_id
-
     async def create(
         self,
         *,
@@ -35,12 +26,10 @@ class CapabilityService:
         created_by_id: uuid.UUID,
         data: CapabilityCreateRequest,
     ) -> Capability:
-        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         capability = Capability(
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            owner_id=created_by_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             target_metrics=data.target_metrics,
@@ -77,14 +66,12 @@ class CapabilityService:
         tenant_id: uuid.UUID,
         *,
         lifecycle_state: LifecycleState | None,
-        slug: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[Capability], int]:
         return await self._repository.list_current(
             tenant_id,
             lifecycle_state=lifecycle_state,
-            slug=slug,
             limit=limit,
             offset=offset,
         )
@@ -98,9 +85,6 @@ class CapabilityService:
         data: CapabilityCreateRequest,
     ) -> Capability:
         current = await self.get_current(tenant_id, entity_id)
-        owner_id = await self._resolve_owner_id(
-            tenant_id, data.owner_id, current.owner_id
-        )
         current.is_current = False
         await self._repository.save(current)
         new_version = Capability(
@@ -108,9 +92,12 @@ class CapabilityService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            # Ownership carries over from the prior version -- creating a
+            # new version isn't a change-of-owner action; there's no more
+            # `owner_id` input to override it with (see CLAUDE.md/the CLI
+            # -- owner is always inferred, never caller-supplied).
+            owner_id=current.owner_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             target_metrics=data.target_metrics,

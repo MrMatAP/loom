@@ -12,7 +12,7 @@ from loom.api.catalog.agent.service import AgentService
 from loom.api.catalog.capability.repository import CapabilityRepository
 from loom.api.catalog.capability.schemas import CapabilityCreateRequest
 from loom.api.catalog.capability.service import CapabilityService
-from loom.api.catalog.dependencies import parse_tenant_hint, resolve_principal
+from loom.api.catalog.dependencies import get_principal_in_tenant
 from loom.api.catalog.model_endpoint.repository import ModelEndpointRepository
 from loom.api.catalog.model_endpoint.schemas import ModelEndpointCreateRequest
 from loom.api.catalog.model_endpoint.service import ModelEndpointService
@@ -23,7 +23,6 @@ from loom.api.catalog.security import (
     TokenValidator,
     assert_scopes,
 )
-from loom.http_headers import TENANT_HINT_HEADER
 from loom.model.enums import LifecycleState
 from loom.model.schemas.agent import AgentRead
 from loom.model.schemas.capability import CapabilityRead
@@ -68,21 +67,17 @@ def _bearer_token() -> str | None:
     return token
 
 
-def _tenant_hint() -> uuid.UUID | None:
-    """The `X-Loom-Tenant-Id` disambiguation header off the underlying HTTP
-    request, if any -- mirrors `dependencies.get_current_principal`'s own
-    extraction for the REST path (see `parse_tenant_hint`)."""
-    headers = get_http_headers(include={TENANT_HINT_HEADER.lower()})
-    return parse_tenant_hint(headers.get(TENANT_HINT_HEADER.lower()))
-
-
 async def _authenticated_principal(
-    state: McpState, session: AsyncSession
+    state: McpState, session: AsyncSession, *, tenant_id: uuid.UUID
 ) -> AuthenticatedPrincipal:
     """The MCP-side equivalent of `dependencies.get_current_principal`:
     same token validation and Principal resolution
-    (`dependencies.resolve_principal`), just reached from a tool function
-    instead of FastAPI dependency injection."""
+    (`dependencies.get_principal_in_tenant`), just reached from a tool
+    function instead of FastAPI dependency injection. `tenant_id` is a
+    required argument on every tool (see `_register_resource_tools`
+    below), same reasoning as the REST routes' `/tenants/{tenant_id}/...`
+    path -- an identity provisioned in more than one Tenant targets a
+    specific one explicitly rather than through an ambiguous lookup."""
     if state.token_validator is None:
         raise RuntimeError('McpState not initialized: token_validator is unset')
     token = _bearer_token()
@@ -92,7 +87,7 @@ async def _authenticated_principal(
         claims = state.token_validator.decode(token)
     except jwt.PyJWTError as exc:
         raise AuthenticationError(f'Invalid token: {exc}') from exc
-    return await resolve_principal(claims, session, tenant_hint=_tenant_hint())
+    return await get_principal_in_tenant(tenant_id, claims, session)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -172,20 +167,24 @@ def _register_resource_tools(
     docs/superpowers/specs/2026-08-08-catalog-api-design.md)."""
 
     async def _principal(
-        session: AsyncSession, *, scope: str
+        session: AsyncSession, *, scope: str, tenant_id: uuid.UUID
     ) -> AuthenticatedPrincipal:
-        principal = await _authenticated_principal(state, session)
+        principal = await _authenticated_principal(state, session, tenant_id=tenant_id)
         assert_scopes(principal.scopes, scope)
         return principal
 
     @mcp.tool(
         name=f'create_{binding.label}',
-        description=f'Create {binding.article} {binding.label.title()}.',
+        description=f'Create {binding.article} {binding.label.title()} in tenant_id.',
     )
-    async def _create(data: binding.create_request_cls) -> binding.read_cls:  # type: ignore[name-defined]
+    async def _create(
+        tenant_id: uuid.UUID, data: binding.create_request_cls
+    ) -> binding.read_cls:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.write_scope)
+            principal = await _principal(
+                session, scope=binding.write_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             created = await service.create(
                 tenant_id=principal.tenant_id,
@@ -197,12 +196,14 @@ def _register_resource_tools(
 
     @mcp.tool(
         name=f'get_{binding.label}',
-        description=f'Get the current version of {binding.article} {binding.label.title()}.',
+        description=f'Get the current version of {binding.article} {binding.label.title()} in tenant_id.',
     )
-    async def _get(entity_id: uuid.UUID) -> binding.read_cls:  # type: ignore[name-defined]
+    async def _get(tenant_id: uuid.UUID, entity_id: uuid.UUID) -> binding.read_cls:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.read_scope)
+            principal = await _principal(
+                session, scope=binding.read_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             found = await service.get_current(principal.tenant_id, entity_id)
             return binding.read_cls.model_validate(found)
@@ -210,24 +211,25 @@ def _register_resource_tools(
     @mcp.tool(
         name=f'list_{binding.plural}',
         description=(
-            f'List current versions of {binding.plural.title()} in this tenant, '
-            'optionally filtered by lifecycle_state/slug.'
+            f'List current versions of {binding.plural.title()} in tenant_id, '
+            'optionally filtered by lifecycle_state.'
         ),
     )
     async def _list(
+        tenant_id: uuid.UUID,
         lifecycle_state: LifecycleState | None = None,
-        slug: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Page[binding.read_cls]:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.read_scope)
+            principal = await _principal(
+                session, scope=binding.read_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             items, total = await service.list_current(
                 principal.tenant_id,
                 lifecycle_state=lifecycle_state,
-                slug=slug,
                 limit=limit,
                 offset=offset,
             )
@@ -240,24 +242,32 @@ def _register_resource_tools(
 
     @mcp.tool(
         name=f'list_{binding.label}_versions',
-        description=f'List every version of {binding.article} {binding.label.title()}.',
+        description=f'List every version of {binding.article} {binding.label.title()} in tenant_id.',
     )
-    async def _versions(entity_id: uuid.UUID) -> list[binding.read_cls]:  # type: ignore[name-defined]
+    async def _versions(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID
+    ) -> list[binding.read_cls]:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.read_scope)
+            principal = await _principal(
+                session, scope=binding.read_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             versions = await service.list_versions(principal.tenant_id, entity_id)
             return [binding.read_cls.model_validate(v) for v in versions]
 
     @mcp.tool(
         name=f'get_{binding.label}_version',
-        description=f'Get one specific version of {binding.article} {binding.label.title()}.',
+        description=f'Get one specific version of {binding.article} {binding.label.title()} in tenant_id.',
     )
-    async def _get_version(entity_id: uuid.UUID, version: int) -> binding.read_cls:  # type: ignore[name-defined]
+    async def _get_version(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> binding.read_cls:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.read_scope)
+            principal = await _principal(
+                session, scope=binding.read_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             found = await service.get_version(principal.tenant_id, entity_id, version)
             return binding.read_cls.model_validate(found)
@@ -265,18 +275,22 @@ def _register_resource_tools(
     @mcp.tool(
         name=f'update_{binding.label}',
         description=(
-            f'Create a new version of {binding.article} {binding.label.title()} -- '
-            'entities in this registry are append-only/versioned, so "update" '
-            'means a new version row, not an in-place mutation of the current one.'
+            f'Create a new version of {binding.article} {binding.label.title()} in '
+            'tenant_id -- entities in this registry are append-only/versioned, so '
+            '"update" means a new version row, not an in-place mutation of the '
+            'current one.'
         ),
     )
     async def _update(
+        tenant_id: uuid.UUID,
         entity_id: uuid.UUID,
         data: binding.create_request_cls,  # type: ignore[name-defined]
     ) -> binding.read_cls:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.write_scope)
+            principal = await _principal(
+                session, scope=binding.write_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             updated = await service.create_new_version(
                 tenant_id=principal.tenant_id,
@@ -289,14 +303,19 @@ def _register_resource_tools(
 
     @mcp.tool(
         name=f'transition_{binding.label}',
-        description=f'Transition {binding.article} {binding.label.title()} to a new lifecycle state.',
+        description=f'Transition {binding.article} {binding.label.title()} in tenant_id to a new lifecycle state.',
     )
     async def _transition(
-        entity_id: uuid.UUID, version: int, to_state: LifecycleState
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        to_state: LifecycleState,
     ) -> binding.read_cls:  # type: ignore[name-defined]
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
-            principal = await _principal(session, scope=binding.transition_scope)
+            principal = await _principal(
+                session, scope=binding.transition_scope, tenant_id=tenant_id
+            )
             service = binding.service_cls(binding.repository_cls(session))
             transitioned = await service.transition(
                 tenant_id=principal.tenant_id,

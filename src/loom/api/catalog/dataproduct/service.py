@@ -6,7 +6,6 @@ from loom.api.catalog.lifecycle import is_legal_transition
 from loom.model.dataproduct import DataProduct, DataProductLineage
 from loom.model.datasource import DataSource
 from loom.model.enums import LifecycleState
-from loom.model.tenant import Principal
 
 from .repository import DataProductRepository
 from .schemas import DataProductCreateRequest, DataProductLineageCreateRequest
@@ -18,14 +17,6 @@ class DataProductService:
     def __init__(self, repository: DataProductRepository) -> None:
         self._repository = repository
 
-    async def _resolve_owner_id(
-        self, tenant_id: uuid.UUID, owner_id: uuid.UUID | None, fallback: uuid.UUID
-    ) -> uuid.UUID:
-        if owner_id is None:
-            return fallback
-        await self._repository.assert_same_tenant(tenant_id, Principal, owner_id)
-        return owner_id
-
     async def create(
         self,
         *,
@@ -33,12 +24,10 @@ class DataProductService:
         created_by_id: uuid.UUID,
         data: DataProductCreateRequest,
     ) -> DataProduct:
-        owner_id = await self._resolve_owner_id(tenant_id, data.owner_id, created_by_id)
         dataproduct = DataProduct(
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            owner_id=created_by_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             contract=data.contract,
@@ -75,14 +64,12 @@ class DataProductService:
         tenant_id: uuid.UUID,
         *,
         lifecycle_state: LifecycleState | None,
-        slug: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[DataProduct], int]:
         return await self._repository.list_current(
             tenant_id,
             lifecycle_state=lifecycle_state,
-            slug=slug,
             limit=limit,
             offset=offset,
         )
@@ -96,9 +83,6 @@ class DataProductService:
         data: DataProductCreateRequest,
     ) -> DataProduct:
         current = await self.get_current(tenant_id, entity_id)
-        owner_id = await self._resolve_owner_id(
-            tenant_id, data.owner_id, current.owner_id
-        )
         current.is_current = False
         await self._repository.save(current)
         new_version = DataProduct(
@@ -106,9 +90,11 @@ class DataProductService:
             version=current.version + 1,
             is_current=True,
             tenant_id=tenant_id,
-            owner_id=owner_id,
+            # Ownership carries over from the prior version -- there's no
+            # more owner_id input to override it with (always inferred,
+            # never caller-supplied).
+            owner_id=current.owner_id,
             created_by_id=created_by_id,
-            slug=data.slug,
             name=data.name,
             description=data.description,
             contract=data.contract,

@@ -18,7 +18,7 @@ from .repository import CapabilityRepository
 from .schemas import CapabilityCreateRequest, CapabilityRealizationCreateRequest
 from .service import CapabilityService
 
-router = APIRouter(prefix='/capabilities', tags=['capabilities'])
+router = APIRouter(prefix='/tenants/{tenant_id}/capabilities', tags=['capabilities'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> CapabilityService:
@@ -41,7 +41,6 @@ async def create_capability(
 async def list_capabilities(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: CapabilityService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:capability:read')),
@@ -49,7 +48,6 @@ async def list_capabilities(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )

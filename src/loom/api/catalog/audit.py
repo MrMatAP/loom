@@ -1,21 +1,15 @@
 import dataclasses
 import uuid
 
-from fastapi import Depends, Request
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.http_headers import TENANT_HINT_HEADER
 from loom.model.enums import AuditDecision
 from loom.model.governance import AuditEvent
 
 from .db import flush_or_raise
-from .dependencies import (
-    get_current_token,
-    get_session,
-    parse_tenant_hint,
-    resolve_principal,
-)
-from .security import AuthenticationError
+from .dependencies import get_current_token, get_principal_in_tenant, get_session
+from .security import AuthenticationError, PrincipalNotInTenantError
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,30 +25,44 @@ class AuditActor:
 
 
 async def get_audit_actor(
-    request: Request,
+    tenant_id: uuid.UUID,
     claims: dict = Depends(get_current_token),
     session: AsyncSession = Depends(get_session),
 ) -> AuditActor:
-    """Best-effort Principal resolution for audit attribution only --
-    unlike `get_current_principal`, this never raises: a caller with no
-    (or an ambiguous) provisioned Principal -- a platform administrator,
-    most notably -- is a legitimate, expected case here, not an
-    authentication failure. `require_scopes` is what actually gates access
-    to the routes that use this. Delegates to the exact same
-    `resolve_principal` (`X-Loom-Tenant-Id` header included) that gates
-    access, so an event is never attributed to a Principal that
-    authentication itself wouldn't have resolved to -- including staying
-    unattributed (not guessing) when `external_id` resolves to more than
-    one Principal with no header to disambiguate."""
+    """Best-effort Principal resolution for audit attribution only,
+    scoped to the Tenant in the request's own URL path -- unlike
+    `get_current_principal`, this never raises: a caller with no
+    Principal in that Tenant yet -- a platform administrator provisioning
+    the first one, most notably -- is a legitimate, expected case here,
+    not an authentication failure. `require_scopes` is what actually gates
+    access to the routes that use this. Delegates to the exact same
+    `get_principal_in_tenant` that gates access, so an event is never
+    attributed to a Principal that authentication itself wouldn't have
+    resolved to.
+
+    Not for `POST /tenants` itself -- that route has no Tenant in its own
+    path (it's creating one); see `get_audit_actor_for_new_tenant`."""
     sub = claims.get('sub')
     principal_id: uuid.UUID | None = None
     try:
-        tenant_hint = parse_tenant_hint(request.headers.get(TENANT_HINT_HEADER))
-        principal = await resolve_principal(claims, session, tenant_hint=tenant_hint)
+        principal = await get_principal_in_tenant(tenant_id, claims, session)
         principal_id = principal.principal_id
-    except AuthenticationError:
+    except AuthenticationError, PrincipalNotInTenantError:
         pass
     return AuditActor(principal_id=principal_id, external_id=sub)
+
+
+async def get_audit_actor_for_new_tenant(
+    claims: dict = Depends(get_current_token),
+) -> AuditActor:
+    """Audit attribution for `POST /tenants` specifically -- the one
+    route with no Tenant of its own in the URL path to check Principal
+    membership against (it's the one being created), so unlike
+    `get_audit_actor` there's nothing to resolve: always attributed via
+    `details.actor_external_id` only. Creating a Tenant is inherently a
+    cross-Tenant, platform-admin action; a Principal row in some other,
+    unrelated Tenant wouldn't be a meaningful attribution here anyway."""
+    return AuditActor(principal_id=None, external_id=claims.get('sub'))
 
 
 async def record_audit_event(

@@ -64,6 +64,15 @@ def _print_api_error(exc: CatalogApiError) -> int:
             'account), logging in again will not help -- it is a '
             'server-side provisioning issue for your admin to fix.'
         )
+    elif exc.status_code == 403:
+        console.print(f'[red]Forbidden:[/red] {exc.detail}')
+        console.print(
+            'This usually means the Tenant in the request path is not one '
+            'you are provisioned in -- check `--tenant-id`/`loom auth '
+            'set-tenant`, or ask your admin to run `loom principal create` '
+            'for you in that Tenant. Re-running `loom auth login` will not '
+            'help if that is the cause.'
+        )
     else:
         console.print(f'[red]{exc.status_code}[/red] {exc.detail}')
     return 1
@@ -103,14 +112,54 @@ def _print_detail(item: dict) -> None:
     console.print(table)
 
 
-async def _post_and_show(config: RootConfig, path: str, payload: dict) -> int:
-    """Shared POST-and-render for every create/update/transition command."""
+def _resolve_tenant_id(
+    config: RootConfig, args: argparse.Namespace
+) -> uuid.UUID | None:
+    """The Tenant a resource command targets -- every resource but Tenant
+    itself is nested under one (`/api/v1/tenants/{tenant_id}/...`), since
+    the caller's identity may hold a Principal in more than one and the
+    server resolves access strictly against whichever Tenant is named in
+    the URL. `--tenant-id` on the command overrides the locally-selected
+    one (`loom auth set-tenant`, normally set automatically by `loom auth
+    login`) when given; prints an actionable message and returns None if
+    neither is available."""
+    tenant_id = getattr(args, 'tenant_id', None) or config.auth.session.tenant_id
+    if tenant_id is None:
+        console.print(
+            'No --tenant-id given and no Tenant is locally selected. Run '
+            '[bold]loom auth set-tenant <tenant_id>[/bold] or pass '
+            '--tenant-id explicitly.'
+        )
+    return tenant_id
+
+
+async def _post_and_show(
+    config: RootConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
+) -> int:
+    """Shared POST-and-render for every create/update/transition command
+    whose path is nested under a Tenant -- i.e. everything but `tenant
+    create` itself, see `_post_and_show_flat`. `suffix` is relative to the
+    Tenant, e.g. `/capabilities`."""
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    try:
+        result = await client.post(client.tenant_path(suffix), payload)
+    except CatalogApiError as exc:
+        return _print_api_error(exc)
+    _print_detail(result)
+    return 0
+
+
+async def _post_and_show_flat(config: RootConfig, path: str, payload: dict) -> int:
+    """Shared POST-and-render for `tenant create` -- the one route with no
+    Tenant of its own to nest under (it's creating one), so `path` is
+    already the full API path, not a Tenant-relative suffix."""
+    token = _access_token(config)
+    if token is None:
+        return 1
+    client = CatalogClient(config.catalog.api_base_url, token)
     try:
         result = await client.post(path, payload)
     except CatalogApiError as exc:
@@ -119,16 +168,15 @@ async def _post_and_show(config: RootConfig, path: str, payload: dict) -> int:
     return 0
 
 
-async def _patch_and_show(config: RootConfig, path: str, payload: dict) -> int:
-    """Shared PATCH-and-render for Tenant/Principal `update` -- unlike
-    Capability/ModelEndpoint/Agent's `update`, which POSTs a new version,
-    Tenant/Principal aren't versioned entities and mutate in place."""
+async def _patch_and_show_flat(config: RootConfig, path: str, payload: dict) -> int:
+    """Shared PATCH-and-render for `tenant update` -- unlike Capability/
+    ModelEndpoint/Agent's `update`, which POSTs a new version, Tenant
+    mutates in place, and (like `tenant create`) has no Tenant of its own
+    to nest under."""
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token)
     try:
         result = await client.patch(path, payload)
     except CatalogApiError as exc:
@@ -142,13 +190,15 @@ async def _patch_and_show(config: RootConfig, path: str, payload: dict) -> int:
 # Shared VersionedEntityRead columns (see model/schemas/base.py) are enough
 # for a `list`/`versions` table across all three resources -- resource-
 # specific fields (protocol, layer, ...) are still visible via `show`.
-_LIST_COLUMNS = ('entity_id', 'slug', 'name', 'version', 'lifecycle_state', 'maturity')
+_LIST_COLUMNS = ('entity_id', 'name', 'version', 'lifecycle_state', 'maturity')
 
 
 @dataclasses.dataclass(frozen=True)
 class ResourceSpec:
     """Everything the generic list/show/versions/transition verbs below
-    need to know about one Catalog resource."""
+    need to know about one Catalog resource. `api_path` is relative to the
+    Tenant (`CatalogClient.tenant_path`), not a full path -- every
+    resource but Tenant itself is nested under one."""
 
     title: str
     plural: str  # explicit, not `title + 's'` -- "Capability" pluralizes irregularly
@@ -159,19 +209,16 @@ class ResourceSpec:
 
 RESOURCES: dict[str, ResourceSpec] = {
     'capability': ResourceSpec(
-        title='Capability',
-        plural='Capabilities',
-        article='a',
-        api_path='/api/v1/capabilities',
+        title='Capability', plural='Capabilities', article='a', api_path='/capabilities'
     ),
     'model': ResourceSpec(
         title='ModelEndpoint',
         plural='ModelEndpoints',
         article='a',
-        api_path='/api/v1/model-endpoints',
+        api_path='/model-endpoints',
     ),
     'agent': ResourceSpec(
-        title='Agent', plural='Agents', article='an', api_path='/api/v1/agents'
+        title='Agent', plural='Agents', article='an', api_path='/agents'
     ),
 }
 
@@ -182,20 +229,20 @@ RESOURCES: dict[str, ResourceSpec] = {
 async def resource_list(
     spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
 ) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
     params = {
         'lifecycle_state': args.lifecycle_state,
-        'slug': args.slug,
         'limit': args.limit,
         'offset': args.offset,
     }
     try:
-        page = await client.get(spec.api_path, params=params)
+        page = await client.get(client.tenant_path(spec.api_path), params=params)
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_table(spec.list_columns, page['items'])
@@ -209,13 +256,14 @@ async def resource_list(
 async def resource_show(
     spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
 ) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
-    path = f'{spec.api_path}/{args.entity_id}'
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
+    path = client.tenant_path(f'{spec.api_path}/{args.entity_id}')
     if args.version is not None:
         path = f'{path}/versions/{args.version}'
     try:
@@ -229,14 +277,17 @@ async def resource_show(
 async def resource_versions(
     spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
 ) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
     try:
-        items = await client.get(f'{spec.api_path}/{args.entity_id}/versions')
+        items = await client.get(
+            client.tenant_path(f'{spec.api_path}/{args.entity_id}/versions')
+        )
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_table(spec.list_columns, items)
@@ -247,8 +298,11 @@ async def resource_versions(
 async def resource_transition(
     spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
 ) -> int:
-    path = f'{spec.api_path}/{args.entity_id}/versions/{args.version}/transitions'
-    return await _post_and_show(config, path, {'to_state': args.to_state})
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    suffix = f'{spec.api_path}/{args.entity_id}/versions/{args.version}/transitions'
+    return await _post_and_show(config, tenant_id, suffix, {'to_state': args.to_state})
 
 
 # --- Capability: create/update ---------------------------------------------
@@ -261,29 +315,35 @@ def _capability_payload(args: argparse.Namespace) -> dict | None:
         console.print(f'[red]{exc}[/red]')
         return None
     return {
-        'slug': args.slug,
         'name': args.name,
         'description': args.description,
         'target_metrics': target_metrics,
-        'owner_id': _uuid_str(args.owner_id),
     }
 
 
 async def capability_create(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a Capability via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _capability_payload(args)
     if payload is None:
         return 1
-    return await _post_and_show(config, RESOURCES['capability'].api_path, payload)
+    return await _post_and_show(
+        config, tenant_id, RESOURCES['capability'].api_path, payload
+    )
 
 
 async def capability_update(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a new Capability version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _capability_payload(args)
     if payload is None:
         return 1
-    path = f'{RESOURCES["capability"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, path, payload)
+    suffix = f'{RESOURCES["capability"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
 
 
 # --- ModelEndpoint: create/update -------------------------------------------
@@ -291,28 +351,32 @@ async def capability_update(config: RootConfig, args: argparse.Namespace) -> int
 
 def _model_payload(args: argparse.Namespace) -> dict | None:
     return {
-        'slug': args.slug,
         'name': args.name,
         'description': args.description,
         'protocol': args.protocol,
         'base_url': args.base_url,
         'model': args.model,
         'auth_binding_id': _uuid_str(args.auth_binding_id),
-        'owner_id': _uuid_str(args.owner_id),
     }
 
 
 async def model_create(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a ModelEndpoint via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _model_payload(args)
-    return await _post_and_show(config, RESOURCES['model'].api_path, payload)
+    return await _post_and_show(config, tenant_id, RESOURCES['model'].api_path, payload)
 
 
 async def model_update(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a new ModelEndpoint version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _model_payload(args)
-    path = f'{RESOURCES["model"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, path, payload)
+    suffix = f'{RESOURCES["model"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
 
 
 # --- Agent: create/update ----------------------------------------------------
@@ -328,7 +392,6 @@ def _agent_payload(args: argparse.Namespace) -> dict | None:
         console.print(f'[red]{exc}[/red]')
         return None
     return {
-        'slug': args.slug,
         'name': args.name,
         'description': args.description,
         'layer': args.layer,
@@ -337,25 +400,30 @@ def _agent_payload(args: argparse.Namespace) -> dict | None:
         'prompt': args.prompt,
         'memory_scope': args.memory_scope,
         'permission_boundary': permission_boundary,
-        'owner_id': _uuid_str(args.owner_id),
     }
 
 
 async def agent_create(config: RootConfig, args: argparse.Namespace) -> int:
     """Create an Agent via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _agent_payload(args)
     if payload is None:
         return 1
-    return await _post_and_show(config, RESOURCES['agent'].api_path, payload)
+    return await _post_and_show(config, tenant_id, RESOURCES['agent'].api_path, payload)
 
 
 async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
     """Create a new Agent version via the Catalog API."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     payload = _agent_payload(args)
     if payload is None:
         return 1
-    path = f'{RESOURCES["agent"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, path, payload)
+    suffix = f'{RESOURCES["agent"].api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
 
 
 # --- Tenant/Principal: CRUD ---------------------------------------------
@@ -380,23 +448,23 @@ async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
 
 _TENANT_API_PATH = '/api/v1/tenants'
 _TENANT_LIST_COLUMNS = ('id', 'slug', 'name')
-_PRINCIPAL_API_PATH = '/api/v1/principals'
+_PRINCIPAL_API_PATH = '/principals'
 _PRINCIPAL_LIST_COLUMNS = ('id', 'tenant_id', 'kind', 'external_id')
 
 
 async def tenant_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a Tenant via the Catalog API."""
+    """Create a Tenant via the Catalog API. Not nested under a Tenant path
+    -- it's the one resource this doesn't apply to (see
+    `_post_and_show_flat`)."""
     payload = {'slug': args.slug, 'name': args.name}
-    return await _post_and_show(config, _TENANT_API_PATH, payload)
+    return await _post_and_show_flat(config, _TENANT_API_PATH, payload)
 
 
 async def tenant_list(config: RootConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token)
     params = {'limit': args.limit, 'offset': args.offset}
     try:
         page = await client.get(_TENANT_API_PATH, params=params)
@@ -414,9 +482,7 @@ async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token)
     try:
         item = await client.get(f'{_TENANT_API_PATH}/{args.tenant_id}')
     except CatalogApiError as exc:
@@ -428,22 +494,17 @@ async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
 async def tenant_update(config: RootConfig, args: argparse.Namespace) -> int:
     """Update a Tenant's name via the Catalog API."""
     path = f'{_TENANT_API_PATH}/{args.tenant_id}'
-    return await _patch_and_show(config, path, {'name': args.name})
+    return await _patch_and_show_flat(config, path, {'name': args.name})
 
 
 async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a Principal via the Catalog API. Requires an existing Tenant
-    (see `loom tenant create`/`loom tenant list`) and its id -- tokens
-    carry no `tenant_id` claim to default from (a caller's Tenant is
-    resolved from their own Principal row, not a token claim; see
-    docs/admin-guide.md's "Platform administrator" section), so
-    --tenant-id is always required."""
-    payload = {
-        'tenant_id': str(args.tenant_id),
-        'kind': args.kind,
-        'external_id': args.external_id,
-    }
-    return await _post_and_show(config, _PRINCIPAL_API_PATH, payload)
+    """Create a Principal via the Catalog API, in the Tenant named by
+    --tenant-id (always required, no session default -- creating a
+    Principal is a durable write, a worse case for silently defaulting to
+    an ambient selection than reading is; see `loom tenant create`/`loom
+    tenant list` for the Tenant's id)."""
+    payload = {'kind': args.kind, 'external_id': args.external_id}
+    return await _post_and_show(config, args.tenant_id, _PRINCIPAL_API_PATH, payload)
 
 
 async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
@@ -452,30 +513,16 @@ async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
     normally set automatically by `loom auth login`) -- explicit
     `--tenant-id` still overrides it, e.g. a platform admin listing a
     Tenant other than their own selection."""
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     token = _access_token(config)
     if token is None:
         return 1
-    tenant_id = args.tenant_id or config.auth.session.tenant_id
-    if tenant_id is None:
-        console.print(
-            'No --tenant-id given and no Tenant is locally selected. Run '
-            '[bold]loom auth set-tenant <tenant_id>[/bold] or pass '
-            '--tenant-id explicitly.'
-        )
-        return 1
-    # `tenant_id` (not the raw session selection) both as the query filter
-    # and the X-Loom-Tenant-Id hint, so an explicit --tenant-id override
-    # (e.g. a platform admin listing a Tenant other than their own
-    # selection) is consistent between the two rather than silently
-    # disagreeing.
     client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
-    params = {
-        'tenant_id': str(tenant_id),
-        'limit': args.limit,
-        'offset': args.offset,
-    }
+    params = {'limit': args.limit, 'offset': args.offset}
     try:
-        page = await client.get(_PRINCIPAL_API_PATH, params=params)
+        page = await client.get(client.tenant_path(_PRINCIPAL_API_PATH), params=params)
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_table(_PRINCIPAL_LIST_COLUMNS, page['items'])
@@ -487,14 +534,17 @@ async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
 
 
 async def principal_show(config: RootConfig, args: argparse.Namespace) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
     token = _access_token(config)
     if token is None:
         return 1
-    client = CatalogClient(
-        config.catalog.api_base_url, token, tenant_id=config.auth.session.tenant_id
-    )
+    client = CatalogClient(config.catalog.api_base_url, token, tenant_id=tenant_id)
     try:
-        item = await client.get(f'{_PRINCIPAL_API_PATH}/{args.principal_id}')
+        item = await client.get(
+            client.tenant_path(f'{_PRINCIPAL_API_PATH}/{args.principal_id}')
+        )
     except CatalogApiError as exc:
         return _print_api_error(exc)
     _print_detail(item)
@@ -504,18 +554,23 @@ async def principal_show(config: RootConfig, args: argparse.Namespace) -> int:
 # --- argparse wiring ---------------------------------------------------
 
 
-def _add_owner_id_arg(parser: argparse.ArgumentParser) -> None:
+def _add_tenant_id_arg(parser: argparse.ArgumentParser) -> None:
+    """Every resource but Tenant itself is nested under one -- this is the
+    override; the default is `config.auth.session.tenant_id` (see
+    `_resolve_tenant_id`)."""
     parser.add_argument(
-        '--owner-id',
-        dest='owner_id',
+        '--tenant-id',
+        dest='tenant_id',
         type=uuid.UUID,
         default=None,
-        help='Owning Principal, defaults to the caller',
+        help=(
+            'The Tenant to operate in, defaults to the locally-selected '
+            'Tenant (see `loom auth set-tenant`)'
+        ),
     )
 
 
 def _add_capability_fields(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('slug', help='URL-safe unique slug')
     parser.add_argument('name', help='Human-readable name')
     parser.add_argument('--description', default=None, help='Free-text description')
     parser.add_argument(
@@ -524,11 +579,10 @@ def _add_capability_fields(parser: argparse.ArgumentParser) -> None:
         default='[]',
         help='Target metrics as a JSON array of objects, defaults to []',
     )
-    _add_owner_id_arg(parser)
+    _add_tenant_id_arg(parser)
 
 
 def _add_model_fields(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('slug', help='URL-safe unique slug')
     parser.add_argument('name', help='Human-readable name')
     parser.add_argument('--description', default=None, help='Free-text description')
     parser.add_argument(
@@ -556,11 +610,10 @@ def _add_model_fields(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Credential vault binding for this endpoint',
     )
-    _add_owner_id_arg(parser)
+    _add_tenant_id_arg(parser)
 
 
 def _add_agent_fields(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('slug', help='URL-safe unique slug')
     parser.add_argument('name', help='Human-readable name')
     parser.add_argument('--description', default=None, help='Free-text description')
     parser.add_argument(
@@ -596,7 +649,7 @@ def _add_agent_fields(parser: argparse.ArgumentParser) -> None:
         default='{}',
         help='Permission boundary as a JSON object, defaults to {}',
     )
-    _add_owner_id_arg(parser)
+    _add_tenant_id_arg(parser)
 
 
 def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> None:
@@ -611,13 +664,13 @@ def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> N
         choices=[s.value for s in LifecycleState],
         help='Filter by lifecycle state',
     )
-    list_parser.add_argument('--slug', default=None, help='Filter by exact slug')
     list_parser.add_argument(
         '--limit', type=int, default=50, help='Max results, defaults to 50'
     )
     list_parser.add_argument(
         '--offset', type=int, default=0, help='Pagination offset, defaults to 0'
     )
+    _add_tenant_id_arg(list_parser)
     list_parser.set_defaults(func=functools.partial(resource_list, spec))
 
     show_parser = sub.add_parser('show', help=f'Show {spec.article} {spec.title}')
@@ -628,12 +681,14 @@ def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> N
         default=None,
         help='Show a specific version instead of the current one',
     )
+    _add_tenant_id_arg(show_parser)
     show_parser.set_defaults(func=functools.partial(resource_show, spec))
 
     versions_parser = sub.add_parser(
         'versions', help=f'List every version of {spec.article} {spec.title}'
     )
     versions_parser.add_argument('entity_id', type=uuid.UUID)
+    _add_tenant_id_arg(versions_parser)
     versions_parser.set_defaults(func=functools.partial(resource_versions, spec))
 
     transition_parser = sub.add_parser(
@@ -645,6 +700,7 @@ def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> N
     transition_parser.add_argument(
         'to_state', choices=[s.value for s in LifecycleState]
     )
+    _add_tenant_id_arg(transition_parser)
     transition_parser.set_defaults(func=functools.partial(resource_transition, spec))
 
 
@@ -782,6 +838,7 @@ def _add_principal_parsers(subparsers: argparse._SubParsersAction) -> None:
 
     show_parser = sub.add_parser('show', help='Show a Principal')
     show_parser.add_argument('principal_id', type=uuid.UUID)
+    _add_tenant_id_arg(show_parser)
     show_parser.set_defaults(func=principal_show)
 
 

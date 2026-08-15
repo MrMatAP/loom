@@ -3,7 +3,6 @@ import uuid
 
 import httpx
 
-from loom.http_headers import TENANT_HINT_HEADER
 from loom.tls import build_ssl_context
 
 
@@ -46,11 +45,25 @@ class CatalogClient:
     ) -> None:
         self._base = api_base_url.rstrip('/')
         self._token = access_token
-        # Disambiguates `resolve_principal` when this identity is
-        # provisioned in more than one Tenant (see `loom auth set-tenant`);
-        # ignored server-side otherwise, so it's always safe to send.
+        # Which Tenant `tenant_path()` below nests a request under --
+        # every resource but Tenant itself lives at
+        # `/api/v1/tenants/{tenant_id}/...` now, so this is required for
+        # those, unused for Tenant's own (flat) routes.
         self._tenant_id = tenant_id
         self._transport = transport
+
+    def tenant_path(self, suffix: str) -> str:
+        """Build `/api/v1/tenants/{tenant_id}{suffix}` -- every resource but
+        Tenant itself is nested under a specific Tenant (see `loom auth
+        set-tenant`/`--tenant-id`), since the same identity may hold a
+        Principal in more than one and the server resolves access strictly
+        against whichever Tenant is named in the URL, not a token claim or
+        header hint."""
+        if self._tenant_id is None:
+            raise CatalogApiError(
+                0, 'tenant_path() called without a tenant_id configured'
+            )
+        return f'/api/v1/tenants/{self._tenant_id}{suffix}'
 
     def _client(self) -> httpx.AsyncClient:
         ctx = build_ssl_context()
@@ -72,8 +85,6 @@ class CatalogClient:
             {k: v for k, v in params.items() if v is not None} if params else None
         )
         headers = {'Authorization': f'Bearer {self._token}'}
-        if self._tenant_id is not None:
-            headers[TENANT_HINT_HEADER] = str(self._tenant_id)
         async with self._client() as http:
             response = await http.request(
                 method,

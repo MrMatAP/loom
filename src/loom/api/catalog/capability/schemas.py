@@ -7,11 +7,9 @@ from loom.model.enums import RealizingEntityType
 
 
 class CapabilityCreateRequest(BaseModel):
-    slug: str
     name: str
     description: str | None = None
     target_metrics: list[dict] = []
-    owner_id: uuid.UUID | None = None
 
 
 class CapabilityRealizationCreateRequest(BaseModel):

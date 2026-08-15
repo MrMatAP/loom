@@ -19,7 +19,6 @@ def _tenant_and_principal(session) -> tuple[Tenant, Principal]:
 def test_agent_round_trip(session):
     tenant, principal = _tenant_and_principal(session)
     endpoint_payload = ModelEndpointCreate(
-        slug='claude',
         name='Claude',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -32,7 +31,6 @@ def test_agent_round_trip(session):
     session.commit()
 
     payload = AgentCreate(
-        slug='triage-agent',
         name='Triage Agent',
         tenant_id=tenant.id,
         owner_id=principal.id,
@@ -61,7 +59,6 @@ def test_agent_can_exist_without_a_model_binding(session):
     """A Draft agent can exist before a model is chosen."""
     tenant, principal = _tenant_and_principal(session)
     payload = AgentCreate(
-        slug='unbound-agent',
         name='Unbound Agent',
         tenant_id=tenant.id,
         owner_id=principal.id,

@@ -57,7 +57,6 @@ class SkillRepository:
         tenant_id: uuid.UUID,
         *,
         lifecycle_state: LifecycleState | None,
-        slug: str | None,
         limit: int,
         offset: int,
     ) -> tuple[list[Skill], int]:
@@ -66,8 +65,6 @@ class SkillRepository:
         )
         if lifecycle_state is not None:
             stmt = stmt.where(Skill.lifecycle_state == lifecycle_state)
-        if slug is not None:
-            stmt = stmt.where(Skill.slug == slug)
         total = await self._session.scalar(
             sa.select(sa.func.count()).select_from(stmt.subquery())
         )

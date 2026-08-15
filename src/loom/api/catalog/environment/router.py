@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.dependencies import get_session, require_scopes
@@ -14,7 +14,7 @@ from loom.model.schemas.environment import (
 from .repository import EnvironmentRepository
 from .service import EnvironmentService
 
-router = APIRouter(prefix='/environments', tags=['environments'])
+router = APIRouter(prefix='/tenants/{tenant_id}/environments', tags=['environments'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> EnvironmentService:
@@ -23,16 +23,17 @@ def _service(session: AsyncSession = Depends(get_session)) -> EnvironmentService
 
 @router.post('', response_model=EnvironmentRead, status_code=201)
 async def create_environment(
+    tenant_id: uuid.UUID,
     body: EnvironmentCreate,
     service: EnvironmentService = Depends(_service),
     _scopes: None = Depends(require_scopes('catalog:environment:write')),
 ):
-    return await service.create(body)
+    return await service.create(tenant_id, body)
 
 
 @router.get('', response_model=Page[EnvironmentRead])
 async def list_environments(
-    tenant_id: uuid.UUID = Query(...),  # noqa: B008
+    tenant_id: uuid.UUID,
     pagination: PaginationParams = Depends(),
     service: EnvironmentService = Depends(_service),
     _scopes: None = Depends(require_scopes('catalog:environment:read')),
@@ -47,18 +48,20 @@ async def list_environments(
 
 @router.get('/{environment_id}', response_model=EnvironmentRead)
 async def get_environment(
+    tenant_id: uuid.UUID,
     environment_id: uuid.UUID,
     service: EnvironmentService = Depends(_service),
     _scopes: None = Depends(require_scopes('catalog:environment:read')),
 ):
-    return await service.get(environment_id)
+    return await service.get(tenant_id, environment_id)
 
 
 @router.patch('/{environment_id}', response_model=EnvironmentRead)
 async def update_environment(
+    tenant_id: uuid.UUID,
     environment_id: uuid.UUID,
     body: EnvironmentUpdate,
     service: EnvironmentService = Depends(_service),
     _scopes: None = Depends(require_scopes('catalog:environment:write')),
 ):
-    return await service.update(environment_id, body)
+    return await service.update(tenant_id, environment_id, body)

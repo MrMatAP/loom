@@ -24,7 +24,6 @@ def test_atomic_skill_requires_content(session):
     with pytest.raises(sa.exc.IntegrityError):
         session.add(
             Skill(
-                slug='draft-reply',
                 name='Draft Reply',
                 tenant_id=tenant.id,
                 owner_id=principal.id,
@@ -41,7 +40,6 @@ def test_composite_skill_graph(session):
     tenant, principal = _tenant_and_principal(session)
     agent = Agent(
         **AgentCreate(
-            slug='triage-agent',
             name='Triage Agent',
             tenant_id=tenant.id,
             owner_id=principal.id,
@@ -57,7 +55,6 @@ def test_composite_skill_graph(session):
 
     skill = Skill(
         **SkillCreate(
-            slug='triage-flow',
             name='Triage Flow',
             tenant_id=tenant.id,
             owner_id=principal.id,

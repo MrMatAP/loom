@@ -18,7 +18,7 @@ from .repository import ToolRepository
 from .schemas import ToolCreateRequest, ToolDataBindingCreateRequest
 from .service import ToolService
 
-router = APIRouter(prefix='/tools', tags=['tools'])
+router = APIRouter(prefix='/tenants/{tenant_id}/tools', tags=['tools'])
 
 
 def _service(session: AsyncSession = Depends(get_session)) -> ToolService:
@@ -41,7 +41,6 @@ async def create_tool(
 async def list_tools(
     pagination: PaginationParams = Depends(),
     lifecycle_state: LifecycleState | None = None,
-    slug: str | None = None,
     service: ToolService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:tool:read')),
@@ -49,7 +48,6 @@ async def list_tools(
     items, total = await service.list_current(
         principal.tenant_id,
         lifecycle_state=lifecycle_state,
-        slug=slug,
         limit=pagination.limit,
         offset=pagination.offset,
     )
