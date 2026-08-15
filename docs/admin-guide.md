@@ -1,213 +1,117 @@
 # Catalog Admin Guide
 
-Deploying, configuring, and operating the Catalog API and MCP server.
-For what these services *do* and how to drive them once running, see
-[README.md](../README.md) (REST API, CLI) and
-[docs/user-guide.md](user-guide.md) (day-to-day usage). This guide covers
-the parts specific to running them as containers: build, configuration,
-Docker Compose, and Kubernetes.
+Installing and operating the Catalog API and MCP server, and the
+authorization model administrators are responsible for configuring in the
+IdP. For what these services *do* and why they're shaped the way they are,
+see [docs/architecture.md](architecture.md). For day-to-day usage once
+they're running, see [docs/user-guide.md](user-guide.md).
 
-## Architecture in one paragraph
+## Install
 
-Both services are stateless HTTP processes (FastAPI/Uvicorn) backed by a
-shared PostgreSQL database and a shared external OIDC issuer -- neither
-holds request-scoped state anywhere but the DB, and the MCP server runs
-with `stateless_http=True` specifically so no session is pinned to one
-process either (see `src/loom/api/catalog/mcp/main.py`). That's what makes
-"horizontally scalable" true rather than aspirational: any request can go
-to any replica, so scaling is purely a replica-count knob, not a
-code-level concern.
-
-## Prerequisites
-
-- **PostgreSQL** (14+) reachable from wherever you run the containers.
-  Provisioning it is out of scope here -- use whatever you already run
-  (managed service, existing instance, operator-managed StatefulSet). None
-  of the manifests below create one.
-- **An OIDC issuer** with the Catalog's OAuth client already registered --
-  see README.md's ["Registering the client with your
-  IDP"](../README.md#registering-the-client-with-your-idp). Do this before
-  deploying; the services fail closed (every request needs a bearer token)
-  without it.
-- **Docker** to build the image.
-- For Kubernetes: **kubectl**, **kustomize** (or `kubectl apply -k`, which
-  bundles an older kustomize), and a **metrics-server** installed in-cluster
-  if you want the HorizontalPodAutoscalers to actually scale (they'll sit
-  at `<unknown>`/minReplicas without one).
-
-## Build
-
-One image serves three roles -- the REST API, the MCP server, and the
-`loom` CLI (used for `loom db upgrade` as a one-shot migration step) --
-selected by which command runs, not by building three images. See the
-comments in `/Dockerfile` for the full reasoning (reproducibility via
-`uv.lock`, why one image, why a fixed non-root UID).
+**Prerequisites**: PostgreSQL 14+ reachable from wherever you run the
+containers (provisioning it is out of scope here); an OIDC issuer;
+Docker; for Kubernetes, `kubectl`, `kustomize` (or `kubectl apply -k`),
+and a `metrics-server` if you want the HorizontalPodAutoscalers to scale.
 
 ```
+# 1. Build and push the image
 docker build --build-arg VERSION=1.4.2 -t ghcr.io/your-org/loom:1.4.2 .
 docker push ghcr.io/your-org/loom:1.4.2
+
+# 2. Migrate the database (creates a `default` Tenant on an empty DB)
+loom config set database.host db.example.com
+loom config set database.username loom
+loom config set database.password <secret>
+loom db upgrade
+
+# 3. Register the four OAuth clients with your IdP
+loom idp register --issuer-url https://idp.example/realms/loom \
+  --client-id loom-catalog-api --api-base-url https://api.example.com
+
+# 4. Deploy (pick one)
+docker compose up --build                    # local / trial
+kubectl apply -k deploy/kubernetes            # production, see "Operate" below
+
+# 5. Grant one human the catalog-platform-admin role in your IdP,
+#    then provision their Principal -- see "Authorization model" below.
 ```
 
-`VERSION` threads through to `loom --version` and the package metadata
-inside the image (defaults to `0.0.0.dev0` if omitted) -- it does not
-affect what gets installed, only how the built artifact identifies itself.
+See "Operate" and "Reference" below for the detail behind each step.
 
-## Configuration
+## Operate
 
-Every container reads its configuration from a YAML file (the same format
-`loom config set` on your own machine produces) at `$LOOM_CONFIG_PATH`.
-`docker/entrypoint.sh` builds that file from plain environment variables
-at container start, then execs the real command -- so in practice you
-configure the container via environment variables, not by hand-editing
-YAML. The full mapping:
+### Running locally with Docker Compose
 
-| Environment variable | Config key | Required |
-|---|---|---|
-| `LOOM_CONFIG_PATH` | *(where the file is written)* | yes for Kubernetes (must point inside the writable `config` `emptyDir` mount -- unset falls back to `$HOME/.loom`, which is on the read-only root layer there and fails the writability check below); optional for Compose/plain `docker run` |
-| `LOOM_DB_HOST` | `database.host` | yes |
-| `LOOM_DB_PORT` | `database.port` | no (default `5432`) |
-| `LOOM_DB_NAME` | `database.database` | no (default `loom`) |
-| `LOOM_DB_USERNAME` | `database.username` | no (default `loom`) |
-| `LOOM_DB_PASSWORD` | `database.password` | yes -- entrypoint.sh refuses to start without it (see below) |
-| `LOOM_AUTH_ISSUER` | `auth.issuer` | yes |
-| `LOOM_AUTH_AUDIENCE` | `auth.audience` | yes |
-| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | no -- derived from `auth.issuer` (`{issuer}/.well-known/openid-configuration`); `authorization_endpoint`/`token_endpoint`/`jwks_uri` are all read from that one document |
-| `LOOM_AUTH_MCP_AUDIENCE` | `auth.mcp_audience` | yes for catalog-mcp -- it validates tokens against this audience, not `auth.audience` (separate resource-server client from the RESTful API, see `loom idp register`) |
-| `LOOM_AUTH_SWAGGER_CLIENT_ID` | `auth.swagger_client_id` | no -- only if exposing `/docs` (catalog-api only) |
-| `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no -- unused by the servers themselves |
-| `LOOM_CATALOG_API_BASE_URL` | `catalog.api_base_url` | no -- only matters if you run `loom` CLI commands *inside* the container |
-| `LOOM_IDP_CA_BUNDLE` | *(not a config key -- read directly by `loom.tls.build_ssl_context`)* | only if your IDP's CA isn't in the image's trust store |
-
-Two things entrypoint.sh checks before starting anything, both explained
-further down: `LOOM_CONFIG_PATH`'s directory must be writable, and
-`LOOM_DB_PASSWORD` must be set (or `LOOM_ALLOW_NO_DB_PASSWORD=1`
-explicitly passed for a trust-auth Postgres).
-
-**A note if you ever bypass entrypoint.sh** and hand-author a config YAML
-directly (e.g. for a fully pre-baked config Secret): `RootConfig.load()`
-requires the file to contain a `config_path` key matching its own path --
-a file written by `loom config set`/entrypoint.sh always has one, but a
-hand-authored file without it fails validation on load. Simplest fix:
-generate it with `loom config set` once and reuse that file, rather than
-writing the YAML by hand.
-
-**Internal CA for your IDP**: if `LOOM_AUTH_ISSUER` isn't reachable over
-TLS with a publicly-trusted certificate, mount the CA bundle into the
-container (a ConfigMap volume works well) and set `LOOM_IDP_CA_BUNDLE` to
-its path. This affects JWKS resolution at request-validation time inside
-catalog-api/catalog-mcp themselves, not just CLI commands -- see
-README.md's ["TLS trust for the IDP
-connection"](../README.md#tls-trust-for-the-idp-connection).
-
-### Why a writable path, not a mounted Secret file, for config
-
-`loom config set` (which entrypoint.sh calls once per variable you've
-set) round-trips through `RootConfig.save()`, which `chmod(0o600)`s the
-file it just wrote -- every `loom` invocation does this, not just `config
-set`, so there's no way to point `$LOOM_CONFIG_PATH` at a read-only-mounted
-Secret and have it work. Instead, secrets arrive as plain environment
-variables (`secretKeyRef` in Kubernetes, `.env` in Compose) and
-entrypoint.sh writes them into a path the container itself owns. The
-Kubernetes manifests back that path with a small `emptyDir` so this still
-works under `readOnlyRootFilesystem: true` on the container's own root
-layer.
-
-### Fail-fast behavior
-
-entrypoint.sh deliberately refuses to start rather than run with an
-unusable configuration:
-
-- **Unwritable `$LOOM_CONFIG_PATH` directory** -- exits with a specific
-  message pointing at the missing writable mount, instead of the bare
-  `[Errno 13] Permission denied` `loom config set` would otherwise print.
-- **Unset/empty `LOOM_DB_PASSWORD`** -- exits rather than silently
-  building a passwordless DSN. Without this check, a misnamed Secret key
-  produces a pod that passes its readiness probe (`/healthz` never
-  touches the database) and then 500s on every real request -- a much
-  harder failure to diagnose than a crashlooping pod with a clear log
-  line. Set `LOOM_ALLOW_NO_DB_PASSWORD=1` for a deliberately
-  passwordless (trust-auth) Postgres.
-
-## Running locally with Docker Compose
-
-`docker-compose.yaml` at the repo root runs Postgres, a one-shot
-`loom db upgrade` migration, and single instances of both services --
-useful for trying the Catalog out or developing against it, not a
-horizontal-scaling story (that's Kubernetes; every service here is a
-single container).
+`docker-compose.yaml` at the repo root runs Postgres, a one-shot `loom db
+upgrade` migration, and single instances of both services -- useful for
+trying the Catalog out or developing against it, not a horizontal-scaling
+story (that's Kubernetes below).
 
 ```
 cp .env.example .env   # fill in LOOM_DB_PASSWORD, LOOM_AUTH_ISSUER, LOOM_AUTH_AUDIENCE
 docker compose up --build
 ```
 
-The `migrate` service must exit 0 before `catalog-api`/`catalog-mcp`
-start (`depends_on: condition: service_completed_successfully`) --
-Compose enforces that ordering for you, unlike the Kubernetes path below.
+The `migrate` service must exit 0 before `catalog-api`/`catalog-mcp` start
+(`depends_on: condition: service_completed_successfully`) -- Compose
+enforces that ordering for you, unlike the Kubernetes path below.
 
-## Deploying to Kubernetes
+### Deploying to Kubernetes
 
 Manifests live under `deploy/kubernetes/`, composed via
-[Kustomize](https://kustomize.io). Two files there are templates, not
-applied resources -- `secret.example.yaml` and `ingress.example.yaml` --
-see the comment at the top of each for why.
+[Kustomize](https://kustomize.io). `secret.example.yaml` and
+`ingress.example.yaml` are templates, not applied resources -- copy and
+fill them in; **never commit a filled-in copy**.
 
-### 1. Point the manifests at your build
+1. **Point the manifests at your build**:
 
-```
-cd deploy/kubernetes
-kustomize edit set image loom=ghcr.io/your-org/loom:1.4.2
-```
+   ```
+   cd deploy/kubernetes
+   kustomize edit set image loom=ghcr.io/your-org/loom:1.4.2
+   ```
 
-### 2. Edit `configmap.yaml`
+2. **Edit `configmap.yaml`** -- every `CHANGEME` must be replaced, in
+   particular `LOOM_DB_HOST` (no Postgres ships in this manifest set) and
+   `LOOM_AUTH_ISSUER`.
 
-Every `CHANGEME` must be replaced -- in particular `LOOM_DB_HOST` (there is
-no Postgres in this manifest set; point it at yours) and `LOOM_AUTH_ISSUER`.
+3. **Create the database credential Secret**:
 
-### 3. Create the database credential Secret
+   ```
+   kubectl create namespace loom-catalog
+   kubectl create secret generic loom-db-credentials \
+     --namespace loom-catalog \
+     --from-literal=password='<your Postgres password>'
+   ```
 
-```
-kubectl create namespace loom-catalog
-kubectl create secret generic loom-db-credentials \
-  --namespace loom-catalog \
-  --from-literal=password='<your Postgres password>'
-```
+   (Or manage it through your own GitOps/sealed-secrets/external-secrets
+   pipeline -- `secret.example.yaml` is copy-paste starting material.)
 
-(Or manage it through your own GitOps/sealed-secrets/external-secrets
-pipeline -- `secret.example.yaml` is copy-paste starting material for
-that; never commit a filled-in copy.)
+4. **Apply everything, then confirm the migration finished**:
 
-### 4. Apply everything, then confirm the migration finished
+   ```
+   kubectl apply -k .
+   kubectl wait --for=condition=complete job/loom-db-migrate \
+     --namespace loom-catalog --timeout=120s
+   ```
 
-```
-kubectl apply -k .
-kubectl wait --for=condition=complete job/loom-db-migrate \
-  --namespace loom-catalog --timeout=120s
-```
+   `loom-db-migrate` runs `loom db upgrade` exactly once, as a dedicated
+   Job rather than a per-pod initContainer -- running that command
+   concurrently from multiple starting replicas races on a shared Postgres
+   enum type. `kubectl apply -k` gives no ordering guarantee between a Job
+   and a Deployment, so the `kubectl wait` step isn't optional: API/MCP
+   pods can and will start before the schema is ready. That's not silently
+   broken -- `/healthz` doesn't touch the database, so those pods report
+   Ready and simply error on real requests until migration completes, no
+   restart needed once it does. Verify with:
 
-`loom-db-migrate` runs `loom db upgrade` exactly once. It's a dedicated
-Job rather than a per-pod initContainer deliberately: running that command
-concurrently from multiple starting replicas is the exact race
-(`DuplicateObject` on a shared Postgres enum type, created twice against a
-fresh database) this project's history already hit once -- see the Job's
-own comments. `kubectl apply -k` gives no ordering guarantee between a Job
-and a Deployment on its own, so the `kubectl wait` step above isn't
-optional: the API/MCP Deployments' pods can and will start before the
-schema is ready. That's not silently broken -- `/healthz` doesn't touch
-the database, so those pods report Ready and simply return errors on real
-requests until the migration completes, no restart needed once it does.
-Verify with:
+   ```
+   loom capability list   # against this deployment's catalog.api_base_url
+   # or, without a logged-in CLI session:
+   kubectl logs job/loom-db-migrate --namespace loom-catalog
+   ```
 
-```
-loom capability list   # against this deployment's catalog.api_base_url
-# or, without a logged-in CLI session:
-kubectl logs job/loom-db-migrate --namespace loom-catalog
-```
-
-### Rolling out a new version
-
-Jobs are immutable (`spec.template` can't be patched), so a re-run after
-a new image needs the old completed Job deleted first:
+**Rolling out a new version**: Jobs are immutable, so delete the old
+completed one first:
 
 ```
 kustomize edit set image loom=ghcr.io/your-org/loom:1.5.0
@@ -216,186 +120,352 @@ kubectl apply -k .
 kubectl wait --for=condition=complete job/loom-db-migrate --namespace loom-catalog --timeout=120s
 ```
 
-The Deployments themselves roll normally (`kubectl apply -k` triggers a
-standard rolling update) -- no special handling needed there.
+The Deployments themselves roll normally -- no special handling needed.
 
-### Scaling
-
-`catalog-api-hpa.yaml`/`catalog-mcp-hpa.yaml` target 70% average CPU
-utilization between 2 and 10 replicas each; needs metrics-server (see
-Prerequisites). To scale manually instead (or while metrics-server isn't
-available):
+**Scaling**: `catalog-api-hpa.yaml`/`catalog-mcp-hpa.yaml` target 70%
+average CPU between 2 and 10 replicas each; needs metrics-server. To scale
+manually instead:
 
 ```
 kubectl scale deployment/loom-catalog-api --namespace loom-catalog --replicas=4
 ```
 
 `pdb.yaml` keeps at least 1 replica of each up through voluntary
-disruptions (node drains, cluster upgrades) once you're running more than
-one -- the default.
+disruptions once you're running more than one -- the default.
 
-### Exposing it externally
-
-`ingress.example.yaml` is a starting template -- copy it, fill in
-`ingressClassName`/host/TLS for your cluster. Whatever hostname you land
-on for the REST API must match `LOOM_CATALOG_API_BASE_URL` in
+**Exposing it externally**: `ingress.example.yaml` is a starting
+template -- copy it, fill in `ingressClassName`/host/TLS. Whatever hostname
+you land on for the REST API must match `LOOM_CATALOG_API_BASE_URL` in
 `configmap.yaml`, and if you want Swagger UI's interactive login to work
-through it, must also match the `--api-base-url` you registered via
-`loom idp register` (see README.md) -- a mismatch there is the most common
-reason that login redirect fails.
+through it, must also match the `--api-base-url` you registered via `loom
+idp register` -- a mismatch here is the most common reason that login
+redirect fails.
 
-## Platform administrator
+### Platform administrator
 
 Every other identity the Catalog knows about -- a Tenant's own users,
 agents, service accounts -- is a `Principal` row scoped to one Tenant. The
-**platform administrator** is the one exception: an IDP account with no
-Tenant scope at all, used to create and manage Tenants and Principals
-across the whole deployment. It's what onboards the very first Tenant, so
-it can't itself depend on one existing yet.
+**platform administrator** is the one exception: an IdP account holding
+`catalog-platform-admin` and no Tenant scope, used to create and manage
+Tenants and Principals across the whole deployment. It's what onboards the
+very first Tenant, so it can't itself depend on one existing yet. See
+"Authorization model" below for how to grant this role, and for the
+one-time bootstrap sequence.
 
-There's no `loom` command for this step by design -- granting
-platform-wide access is a decision for whoever administers your IDP, made
-once per admin, directly in the IDP:
+### TLS trust for the IdP connection
 
-1. Run `loom db upgrade` then `loom idp register` (see README.md) first --
-   the second creates the `catalog-platform-admin` role under the
-   `loom-catalog-api` client (or whatever `--client-id` you used) that the
-   next step grants.
-2. In Keycloak: **Users** → **Add user** → create an account for the
-   person who will administer Tenants (existing users work too). Then
-   **Role mapping** → **Assign role** → filter by **Filter by clients** →
-   find `catalog-platform-admin` under your API client → **Assign**.
-   Nothing else to configure on the account -- no IDP account attribute is
-   involved anywhere in this flow (see "How a caller's Tenant is
-   resolved" below).
+Every outbound call to the IdP (`loom idp ...`, `loom auth login`, JWKS
+resolution, OIDC discovery) goes through `loom.tls.build_ssl_context()`,
+which defaults to the OS-native trust store. If your IdP's certificate is
+issued by a CA that's trusted system-wide but isn't visible to that
+OS-trust-store lookup on your platform (observed on macOS with a CA
+installed via a management tool into the login keychain rather than the
+System roots), set an explicit override instead of fighting the OS store:
 
-`loom db upgrade` already created one Tenant for you -- slug `default` --
-so a single-Tenant deployment needs nothing further here; skip straight to
-`loom principal create` below with that Tenant's id (`loom tenant list`).
-Create additional/differently-named Tenants only if you actually run more
-than one. Unlike `POST /tenants`/`POST /principals` below, this one write
-is not audited (`db upgrade` runs before any login, so there's no `sub` to
-attribute it to) -- acceptable here since, unlike those two, the row
-grants no identity access by itself; see `_seed_default_tenant` in
-`src/loom/cli/db.py`:
+```
+export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem
+loom idp register ...
+```
 
-    loom auth login
-    loom tenant create acme "Acme Corp"          # only if `default` isn't enough
-    loom principal create --tenant-id <id from above> --kind user \
-      --external-id <sub from `loom auth whoami`>
+Inside a container this affects JWKS resolution at request-validation
+time too, not just CLI commands -- mount the CA bundle (a ConfigMap volume
+works well) and set `LOOM_IDP_CA_BUNDLE` to its path.
 
-`POST /tenants` and `POST /principals` only require the caller's token to
-carry `catalog:tenant:write`/`catalog:principal:write` -- exactly what
-`catalog-platform-admin` grants -- not an already-provisioned `Principal`,
-which is what makes this work on a database that has no Tenants or
-Principals in it yet. Both still write an `AuditEvent` for the action --
-attributed to the caller's token `sub` (`details.actor_external_id`)
-rather than a `Principal` row when, as here, there isn't one yet -- so the
-bootstrap itself isn't a silent, unaudited path (see
-`src/loom/api/catalog/audit.py`). See README.md's "Managing Tenants and
-Principals from the CLI" for the full command reference.
+### Verifying interactively
 
-Everything past this point -- Capability/Agent/Skill/Tool/DataSource/
-DataProduct/ModelEndpoint access -- still goes through a Tenant-scoped
-`Principal` the normal way (`resolve_principal` in
-`src/loom/api/catalog/dependencies.py`), including for the platform
-administrator themselves if they also want to act as one: `loom principal
-create` for their own `sub` is all that's needed (see below).
+Both the Swagger UI and CLI login flows are exercised automatically by
+`tests/integration/` (see "Live IdP integration tests" below) short of the
+one step neither can automate without a browser: a human approving the
+login. To confirm that step works end to end at least once after
+registering clients on a new IdP instance, do it by hand -- open `/docs`,
+click Authorize, log in; then run `loom auth login` and approve the
+printed link. If either fails, the registration command's own output
+(redirect URI, client ID) is the first thing to check against what
+actually loaded in the browser -- a mismatched redirect URI shows up as
+your IdP's own `invalid_redirect_uri` error page mid-flow, not a silent
+failure back on `/docs`.
 
-### How a caller's Tenant is resolved
-
-There's no `tenant_id` claim anywhere in this system -- not on a token,
-not as an IDP account attribute. A caller's Tenant comes entirely from
-`Principal.tenant_id`: `resolve_principal` looks up the one `Principal`
-row whose `external_id` matches the token's `sub` and reads its
-`tenant_id` off of that row. This is deliberate: it means onboarding a new
-user is *one* action (`loom principal create`), not two (create the
-Principal, *and* separately remember to tag their IDP account) -- the
-second step was easy to forget and produced a confusing 401 with no
-obvious cause (see Troubleshooting below).
-
-One consequence: `external_id` is only unique *per Tenant*
-(`uq_principal_tenant_external_id` in `src/loom/model/tenant.py`), so the
-same `sub` can legitimately be provisioned in more than one Tenant -- a
-consultant working across two customer Tenants, for instance. `loom auth
-login` handles this proactively rather than waiting for a request to
-401: right after obtaining tokens, it calls `GET /tenants/mine` (every
-Tenant for a platform admin, i.e. anyone whose token carries
-`catalog:tenant:read`; otherwise only the Tenants where the caller
-already has a Principal) and:
-
-- **Exactly one Tenant available** -- selected automatically, no prompt.
-  This is what makes a fresh single-Tenant deployment work with zero
-  extra steps: the `default` Tenant `db upgrade` created is the only
-  choice, so it's just active.
-- **More than one** -- the CLI lists them and requires picking one before
-  login finishes.
-- **None yet** -- login still succeeds (the tokens are valid), but prints
-  a reminder to ask the platform administrator to run `loom principal
-  create`.
-
-The selection is stored locally (`config.auth.session.tenant_id`) and
-sent as the `X-Loom-Tenant-Id` header on every subsequent request
-(`loom.http_headers.TENANT_HINT_HEADER`); `resolve_principal` only
-consults it to pick among *that identity's own* Principal rows, never to
-grant access to a Tenant it isn't otherwise provisioned in -- an
-incorrect or stale selection just 401s (see Troubleshooting below). Run
-`loom auth set-tenant <tenant_id>` any time afterward to change it --
-also how to resolve a login that couldn't reach the API to list Tenants
-in the first place. With no arguments it shows the current selection;
-`--clear` removes it; `loom auth logout` clears it too, and so does every
-fresh `loom auth login` before it re-selects, since a new login may
-resolve to a different identity. `loom auth whoami` shows the current
-selection alongside the token's own claims.
-
-A Principal also has no stored display name. A human-readable name comes
-from the IDP's own `name` claim, read live off a caller's own token at
-request time (`loom auth whoami`) -- not duplicated in the Catalog's
-database, so it can't drift out of sync with the IDP.
-
-## Troubleshooting
+### Troubleshooting
 
 - **Pods `CreateContainerConfigError`** -- almost always a missing/misnamed
   Secret or key (`kubectl describe pod` names the exact key it couldn't
   find).
 - **Pod stuck `CrashLoopBackOff` with entrypoint.sh's own log lines** (not
   a Python traceback) -- read them, they name the exact problem (unwritable
-  config path, missing DB password); see "Fail-fast behavior" above.
+  config path, missing DB password); see "Configuration" below.
 - **Pods `Running`/`Ready` but every request 500s** -- migration hasn't
-  completed yet, or completed against the wrong database. Check
-  `kubectl get job/loom-db-migrate` and its logs first.
+  completed yet, or completed against the wrong database. Check `kubectl
+  get job/loom-db-migrate` and its logs first.
 - **HPA shows `<unknown>` for CPU** -- metrics-server isn't installed, or
   the container has no `resources.requests.cpu` set (both Deployments here
   do, by default).
-- **One user gets `401 Not authorized` on Capability/Agent/Skill/Tool/
-  DataSource/DataProduct/ModelEndpoint requests, even right after `loom
-  auth login` succeeds** -- this is *not* a missing scope (a missing scope
-  is a `403`, not a `401`; see `require_scopes` in
-  `src/loom/api/catalog/dependencies.py`). A `401` here means
-  `resolve_principal` couldn't resolve the token's `sub` to exactly one
-  `Principal`, for one of two reasons, in the order it checks them -- the
-  CLI's error message names which one. (`/tenants`/`/principals` requests
-  don't go through `resolve_principal` at all -- see "Platform
-  administrator" above -- so this doesn't apply to `loom tenant`/`loom
-  principal` commands.)
-  1. **No `Principal` row exists yet** for that `sub` in the Catalog's own
-     database -- run `loom principal create --tenant-id <their tenant> \
-     --external-id <their sub>` as the platform administrator (see
-     "Platform administrator" above) to provision one.
-  2. **More than one `Principal` row matches that `sub`** (provisioned in
-     more than one Tenant -- `external_id` is only unique per Tenant, see
-     "How a caller's Tenant is resolved" above), **and no `X-Loom-Tenant-Id`
-     header disambiguates it.** `loom auth login` should have already
-     prompted for a selection in this case -- seeing this error usually
-     means that prompt was skipped (a non-interactive login, or the
-     tenant-listing call itself failed, both of which print their own
-     warning at login time) or the local selection was since cleared. This
-     is the expected, legitimate case for an identity provisioned in more
-     than one Tenant on purpose (e.g. a consultant) -- not a bug to fix,
-     just run `loom auth set-tenant <tenant_id>` to pick one. If it's *not*
-     expected (the same person was provisioned twice by accident), that's
-     a provisioning mistake to clean up instead. Either way the CLI's error
-     message names it as ambiguous, not missing, so it's distinguishable
-     from #1 above.
-  Re-running `loom auth login` does not fix either of these -- the token
-  it gets back will look identical.
+- **One user gets `401 Not authorized`** -- the token itself is the
+  problem: missing, expired, or otherwise fails to decode. `loom auth
+  login` again is the fix.
+- **One user gets `403`, even right after `loom auth login` succeeds** --
+  the token is fine; either `get_current_principal` couldn't resolve its
+  `sub` to a `Principal` in the requested Tenant, or the token's
+  scopes/roles don't cover the action (`InsufficientScopeError`). For the
+  Principal case, two possibilities: no `Principal` row exists yet for
+  that `sub` in that Tenant at all -- run `loom principal create
+  --tenant-id <their tenant> --external-id <their sub>` as the platform
+  administrator to provision one; or it exists in a *different* Tenant
+  than the request names -- legitimate for an identity provisioned in more
+  than one Tenant on purpose (e.g. a consultant), fixed by `loom auth
+  set-tenant <tenant_id>` rather than a new Principal. For the scope case,
+  the identity's assigned role doesn't grant the attempted action (see
+  "Authorization model" below) -- an IdP-side role change, not something
+  `loom principal create` fixes. Re-running `loom auth login` does not fix
+  any of these three -- the token it gets back will look identical.
+
+## Authorization model
+
+Access is governed by OAuth2 scopes of the form
+`catalog:{resource}:{action}`, bundled into five composite roles your IdP
+assigns. `src/loom/idp/catalog_roles.py` is the single source of truth;
+`loom idp register` declares all of it under the RESTful API client. See
+[docs/architecture.md](architecture.md#authorization-scopes-and-roles) for
+how a token's scopes are resolved and checked at request time.
+
+| Role | Grants |
+|---|---|
+| `catalog-viewer` | Read Capability/Agent/Skill/Tool/DataSource/DataProduct/ModelEndpoint |
+| `catalog-editor` | ...plus create/update (write) them |
+| `catalog-approver` | Read, plus lifecycle transitions (approve/publish/deprecate/retire) |
+| `catalog-admin` | Read, write, and transition -- full content-tier access |
+| `catalog-platform-admin` | Everything `catalog-admin` has, plus read/write on Tenant, Principal, and Environment |
+
+Only `catalog-platform-admin` can create Tenants or provision Principals;
+every other role operates strictly within whichever Tenant a Principal has
+already been provisioned into.
+
+### Assigning a role
+
+Roles and permissions are assigned entirely in the IdP -- there is no
+`loom` command for this. In Keycloak: **Users** → select or **Add user** →
+**Role mapping** → **Assign role** → **Filter by clients** → find the role
+(e.g. `catalog-viewer`) under your API client (`loom-catalog-api` by
+default) → **Assign**. Nothing else to configure on the account -- no IdP
+attribute carries a Tenant; that comes entirely from the `Principal` row
+(see [docs/architecture.md](architecture.md#multi-tenancy-and-principal-resolution)).
+
+Holding a role is necessary but not sufficient for content-tier access: a
+`Principal` row must also exist for that identity in the specific Tenant
+they'll work in, or every request 403s regardless of scope (see
+Troubleshooting above). Provision one:
+
+```
+loom principal create --tenant-id <id> --kind {user,agent,service_account} \
+  --external-id <their token's sub claim>
+```
+
+### Bootstrapping the first Tenant and Principal
+
+`loom db upgrade` already creates one Tenant (slug `default`) on an empty
+database, so a single-Tenant deployment needs nothing beyond the platform
+administrator's own login:
+
+1. Grant one human's IdP account the `catalog-platform-admin` role (see
+   "Assigning a role" above) -- this requires `loom idp register` to have
+   already run, since that's what creates the role.
+2. `loom auth login` as that person. `POST /tenants/{tenant_id}/principals`
+   only requires the `catalog:principal:write` scope
+   `catalog-platform-admin` grants -- not an already-provisioned
+   `Principal` -- so the CLI auto-registers one for this identity in the
+   `default` Tenant on first login (best-effort; `loom principal create`
+   below remains available if it can't reach the API).
+3. Only if `default` isn't enough:
+
+   ```
+   loom tenant create acme "Acme Corp"
+   loom principal create --tenant-id <id from `loom tenant list`> --kind user \
+     --external-id <sub from `loom auth whoami`>
+   ```
+
+Every subsequent Tenant/Principal goes through the same two commands --
+there's no separate bootstrap-only code path, so it's always
+policy-checked normally and audited (see
+[docs/architecture.md](architecture.md#audit-trail)).
+
+## Reference
+
+### Configuration
+
+Every container reads its configuration from a YAML file at
+`$LOOM_CONFIG_PATH`. `docker/entrypoint.sh` builds that file from plain
+environment variables at container start, then execs the real command --
+so in practice you configure the container via environment variables, not
+by hand-editing YAML.
+
+| Environment variable | Config key | Required |
+|---|---|---|
+| `LOOM_CONFIG_PATH` | *(where the file is written)* | yes for Kubernetes (must point inside the writable `config` `emptyDir` mount); optional for Compose/plain `docker run` |
+| `LOOM_DB_HOST` | `database.host` | yes |
+| `LOOM_DB_PORT` | `database.port` | no (default `5432`) |
+| `LOOM_DB_NAME` | `database.database` | no (default `loom`) |
+| `LOOM_DB_USERNAME` | `database.username` | no (default `loom`) |
+| `LOOM_DB_PASSWORD` | `database.password` | yes -- entrypoint.sh refuses to start without it (or `LOOM_ALLOW_NO_DB_PASSWORD=1` for trust-auth Postgres) |
+| `LOOM_AUTH_ISSUER` | `auth.issuer` | yes |
+| `LOOM_AUTH_AUDIENCE` | `auth.audience` | yes |
+| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | no -- derived from `auth.issuer` |
+| `LOOM_AUTH_MCP_AUDIENCE` | `auth.mcp_audience` | yes for catalog-mcp -- it validates tokens against this, not `auth.audience` |
+| `LOOM_AUTH_SWAGGER_CLIENT_ID` | `auth.swagger_client_id` | no -- only if exposing `/docs` (catalog-api only) |
+| `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no -- unused by the servers themselves |
+| `LOOM_CATALOG_API_BASE_URL` | `catalog.api_base_url` | no -- only matters running `loom` CLI commands inside the container |
+| `LOOM_IDP_CA_BUNDLE` | *(read directly by `loom.tls.build_ssl_context`)* | only if your IdP's CA isn't in the image's trust store |
+
+**Why a writable path, not a mounted Secret file, for config**: `loom
+config set` round-trips through `RootConfig.save()`, which
+`chmod(0o600)`s the file it just wrote on every `loom` invocation, not
+just `config set` -- so `$LOOM_CONFIG_PATH` can't point at a
+read-only-mounted Secret. Instead, secrets arrive as plain environment
+variables and entrypoint.sh writes them into a path the container itself
+owns (a small `emptyDir`, so this still works under
+`readOnlyRootFilesystem: true`).
+
+**Hand-authoring a config YAML directly**: `RootConfig.load()` requires the
+file to contain a `config_path` key matching its own path -- a file
+written by `loom config set`/entrypoint.sh always has one; a hand-authored
+file without it fails validation. Generate it with `loom config set` once
+and reuse that file instead.
+
+### `loom idp register` reference
+
+```
+loom idp register --issuer-url https://idp.example/realms/loom \
+  --client-id loom-catalog-api --api-base-url https://api.example.com
+```
+
+Prompts for the Keycloak admin username/password (the standard superadmin
+realm is `master`). To avoid the prompt, set
+`LOOM_IDP_ADMIN_USERNAME`/`LOOM_IDP_ADMIN_PASSWORD`, or pass
+`--admin-username`/`--admin-password` (flags > env vars > prompt). If the
+admin account lives in a different realm or client, pass
+`--admin-realm`/`--admin-client-id`.
+
+Registers all four clients described in
+[docs/architecture.md](architecture.md#oauth-client-topology) in one run.
+Each confidential client's generated secret is printed once -- store it
+securely. Every step is idempotent against Keycloak (a 409 on an
+already-registered client is treated as success), so a run that fails
+partway through is safe to re-run in full. Assigning roles to actual
+users/service accounts is a separate step (see "Authorization model"
+above).
+
+Each client's `--*-client-id` is what config/tokens reference; its
+human-readable Keycloak "Name" is separate (`Loom :: RESTful API`, `Loom
+:: MCP`, `Loom :: Swagger UI`, `Loom :: CLI` by default) -- override with
+`--client-name`/`--mcp-client-name`/`--swagger-client-name`/
+`--cli-client-name`. `--mcp-client-id`/`--swagger-client-id`/
+`--cli-client-id` default to `{client-id}-mcp`/`-swagger`/`-cli`.
+
+**Session length**: how long a CLI login lasts is Keycloak's realm/client
+"Access Token Lifespan" (commonly a few minutes by default); `loom`
+doesn't lengthen it -- the cached `refresh_token` is stored but not yet
+used to silently renew, so a lapsed session means a full `loom auth login`
+again. Override it for just the CLI client at registration time (safe to
+re-run against an already-registered client to change later):
+
+```
+loom idp register --issuer-url https://idp.example/realms/loom \
+  --client-id loom-catalog-api --api-base-url https://api.example.com \
+  --access-token-lifespan 1800
+```
+
+(seconds; also settable via `LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN`, flag
+takes precedence.)
+
+### `loom db` reference
+
+```
+loom db upgrade [<revision>]     # apply migrations; head if omitted
+loom db downgrade <revision>
+loom db current
+loom db history
+loom db revision -m "message" [--autogenerate]
+```
+
+`upgrade` on an empty database also creates one Tenant (slug `default`) --
+a no-op, safe to re-run, once any Tenant exists.
+
+### `loom tenant` / `loom principal` reference
+
+Neither is a `VersionedEntity` -- no `lifecycle_state`/version history, no
+`versions`/`transition`. Tenant's `update` is a real in-place `PATCH`;
+Principal has no `update` at all -- its human-readable name comes live from
+the IdP's own `name` claim, not a stored field. Neither has `delete`.
+
+```
+loom tenant create <slug> <name>
+loom tenant list [--limit N] [--offset N]
+loom tenant show <tenant_id>
+loom tenant update <tenant_id> <name>
+
+loom principal create --tenant-id <id> --kind {user,agent,service_account} \
+  --external-id <sub>
+loom principal list [--tenant-id <id>] [--limit N] [--offset N]
+loom principal show <principal_id>
+```
+
+`--external-id` is the identity a token has to carry (its `sub` claim) for
+`get_current_principal` to match it up at request time. `--tenant-id` is
+always required on `principal create` -- no token carries one to default
+from. `principal list` defaults it to the locally-selected Tenant
+(`loom auth set-tenant`) instead.
+
+### Live IdP integration tests
+
+`tests/integration/` runs the Swagger/CLI login flows and a claims round
+trip against a real Keycloak instance instead of a mocked transport, and
+is excluded from the default `pytest` run (self-skips without live
+credentials):
+
+```
+export LOOM_IDP_ISSUER_URL=https://idp.example/realms/loom
+export LOOM_IDP_ISSUER_ADMIN_USERNAME=admin
+export LOOM_IDP_ISSUER_ADMIN_PASSWORD=<secret>
+export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem   # only if needed, see above
+
+pytest tests/integration/ -m live_idp
+```
+
+Three tiers, gated independently:
+
+- **`test_discovery.py`** needs only `LOOM_IDP_ISSUER_URL` -- confirms the
+  issuer is reachable and its discovery document advertises what
+  `security.py` needs plus the device code grant.
+- **`test_swagger_login.py`** / **`test_cli_device_flow.py`** need admin
+  credentials too -- register throwaway `loom-it-*` clients and confirm
+  their Keycloak-side config lines up with the live discovery document;
+  the device-flow test drives one real `start()`/`poll()` round trip.
+- **`test_claim_chain.py`** registers a throwaway *password-grant* client
+  purely to pull a real signed token to inspect (Swagger/CLI never use
+  this grant), decodes it with the real `TokenValidator` against the live
+  JWKS, and runs a real bearer token through an in-process FastAPI app.
+
+Every object these tests create is prefixed `loom-it-` and deleted at the
+end of the run. If a run is interrupted between setup and teardown, a
+`loom-it-*` object can be left behind -- worth a manual check afterward,
+particularly `loom-it-claims-probe`, the one object in this suite with
+direct access grants enabled. If admin credentials are rejected, the whole
+suite skips with the Keycloak error rather than failing.
+
+### Live Postgres integration tests
+
+A second, independent live suite exercises a real Postgres instance
+instead of the in-memory sqlite the rest of `pytest` uses, migrated via
+the packaged Alembic revisions -- catches things sqlite's looser typing
+can hide. Also self-skips without live credentials:
+
+```
+export LOOM_DB_HOST=localhost
+# LOOM_DB_PORT/LOOM_DB_NAME/LOOM_DB_USERNAME/LOOM_DB_PASSWORD default
+# the same way they do for `loom db upgrade` -- see "Configuration" above.
+
+pytest tests/integration/ -m live_db
+```
+
+Point it at a disposable database, not production: migrations are applied
+and left in place, and each test runs inside a transaction rolled back on
+exit -- but neither of those makes it safe to run against a database
+anything else depends on.
