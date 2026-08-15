@@ -469,3 +469,35 @@ Point it at a disposable database, not production: migrations are applied
 and left in place, and each test runs inside a transaction rolled back on
 exit -- but neither of those makes it safe to run against a database
 anything else depends on.
+
+### Live LLM integration test
+
+A third, independent live suite proves a Capability/ModelEndpoint/Agent
+created through the real Catalog REST routes actually wires up to a real
+model: it drives an in-memory Catalog (Keycloak/Postgres aren't the live
+dependency here -- `test_claim_chain.py` already covers the IdP path), then
+hands the created `ModelEndpoint` to a real
+[LangChain](https://python.langchain.com/) agent
+(`langchain.agents.create_agent`, LangGraph-backed under the hood) and
+asserts it gets a real reply back. Self-skips (with a specific reason)
+when nothing answers, when a server answers but has no model loaded, or
+when the `live-llm` dependency group isn't installed:
+
+```
+uv sync --group live-llm
+
+# LOOM_LLM_BASE_URL defaults to http://localhost:1234 (LM Studio's
+# default) -- override it for vLLM/ollama/any other OpenAI-compatible
+# server. No credentials needed; local servers don't check the API key.
+export LOOM_LLM_BASE_URL=http://localhost:1234
+
+pytest tests/integration/ -m live_llm
+```
+
+The model actually exercised is whatever the live server reports at
+`GET {base_url}/v1/models` -- discovered at test time, never hardcoded,
+since there's no way to know what's loaded locally. The `ModelEndpoint`
+row itself stores the bare origin (`http://localhost:1234`, no `/v1`); the
+test appends the OpenAI-compatible path only when building the LangChain
+client -- see `test_live_llm.py`'s module docstring for why that split
+isn't yet a documented contract anywhere else in the codebase.

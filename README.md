@@ -35,16 +35,21 @@ uv run pytest
 ```
 
 Runs against an in-memory sqlite DB and a mocked IdP transport; fast, no
-external dependencies. Two live suites are excluded by default (self-skip
-without credentials) and exercise a real Keycloak instance and a real
-Postgres instance respectively -- see
-[docs/admin-guide.md](docs/admin-guide.md#live-idp-integration-tests) and
-[docs/admin-guide.md](docs/admin-guide.md#live-postgres-integration-tests)
-for the environment variables and `-m live_idp`/`-m live_db` invocations.
-Point the live-IdP suite at a disposable Keycloak realm, not a shared
-one -- every object it creates is prefixed `loom-it-` and torn down at the
-end of the run, but an interrupted run can leave one behind. Point the
-live-Postgres suite at a disposable database, not production.
+external dependencies. Three live suites are excluded by default
+(self-skip without credentials/a running service) and exercise a real
+Keycloak instance, a real Postgres instance, and a real OpenAI-compatible
+LLM server respectively -- see
+[docs/admin-guide.md](docs/admin-guide.md#live-idp-integration-tests),
+[docs/admin-guide.md](docs/admin-guide.md#live-postgres-integration-tests),
+and [docs/admin-guide.md](docs/admin-guide.md#live-llm-integration-test)
+for the environment variables and `-m live_idp`/`-m live_db`/`-m live_llm`
+invocations. Point the live-IdP suite at a disposable Keycloak realm, not
+a shared one -- every object it creates is prefixed `loom-it-` and torn
+down at the end of the run, but an interrupted run can leave one behind.
+Point the live-Postgres suite at a disposable database, not production.
+The live-LLM suite needs `uv sync --group live-llm` first (LangChain
+isn't installed by default) and a local OpenAI-compatible
+server (e.g. LM Studio) with a model loaded.
 
 ## How to release this
 
