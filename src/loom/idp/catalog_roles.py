@@ -51,3 +51,18 @@ ROLE_BUNDLES: dict[str, frozenset[str]] = {
     # only check for these scopes, not an already-resolved Principal.
     'catalog-platform-admin': content_scopes() | platform_scopes(),
 }
+
+
+def expand_claims_to_scopes(claims: dict) -> frozenset[str]:
+    """Expand a token's scope/roles claims into a flat scope set. Shared by
+    the API (`require_scopes`, `list_my_tenants`) and the CLI (`loom auth
+    login`'s platform-admin self-registration) -- both need the exact same
+    reading of a token's permissions, and this module is the single source
+    of truth for the vocabulary they expand against."""
+    scopes: set[str] = set()
+    scope_claim = claims.get('scope')
+    if scope_claim:
+        scopes.update(scope_claim.split())
+    for role in claims.get('roles', []):
+        scopes.update(ROLE_BUNDLES.get(role, {role}))
+    return frozenset(scopes)

@@ -6,7 +6,7 @@ import jwt
 from jwt import PyJWKClient
 
 from loom.config.auth_config import AuthConfig
-from loom.idp.catalog_roles import ROLE_BUNDLES
+from loom.idp.catalog_roles import expand_claims_to_scopes  # noqa: F401
 from loom.tls import build_ssl_context
 
 
@@ -103,17 +103,6 @@ class TokenValidator:
             audience=self._config.audience,
             issuer=self._config.issuer,
         )
-
-
-def expand_claims_to_scopes(claims: dict) -> frozenset[str]:
-    """Expand a token's scope/roles claims into a flat scope set."""
-    scopes: set[str] = set()
-    scope_claim = claims.get('scope')
-    if scope_claim:
-        scopes.update(scope_claim.split())
-    for role in claims.get('roles', []):
-        scopes.update(ROLE_BUNDLES.get(role, {role}))
-    return frozenset(scopes)
 
 
 def assert_scopes(scopes: frozenset[str], *required: str) -> None:

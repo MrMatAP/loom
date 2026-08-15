@@ -275,6 +275,204 @@ async def test_auth_login_survives_a_tenant_listing_connection_error(
     assert config.auth.session.tenant_id is None
 
 
+def _device_code_client_with_token(token: str):
+    """Like `_FakeDeviceCodeClient`, but `poll()` returns a given access
+    token verbatim instead of the plain opaque `'access-tok'` string --
+    needed wherever a test must exercise claims read off the token itself
+    (`_register_platform_admin_in_default_tenant` reads `scope`/`sub`)."""
+
+    class _Client(_FakeDeviceCodeClient):
+        async def poll(self, authorization):
+            del authorization
+            return DeviceTokens(
+                access_token=token, refresh_token='refresh-tok', expires_in=300
+            )
+
+    return _Client
+
+
+def _fake_catalog_client_with_principal_post(
+    *, items=(), post_error: Exception | None = None, post_calls: list | None = None
+):
+    """Extends `_fake_catalog_client` with `POST` support, for tests that
+    exercise `_register_platform_admin_in_default_tenant`'s self-
+    registration call. Records every `post()` call into `post_calls` (if
+    given) so a test can assert on the path/payload without a real API."""
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def get(self, path, params=None):
+            del path, params
+            return {'items': list(items), 'total': len(items), 'limit': 50, 'offset': 0}
+
+        async def post(self, path, payload):
+            if post_calls is not None:
+                post_calls.append((path, payload))
+            if post_error is not None:
+                raise post_error
+            return {'id': str(uuid.uuid4()), **payload}
+
+    return _Client
+
+
+@pytest.mark.asyncio
+async def test_auth_login_registers_platform_admin_in_default_tenant(
+    monkeypatch, tmp_path, capsys
+):
+    """A fresh platform-admin login (full catalog-wide scope, no Principal
+    row anywhere yet) auto-provisions itself into the `default` Tenant --
+    see `_register_platform_admin_in_default_tenant`."""
+    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
+    monkeypatch.setattr(
+        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
+    )
+    tenant_id = uuid.uuid4()
+    post_calls: list = []
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient',
+        _fake_catalog_client_with_principal_post(
+            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
+            post_calls=post_calls,
+        ),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+
+    assert result == 0
+    assert post_calls == [
+        (
+            f'/api/v1/tenants/{tenant_id}/principals',
+            {'kind': 'user', 'external_id': 'admin-user'},
+        )
+    ]
+    assert (
+        'Registered a Principal for you in the default Tenant'
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.asyncio
+async def test_auth_login_does_not_register_a_non_admin_identity(monkeypatch, tmp_path):
+    """A caller without `catalog:principal:write` (an ordinary Tenant user,
+    not a platform admin) must never trigger the self-registration POST --
+    it isn't theirs to make, and the server would 403 it anyway."""
+    token = _token_with_claims(sub='ordinary-user', scope='catalog:capability:read')
+    monkeypatch.setattr(
+        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
+    )
+    tenant_id = uuid.uuid4()
+    post_calls: list = []
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient',
+        _fake_catalog_client_with_principal_post(
+            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
+            post_calls=post_calls,
+        ),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+
+    assert result == 0
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_auth_login_skips_registration_without_a_default_tenant(
+    monkeypatch, tmp_path
+):
+    """A platform admin still self-registers nowhere if there's no `slug ==
+    'default'` Tenant to target -- this step only ever targets that one
+    Tenant, never guesses among others."""
+    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
+    monkeypatch.setattr(
+        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
+    )
+    post_calls: list = []
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient',
+        _fake_catalog_client_with_principal_post(
+            items=[{'id': str(uuid.uuid4()), 'slug': 'acme', 'name': 'Acme'}],
+            post_calls=post_calls,
+        ),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+
+    assert result == 0
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_auth_login_treats_a_duplicate_principal_as_already_registered(
+    monkeypatch, tmp_path, capsys
+):
+    """A second login for the same platform admin hits the Tenant's
+    uniqueness constraint on `(tenant_id, external_id)` -- surfaced as a
+    422 -- and that must be silently treated as already-registered, not
+    reported as a failure. Uses sqlite's own wording here; production runs
+    Postgres, whose message is `duplicate key value violates unique
+    constraint "uq_principal_tenant_external_id"` instead -- the
+    `'duplicate key' in detail` arm in `_register_platform_admin_in_
+    default_tenant` is what covers that phrasing, not this test, so don't
+    "simplify" that check down to only the sqlite wording asserted here."""
+    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
+    monkeypatch.setattr(
+        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
+    )
+    tenant_id = uuid.uuid4()
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient',
+        _fake_catalog_client_with_principal_post(
+            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
+            post_error=CatalogApiError(
+                422,
+                'UNIQUE constraint failed: principal.tenant_id, principal.external_id',
+            ),
+        ),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert 'Could not auto-register' not in out
+
+
+@pytest.mark.asyncio
+async def test_auth_login_warns_when_registration_fails_for_another_reason(
+    monkeypatch, tmp_path, capsys
+):
+    """Any other failure (e.g. this scope guess turning out to be wrong
+    server-side, or a network error) is a soft warning that still names
+    the manual fallback -- never a reason to fail the login."""
+    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
+    monkeypatch.setattr(
+        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
+    )
+    tenant_id = uuid.uuid4()
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient',
+        _fake_catalog_client_with_principal_post(
+            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
+            post_error=CatalogApiError(403, 'Forbidden'),
+        ),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert 'Could not auto-register a Principal' in out
+    assert 'loom principal create' in out
+
+
 @pytest.mark.asyncio
 async def test_auth_login_requires_issuer(tmp_path):
     config = _configured_root_config(tmp_path)

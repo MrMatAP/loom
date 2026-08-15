@@ -8,6 +8,7 @@ import pydantic
 
 from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
+from loom.idp.catalog_roles import expand_claims_to_scopes
 from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError
 
 # Claims worth calling out by name in `whoami` -- everything else in the
@@ -125,6 +126,8 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
         return
 
     tenants = page['items']
+    await _register_platform_admin_in_default_tenant(client, tenants, access_token)
+
     if not tenants:
         print(
             'No Tenant is available to this identity yet -- ask your admin to '
@@ -161,6 +164,73 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
             print(f"Selected Tenant '{tenant['slug']}' ({tenant['id']}).")
             return
         print(f'Invalid selection {choice!r}, try again.')
+
+
+async def _register_platform_admin_in_default_tenant(
+    client: CatalogClient, tenants: list[dict], access_token: str
+) -> None:
+    """First-login convenience for a platform administrator (see
+    docs/admin-guide.md's "Platform administrator" section): that identity
+    has full catalog-wide scope but, by definition, starts with no
+    Principal row of its own anywhere -- every content-tier route
+    (Capability/Agent/Skill/Tool/DataSource/DataProduct/ModelEndpoint)
+    still requires one in whichever Tenant the request path names (see
+    `get_current_principal`). Rather than requiring a manual `loom
+    principal create --tenant-id <default> --kind user --external-id <sub>`
+    right after every platform admin's very first login, do it here
+    automatically, targeting the `default` Tenant `loom db upgrade` already
+    seeds (`_seed_default_tenant`, `src/loom/cli/db.py`) -- the only Tenant
+    this can target without asking which one.
+
+    `POST /tenants/{tenant_id}/principals` only requires
+    `catalog:principal:write` (`get_audit_actor`, not `get_current_
+    principal`, backs its audit attribution -- see
+    `src/loom/api/catalog/audit.py`), which is exactly what makes this
+    work before any Principal exists.
+
+    Idempotent and best-effort: a second login for the same identity hits
+    the Tenant's `uq_principal_tenant_external_id` unique constraint
+    (surfaced as a 422 by `flush_or_raise`) and is silently treated as
+    already-registered; anything else (no `default` Tenant, the scope
+    guess below being wrong, a network error) is a soft warning, never a
+    reason to fail the login -- `loom principal create` remains available
+    to run by hand regardless."""
+    try:
+        claims = jwt.decode(access_token, options={'verify_signature': False})
+    except jwt.PyJWTError:
+        # Not a decodable JWT (e.g. an opaque token from an IDP that issues
+        # one) -- there's no scope claim to read here either way, so
+        # there's nothing this step can safely act on.
+        return
+    if 'catalog:principal:write' not in expand_claims_to_scopes(claims):
+        return
+    default_tenant = next((t for t in tenants if t['slug'] == 'default'), None)
+    if default_tenant is None:
+        return
+    sub = claims.get('sub')
+    if not isinstance(sub, str) or not sub:
+        return
+
+    try:
+        await client.post(
+            f'/api/v1/tenants/{default_tenant["id"]}/principals',
+            {'kind': 'user', 'external_id': sub},
+        )
+    except CatalogApiError as exc:
+        detail = exc.detail.lower()
+        if exc.status_code == 422 and ('unique' in detail or 'duplicate key' in detail):
+            return  # already registered from a prior login
+        print(
+            f'Could not auto-register a Principal for you in the default '
+            f'Tenant ({exc}); run `loom principal create --tenant-id '
+            f'{default_tenant["id"]} --kind user --external-id {sub}` '
+            'yourself if you need content-tier access there.'
+        )
+    else:
+        # No UUID here -- the tenant-selection step right after this one
+        # (still to run when this is the only available Tenant) prints the
+        # same id on the very next line; repeating it would just be noise.
+        print('Registered a Principal for you in the default Tenant.')
 
 
 async def auth_logout(config: RootConfig, args: argparse.Namespace) -> int:
