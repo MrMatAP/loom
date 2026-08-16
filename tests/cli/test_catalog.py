@@ -1,4 +1,5 @@
 import argparse
+import tempfile
 import time
 import typing
 import uuid
@@ -111,6 +112,19 @@ def _reset_fake_client(monkeypatch):
 TENANT_ID = uuid.uuid4()
 
 
+def _write_prompt_file(text: str = 'You are a helpful assistant.') -> str:
+    """A standalone temp file for `--prompt-file` to point at -- these tests
+    exercise `_agent_payload`'s file-reading, not a real CLI invocation, so
+    there's no `tmp_path` fixture in scope at every call site; the file is
+    left for the OS to clean up rather than threading a fixture through
+    every test."""
+    with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.txt', delete=False
+    ) as handle:
+        handle.write(text)
+        return handle.name
+
+
 def _agent_args(**overrides):
     defaults = {
         'name': 'My Agent',
@@ -118,7 +132,7 @@ def _agent_args(**overrides):
         'layer': 'business_tech',
         'model_binding_id': None,
         'llm_config': '{}',
-        'prompt': 'You are a helpful assistant.',
+        'prompt_file': _write_prompt_file(),
         'memory_scope': 'session',
         'permission_boundary': '{}',
         'tenant_id': TENANT_ID,
@@ -350,6 +364,29 @@ async def test_agent_create_rejects_invalid_llm_config_json(tmp_path):
     result = await agent_create(config, _agent_args(llm_config='not json'))
     assert result == 1
     assert _FakeCatalogClient.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_agent_create_rejects_missing_prompt_file(tmp_path):
+    config = _logged_in_config(tmp_path)
+    missing_path = str(tmp_path / 'does-not-exist.txt')
+    result = await agent_create(config, _agent_args(prompt_file=missing_path))
+    assert result == 1
+    assert _FakeCatalogClient.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_agent_create_reads_prompt_from_file(tmp_path):
+    config = _logged_in_config(tmp_path)
+    prompt_path = tmp_path / 'prompt.txt'
+    prompt_path.write_text('You triage incoming support tickets.')
+
+    result = await agent_create(config, _agent_args(prompt_file=str(prompt_path)))
+
+    assert result == 0
+    assert _FakeCatalogClient.last_call['payload']['prompt'] == (
+        'You triage incoming support tickets.'
+    )
 
 
 @pytest.mark.asyncio

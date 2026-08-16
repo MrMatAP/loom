@@ -87,7 +87,7 @@ loom model create claude-opus "Claude Opus" \
 loom agent create triage-bot "Triage Bot" \
   --layer business_tech --memory-scope session \
   --model-binding-id <entity_id from the `model create` output above> \
-  --prompt "You triage incoming support tickets."
+  --prompt-file ./triage-bot-prompt.txt
 
 loom agent list
 loom agent show <entity_id>

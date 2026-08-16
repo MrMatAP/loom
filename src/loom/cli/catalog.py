@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import functools
 import json
+import pathlib
 import time
 import typing
 import uuid
@@ -436,13 +437,18 @@ def _agent_payload(args: argparse.Namespace) -> dict | None:
     except (ValueError, TypeError) as exc:
         console.print(f'[red]{exc}[/red]')
         return None
+    try:
+        prompt = pathlib.Path(args.prompt_file).read_text()
+    except OSError as exc:
+        console.print(f'[red]--prompt-file: {exc}[/red]')
+        return None
     return {
         'name': args.name,
         'description': args.description,
         'layer': args.layer,
         'model_binding_id': _uuid_str(args.model_binding_id),
         'llm_config': llm_config,
-        'prompt': args.prompt,
+        'prompt': prompt,
         'memory_scope': args.memory_scope,
         'permission_boundary': permission_boundary,
     }
@@ -1110,7 +1116,12 @@ def _add_agent_fields(parser: argparse.ArgumentParser) -> None:
         default='{}',
         help='Model invocation overrides as a JSON object, defaults to {}',
     )
-    parser.add_argument('--prompt', required=True, help='The versioned system prompt')
+    parser.add_argument(
+        '--prompt-file',
+        dest='prompt_file',
+        required=True,
+        help='Path to a file containing the versioned system prompt',
+    )
     parser.add_argument(
         '--memory-scope',
         dest='memory_scope',
