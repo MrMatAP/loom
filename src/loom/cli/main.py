@@ -461,7 +461,7 @@ async def main() -> int:
         return await args.func(config, args)
     except KeyboardInterrupt:
         return 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(e)
     return 1
 

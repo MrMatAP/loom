@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+import loom.config
+
 
 class RootConfigAware(BaseModel):
     """
@@ -12,16 +14,16 @@ class RootConfigAware(BaseModel):
     outside __init__. This is required for pydantic to not complain about it.
     """
 
-    _root_config: 'RootConfig' = None  # noqa: F821
+    _root_config: loom.config.RootConfig = None
 
-    def propagate_root_config(self, root_config: 'RootConfig') -> None:  # noqa: F821
+    def propagate_root_config(self, root_config: loom.config.RootConfig) -> None:
         """
         Evaluate all attributes of this instance. If the field has a type that
         inherits from this class then recursively invoke ourselves.
         Args:
             root_config (RootConfig): The root configuration instance
         """
-        self._root_config = root_config  # noqa: F821
+        self._root_config = root_config
         for attr in dict(self).values():
             if issubclass(type(attr), RootConfigAware):
                 attr.propagate_root_config(root_config)
