@@ -279,7 +279,7 @@ async def main() -> int:
             '--client-name',
             dest='client_name',
             default=None,
-            help="Human-readable API client name, defaults to 'Loom :: RESTful API'",
+            help="Human-readable API client name, defaults to 'Loom :: REST'",
         )
         idp_register_parser.add_argument(
             '--api-base-url',

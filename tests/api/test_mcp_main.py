@@ -88,7 +88,8 @@ async def test_lifespan_builds_the_token_validator_against_the_mcp_audience(
     sharing `config.auth` wholesale with the REST API."""
     captured: dict[str, object] = {}
 
-    def _capture_and_build(config):
+    def _capture_and_build(config, discovery=None):
+        del discovery
         captured['config'] = config
         return _FakeTokenValidator({})
 
@@ -131,7 +132,9 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
             },
         }
     )
-    monkeypatch.setattr(mcp_main, 'TokenValidator', lambda config: token_validator)
+    monkeypatch.setattr(
+        mcp_main, 'TokenValidator', lambda config, discovery=None: token_validator
+    )
     monkeypatch.setattr(
         mcp_main, 'get_async_session_factory', lambda config: async_session_factory
     )
@@ -213,7 +216,9 @@ async def test_mcp_tool_call_over_real_http_targets_the_given_tenant(
             },
         }
     )
-    monkeypatch.setattr(mcp_main, 'TokenValidator', lambda config: token_validator)
+    monkeypatch.setattr(
+        mcp_main, 'TokenValidator', lambda config, discovery=None: token_validator
+    )
     monkeypatch.setattr(
         mcp_main, 'get_async_session_factory', lambda config: async_session_factory
     )

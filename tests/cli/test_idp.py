@@ -123,7 +123,7 @@ async def test_idp_register_defaults_client_names_to_indicative_labels(
 
     fake = captured['client']
     assert [c['client_name'] for c in fake.registered_confidential_clients] == [
-        'Loom :: RESTful API',
+        'Loom :: REST',
         'Loom :: MCP',
     ]
     assert [c['client_name'] for c in fake.registered_public_clients] == [
@@ -183,7 +183,9 @@ async def test_idp_register_updates_and_saves_all_auth_config_fields(
 
     assert config.auth.issuer == 'https://idp.example/realms/loom'
     assert config.auth.audience == 'loom-catalog-api'
-    assert config.auth.discovery_url is None
+    assert config.auth.discovery_url == (
+        'https://idp.example/realms/loom/.well-known/openid-configuration'
+    )
     assert config.auth.mcp_audience == 'loom-catalog-api-mcp'
     assert config.auth.swagger_client_id == 'loom-catalog-api-swagger'
     assert config.auth.cli_client_id == 'loom-catalog-api-cli'
@@ -196,7 +198,12 @@ async def test_idp_register_updates_and_saves_all_auth_config_fields(
 
 
 @pytest.mark.asyncio
-async def test_idp_register_resets_stale_discovery_url(monkeypatch, tmp_path):
+async def test_idp_register_recomputes_discovery_url_from_issuer(monkeypatch, tmp_path):
+    """A stale `discovery_url` left over from a previous IdP must be
+    overwritten with one derived from the freshly-registered issuer, not
+    just nulled out -- `discovery_url` is now the primary, stored value
+    (see `security.discover_and_resolve_issuer`), so leaving it unset would
+    make a freshly-registered environment start unconfigured."""
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
     config_path = tmp_path / 'config.yaml'
@@ -211,9 +218,10 @@ async def test_idp_register_resets_stale_discovery_url(monkeypatch, tmp_path):
 
     await idp_register(config, _base_args())
 
-    assert config.auth.discovery_url is None
+    expected = 'https://idp.example/realms/loom/.well-known/openid-configuration'
+    assert config.auth.discovery_url == expected
     reloaded = RootConfig.load(config_path=config_path)
-    assert reloaded.auth.discovery_url is None
+    assert reloaded.auth.discovery_url == expected
 
 
 @pytest.mark.asyncio

@@ -16,12 +16,7 @@ from .environment.router import router as environment_router
 from .exceptions import register_exception_handlers
 from .model_endpoint.router import router as model_endpoint_router
 from .principal.router import router as principal_router
-from .security import (
-    OidcDiscoveryDocument,
-    TokenValidator,
-    default_discovery_url,
-    discover_oidc,
-)
+from .security import TokenValidator, discover_and_resolve_issuer
 from .skill.router import router as skill_router
 from .tenant.router import router as tenant_router
 from .tool.router import router as tool_router
@@ -57,17 +52,18 @@ def create_app(config: RootConfig) -> FastAPI:
     # Resolved once, here, rather than separately in the lifespan too:
     # `discovery` is also what `TokenValidator` above reads its `jwks_uri`
     # from, so a configured issuer costs exactly one discovery-document
-    # fetch, not two. An unconfigured issuer (e.g. tests that never intend
-    # to exercise auth) must still let the app construct, so this stays
-    # `None` -- and the flow URLs stay unset -- rather than fetching against
-    # an empty base URL.
+    # fetch, not two. `discover_and_resolve_issuer` also reconciles
+    # `config.auth.issuer` against what the discovery document reports --
+    # see its docstring -- and raises immediately (failing this whole
+    # import, before `run()` ever calls `uvicorn.run`) if the discovery
+    # endpoint doesn't respond or the stored issuer disagrees with it. An
+    # entirely unconfigured issuer/discovery_url (e.g. tests that never
+    # intend to exercise auth) must still let the app construct, so this
+    # stays `None` -- and the flow URLs stay unset -- rather than fetching
+    # against an empty base URL.
     flow = oauth2_scheme.model.flows.authorizationCode
-    discovery: OidcDiscoveryDocument | None = None
-    if config.auth.issuer:
-        discovery_url = config.auth.discovery_url or default_discovery_url(
-            config.auth.issuer
-        )
-        discovery = discover_oidc(discovery_url)
+    discovery = discover_and_resolve_issuer(config)
+    if discovery is not None:
         flow.authorizationUrl = discovery.authorization_endpoint
         flow.tokenUrl = discovery.token_endpoint
 

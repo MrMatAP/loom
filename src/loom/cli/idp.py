@@ -4,6 +4,7 @@ import os
 
 from loom.config import RootConfig
 from loom.idp.client import catalog_role_definitions
+from loom.idp.discovery import default_discovery_url
 from loom.idp.keycloak import KeycloakAdminClient
 
 
@@ -86,7 +87,7 @@ async def _register_api_client(
     """Register the confidential RESTful API resource-server client and
     declare the shared scope/role vocabulary under it -- the single source
     of roles every public client's client-roles mapper reads from."""
-    client_name = args.client_name or 'Loom :: RESTful API'
+    client_name = args.client_name or 'Loom :: REST'
     result = await client.register_client(
         client_id=args.client_id, client_name=client_name, service_account=True
     )
@@ -105,12 +106,18 @@ async def _register_api_client(
 
     config.auth.issuer = issuer_url
     config.auth.audience = result.client_id
-    config.auth.discovery_url = None
+    # `discovery_url` is the primary, stored value going forward (the
+    # server re-derives `issuer` from it, and fails startup if a stored
+    # `issuer` ever disagrees -- see `security.discover_and_resolve_
+    # issuer`); populate it here too, rather than leaving it to whatever
+    # was there before, so a freshly-registered environment starts
+    # consistent instead of relying on the two ever being reconciled later.
+    config.auth.discovery_url = default_discovery_url(issuer_url)
     config.save()
     print(
         f'Updated local config: auth.issuer={issuer_url}, '
-        f'auth.audience={result.client_id} '
-        '(auth.discovery_url reset to re-derive)'
+        f'auth.audience={result.client_id}, '
+        f'auth.discovery_url={config.auth.discovery_url}'
     )
     return result.client_id
 

@@ -38,6 +38,7 @@ from loom.api.catalog.main import create_app
 from loom.api.catalog.security import TokenValidator, expand_claims_to_scopes
 from loom.config import RootConfig
 from loom.idp.catalog_roles import ROLE_BUNDLES
+from loom.idp.discovery import default_discovery_url, discover_oidc
 from loom.model import agent  # noqa: F401 -- table registration side effect
 from loom.model.base import Base
 from loom.model.enums import PrincipalKind
@@ -227,7 +228,8 @@ def test_token_validator_verifies_the_live_signature(
     config.auth.issuer = live_issuer
     config.auth.audience = resource_server_id
 
-    validator = TokenValidator(config.auth)
+    discovery = discover_oidc(default_discovery_url(live_issuer))
+    validator = TokenValidator(config.auth, discovery)
     claims = validator.decode(live_user_token)
 
     assert claims['sub']
@@ -246,7 +248,8 @@ def test_token_validator_also_accepts_the_mcp_audience(
     config.auth.issuer = live_issuer
     config.auth.audience = mcp_resource_server_id
 
-    validator = TokenValidator(config.auth)
+    discovery = discover_oidc(default_discovery_url(live_issuer))
+    validator = TokenValidator(config.auth, discovery)
     claims = validator.decode(live_user_token)
 
     assert claims['sub']
@@ -290,7 +293,11 @@ async def test_live_token_authorizes_a_real_api_request(
     app = create_app(config)
     # Bypass the Postgres-backed lifespan entirely: we only need the real
     # TokenValidator (set directly below), not the app's default database.
-    app.state.token_validator = TokenValidator(config.auth)
+    # A second discovery fetch (`create_app` above already did one via
+    # `discover_and_resolve_issuer`) -- acceptable here, this is a live
+    # integration test, not a latency-sensitive path.
+    discovery = discover_oidc(default_discovery_url(live_issuer))
+    app.state.token_validator = TokenValidator(config.auth, discovery)
 
     async def _override_session() -> AsyncGenerator[AsyncSession]:
         async with session_factory() as session:

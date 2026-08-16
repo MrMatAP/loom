@@ -7,7 +7,7 @@ from loom import default_config_path
 from loom.config import RootConfig
 from loom.model.engine import get_async_session_factory
 
-from ..security import TokenValidator
+from ..security import TokenValidator, discover_and_resolve_issuer
 from .server import McpState, create_mcp_server
 
 
@@ -36,20 +36,25 @@ def create_app(config: RootConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Deferred to lifespan, not built at create_app()/import time,
-        # because TokenValidator.__init__ resolves the IdP's OIDC discovery
-        # document over the network -- same reasoning as api.catalog.main's
-        # own lifespan.
+        # because `discover_and_resolve_issuer` resolves the IdP's OIDC
+        # discovery document (and reconciles `config.auth.issuer` against
+        # it -- see that function's docstring) over the network -- same
+        # reasoning as api.catalog.main's own lifespan.
         #
         # The MCP server is registered as its own resource-server client
         # (see `cli.idp.idp_register`), separate from the RESTful API's --
         # tokens must carry `mcp_audience` in `aud`, not `audience`, so the
         # validator is built off a copy of `config.auth` with `audience`
         # overridden rather than sharing the REST API's `TokenValidator`.
+        # `discover_and_resolve_issuer` is called against the *original*
+        # `config`, not the copy below -- it persists `config.auth.issuer`
+        # via `config.save()`, which a `model_copy()` can't do.
         state.session_factory = get_async_session_factory(config.database)
+        discovery = discover_and_resolve_issuer(config)
         mcp_auth_config = config.auth.model_copy(
             update={'audience': config.auth.mcp_audience}
         )
-        state.token_validator = TokenValidator(mcp_auth_config)
+        state.token_validator = TokenValidator(mcp_auth_config, discovery)
         # mcp_asgi_app's own lifespan starts its Streamable HTTP session
         # manager; without running it under the parent's lifespan here,
         # every tool call would fail with "Task group is not initialized".

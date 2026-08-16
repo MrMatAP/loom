@@ -49,7 +49,7 @@ async def test_missing_token_returns_401(api_client):
 
 def test_openapi_advertises_interactive_idp_login(monkeypatch):
     """Swagger's Authorize flow points at the configured IDP, per-op locked."""
-    from loom.api.catalog import main as main_module
+    from loom.api.catalog import security as security_module
     from loom.api.catalog.main import create_app
     from loom.api.catalog.security import OidcDiscoveryDocument
     from loom.config import RootConfig
@@ -58,14 +58,17 @@ def test_openapi_advertises_interactive_idp_login(monkeypatch):
     # `test_swagger_login.py` integration test relies on that -- it checks
     # `app.openapi()` right after `create_app()`, no lifespan run), so a
     # fake issuer needs the network call faked out too, not just left to
-    # fail against `idp.example`.
+    # fail against `idp.example`. Patched on `security_module` (where
+    # `discover_and_resolve_issuer` actually calls it), not `main_module` --
+    # `main.py` no longer imports `discover_oidc` directly.
     fake_discovery = OidcDiscoveryDocument(
+        issuer='https://idp.example/realms/loom',
         authorization_endpoint='https://idp.example/realms/loom/protocol/openid-connect/auth',
         token_endpoint='https://idp.example/realms/loom/protocol/openid-connect/token',
         jwks_uri='https://idp.example/realms/loom/protocol/openid-connect/certs',
     )
     monkeypatch.setattr(
-        main_module, 'discover_oidc', lambda discovery_url: fake_discovery
+        security_module, 'discover_oidc', lambda discovery_url: fake_discovery
     )
 
     config = RootConfig(config_path='/dev/null')

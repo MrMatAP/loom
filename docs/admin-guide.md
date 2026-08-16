@@ -196,6 +196,23 @@ failure back on `/docs`.
 - **Pods `Running`/`Ready` but every request 500s** -- migration hasn't
   completed yet, or completed against the wrong database. Check `kubectl
   get job/loom-db-migrate` and its logs first.
+- **Pod crashes on boot with "Could not reach the OIDC discovery
+  endpoint"** -- `auth.discovery_url` (`LOOM_AUTH_DISCOVERY_URL`) doesn't
+  respond. This is deliberate: there's no degraded startup, since every
+  request needs a working `jwks_uri` to validate a single token. Check the
+  URL is reachable from inside the cluster (not just your laptop) and that
+  `LOOM_IDP_CA_BUNDLE` is set if the IdP's CA isn't in the image's trust
+  store.
+- **Pod crashes on boot with "does not match the issuer published by its
+  own OIDC discovery document"** -- a stored `auth.issuer` disagrees with
+  what `auth.discovery_url` now reports (e.g. the IdP moved, or
+  `LOOM_AUTH_ISSUER` was set to the wrong value). `issuer` is the trust
+  anchor every token's `iss` claim is checked against, so this refuses to
+  start rather than picking a side. Fix it with `loom config set
+  auth.issuer <value>` (rerun the container after), or clear it (`loom
+  config set auth.issuer ''`) to let it re-derive from discovery on next
+  startup -- and stop pinning `LOOM_AUTH_ISSUER` explicitly if you don't
+  need to.
 - **HPA shows `<unknown>` for CPU** -- metrics-server isn't installed, or
   the container has no `resources.requests.cpu` set (both Deployments here
   do, by default).
@@ -305,9 +322,9 @@ by hand-editing YAML.
 | `LOOM_DB_NAME` | `database.database` | no (default `loom`) |
 | `LOOM_DB_USERNAME` | `database.username` | no (default `loom`) |
 | `LOOM_DB_PASSWORD` | `database.password` | yes -- entrypoint.sh refuses to start without it (or `LOOM_ALLOW_NO_DB_PASSWORD=1` for trust-auth Postgres) |
-| `LOOM_AUTH_ISSUER` | `auth.issuer` | yes |
+| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | yes -- the primary, stored value; startup fetches it and fails immediately if it doesn't respond |
 | `LOOM_AUTH_AUDIENCE` | `auth.audience` | yes |
-| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | no -- derived from `auth.issuer` |
+| `LOOM_AUTH_ISSUER` | `auth.issuer` | no -- auto-populated from `auth.discovery_url`'s own `issuer` field on first startup and persisted from then on; setting it explicitly only matters to pin a *specific* value startup then verifies against (see "Issuer mismatch" below) |
 | `LOOM_AUTH_MCP_AUDIENCE` | `auth.mcp_audience` | yes for catalog-mcp -- it validates tokens against this, not `auth.audience` |
 | `LOOM_AUTH_SWAGGER_CLIENT_ID` | `auth.swagger_client_id` | no -- only if exposing `/docs` (catalog-api only) |
 | `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no -- unused by the servers themselves |
@@ -353,7 +370,7 @@ users/service accounts is a separate step (see "Authorization model"
 above).
 
 Each client's `--*-client-id` is what config/tokens reference; its
-human-readable Keycloak "Name" is separate (`Loom :: RESTful API`, `Loom
+human-readable Keycloak "Name" is separate (`Loom :: REST`, `Loom
 :: MCP`, `Loom :: Swagger UI`, `Loom :: CLI` by default) -- override with
 `--client-name`/`--mcp-client-name`/`--swagger-client-name`/
 `--cli-client-name`. `--mcp-client-id`/`--swagger-client-id`/

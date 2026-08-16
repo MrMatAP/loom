@@ -1,12 +1,18 @@
 import dataclasses
 import uuid
 
-import httpx
 import jwt
 from jwt import PyJWKClient
 
+from loom.config import RootConfig
 from loom.config.auth_config import AuthConfig
 from loom.idp.catalog_roles import expand_claims_to_scopes  # noqa: F401
+from loom.idp.discovery import (
+    DiscoveryError,  # noqa: F401 -- re-exported: callers that fetch discovery themselves catch this
+    OidcDiscoveryDocument,
+    default_discovery_url,
+    discover_oidc,
+)
 from loom.tls import build_ssl_context
 
 
@@ -46,49 +52,92 @@ class PrincipalNotInTenantError(Exception):
     scope. Same transport-neutral split as the other two."""
 
 
-@dataclasses.dataclass(frozen=True)
-class OidcDiscoveryDocument:
-    """The subset of an IdP's OIDC discovery document
-    (`.well-known/openid-configuration`) this service depends on."""
-
-    authorization_endpoint: str
-    token_endpoint: str
-    jwks_uri: str
-
-
-def default_discovery_url(issuer: str) -> str:
-    """The spec-defined discovery document location for an OIDC issuer
-    (OpenID Connect Discovery 1.0), used when `AuthConfig.discovery_url`
-    isn't pinned to something else."""
-    return f'{issuer.rstrip("/")}/.well-known/openid-configuration'
+class IssuerMismatchError(RuntimeError):
+    """Raised by `discover_and_resolve_issuer` when a *stored* `auth.issuer`
+    disagrees with the issuer published by its own configured discovery
+    document. `issuer` is the trust anchor `TokenValidator.decode` checks
+    every token's `iss` claim against -- a stale or wrong value here is a
+    security-relevant misconfiguration, so this must stop the server from
+    starting rather than silently trusting either value."""
 
 
-def discover_oidc(discovery_url: str) -> OidcDiscoveryDocument:
-    """Fetch and parse the IdP's own discovery document -- the spec-defined
-    source for these endpoints, rather than assuming a particular IdP's URL
-    conventions (e.g. Keycloak's `.../protocol/openid-connect/{auth,token}`
-    layout, which doesn't generalize to every OIDC-compliant IdP)."""
-    ctx = build_ssl_context()
-    response = httpx.get(discovery_url, timeout=10.0, verify=ctx)
-    response.raise_for_status()
-    doc = response.json()
-    return OidcDiscoveryDocument(
-        authorization_endpoint=doc['authorization_endpoint'],
-        token_endpoint=doc['token_endpoint'],
-        jwks_uri=doc['jwks_uri'],
-    )
+def discover_and_resolve_issuer(config: RootConfig) -> OidcDiscoveryDocument | None:
+    """Fetch `config.auth`'s OIDC discovery document and reconcile
+    `config.auth.issuer` against it. `auth.discovery_url` is the primary,
+    stored value going forward (`loom idp register` populates it
+    alongside `issuer` -- see `cli/idp.py`); `issuer` is *derived* from it
+    on demand:
+
+    - Neither `discovery_url` nor `issuer` set: returns `None`. Auth is
+      simply not configured yet (e.g. local/test runs that never intend to
+      exercise it) -- not an error.
+    - `issuer` unset: populated from the discovery document's own
+      `issuer` field and persisted (`config.save()`) into whatever file
+      `config.config_path` names -- for a single long-lived process/host
+      that means later startups skip straight to the "agrees" case below.
+      Under Kubernetes, `$LOOM_CONFIG_PATH` typically lives in a per-pod
+      `emptyDir` (see docs/admin-guide.md's "Configuration" section), so
+      each pod still re-derives and re-saves it once on its own first
+      startup -- one extra discovery-document read per pod, not per
+      request, which is the only cost this is actually saving.
+    - `issuer` set and it disagrees with discovery: raises
+      `IssuerMismatchError` -- see that class's docstring. Reconfigure it
+      with `loom config set auth.issuer <value>` (or clear it to `''` to
+      have it re-derived next startup) once you know which is correct.
+    - `issuer` set and it agrees: no-op, returns the fetched document.
+
+    Raises `DiscoveryError` immediately if the discovery endpoint doesn't
+    respond -- there is no valid degraded startup: every request needs a
+    working `jwks_uri` to validate a single token. Called once, at server
+    startup (`main.py`/`mcp/main.py`), so a bad discovery/issuer fails the
+    process before it accepts any traffic, rather than surfacing as
+    confusing per-request 401s later.
+    """
+    auth = config.auth
+    if not auth.discovery_url and not auth.issuer:
+        return None
+    discovery_url = auth.discovery_url or default_discovery_url(auth.issuer)
+    discovery = discover_oidc(discovery_url)
+    if not auth.issuer:
+        auth.issuer = discovery.issuer
+        config.save()
+    elif auth.issuer != discovery.issuer:
+        raise IssuerMismatchError(
+            f'Configured auth.issuer ({auth.issuer!r}) does not match the '
+            f'issuer published by its own OIDC discovery document at '
+            f'{discovery_url!r} ({discovery.issuer!r}). Refusing to start '
+            'with an inconsistent trust anchor.\n'
+            f'Reconfigure it once you know which is correct:\n'
+            f'    loom config set auth.issuer {discovery.issuer}\n'
+            'or clear it to accept whatever discovery reports next startup:\n'
+            "    loom config set auth.issuer ''"
+        )
+    return discovery
 
 
 class TokenValidator:
     """Validates bearer JWTs against a JWKS-published signing key."""
 
     def __init__(
-        self, config: AuthConfig, discovery: OidcDiscoveryDocument | None = None
+        self, config: AuthConfig, discovery: OidcDiscoveryDocument | None
     ) -> None:
-        self._config = config
+        # `discovery` stays a required parameter (not defaulted) so every
+        # call site is forced to think about where it comes from -- but its
+        # *value* may legitimately be `None` (auth simply unconfigured, see
+        # `discover_and_resolve_issuer`), which is rejected here rather
+        # than attempting a self-fetch against an empty issuer: there used
+        # to be a fallback that did that, and it produced a confusing
+        # broken-URL error instead of this clear one. Every real call site
+        # already resolves discovery once, up front, via
+        # `discover_and_resolve_issuer` -- this constructor never fetches.
         if discovery is None:
-            discovery_url = config.discovery_url or default_discovery_url(config.issuer)
-            discovery = discover_oidc(discovery_url)
+            raise ValueError(
+                'TokenValidator requires a resolved OidcDiscoveryDocument -- '
+                'auth.issuer/auth.discovery_url must be configured. Build one '
+                'via `discover_and_resolve_issuer`, or pass one directly in '
+                'tests.'
+            )
+        self._config = config
         self._jwk_client = PyJWKClient(
             discovery.jwks_uri, ssl_context=build_ssl_context()
         )
