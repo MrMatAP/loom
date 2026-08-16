@@ -1,7 +1,7 @@
 """Shared fake `KeycloakAdminClient` for `test_idp.py`/`test_idp_public_clients.py`.
 
-`idp_register` always runs all four registration steps (API, MCP, Swagger
-UI, CLI) in one call, so any fake standing in for
+`idp_register`/`idp_unregister` always run all four steps (API, MCP,
+Swagger UI, CLI) in one call, so any fake standing in for
 `loom.cli.idp.KeycloakAdminClient` needs every method the real client
 offers, regardless of which step a given test is actually interested in --
 hence one shared, fully-featured fake rather than a partial one per file.
@@ -20,6 +20,8 @@ class FakeKeycloakAdminClient:
         self.audience_mappers: list[tuple[str, str]] = []
         self.client_roles_mappers: list[tuple[str, str]] = []
         self.access_token_lifespan: tuple[str, int] | None = None
+        self.deleted_clients: list[str] = []
+        self._existing_client_ids: set[str] = set()
 
     @classmethod
     async def login(cls, issuer, **kwargs):
@@ -33,6 +35,7 @@ class FakeKeycloakAdminClient:
         return f'fake-internal-ref-{client_id}'
 
     async def register_client(self, *, client_id, client_name, service_account):
+        self._existing_client_ids.add(client_id)
         self.registered_confidential_clients.append(
             {
                 'client_id': client_id,
@@ -48,6 +51,7 @@ class FakeKeycloakAdminClient:
         )
 
     async def register_public_client(self, *, client_id, client_name, **kwargs):
+        self._existing_client_ids.add(client_id)
         self.registered_public_clients.append(
             {'client_id': client_id, 'client_name': client_name, **kwargs}
         )
@@ -69,3 +73,9 @@ class FakeKeycloakAdminClient:
 
     async def set_access_token_lifespan(self, client_ref, seconds):
         self.access_token_lifespan = (client_ref, seconds)
+
+    async def delete_client(self, *, client_id):
+        self.deleted_clients.append(client_id)
+        existed = client_id in self._existing_client_ids
+        self._existing_client_ids.discard(client_id)
+        return existed

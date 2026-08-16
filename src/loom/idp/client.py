@@ -53,6 +53,8 @@ class IdpAdminClient(Protocol):
         self, client_ref: str, roles: list[RoleDefinition]
     ) -> None: ...
 
+    async def delete_client(self, *, client_id: str) -> bool: ...
+
 
 def catalog_role_definitions() -> list[RoleDefinition]:
     """Build the 24 leaf-scope roles plus the 5 composite bundle roles."""

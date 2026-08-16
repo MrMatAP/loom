@@ -586,3 +586,63 @@ async def test_declare_client_roles_still_raises_on_server_error():
         await client.declare_client_roles(
             'internal-uuid-123', catalog_role_definitions()
         )
+
+
+@pytest.mark.asyncio
+async def test_delete_client_looks_up_then_deletes_by_internal_ref():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'GET':
+            assert dict(request.url.params) == {'clientId': 'loom-catalog-api-cli'}
+            return httpx.Response(200, json=[{'id': 'internal-uuid-123'}])
+        if (
+            path == '/admin/realms/loom/clients/internal-uuid-123'
+            and request.method == 'DELETE'
+        ):
+            return httpx.Response(204)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    deleted = await client.delete_client(client_id='loom-catalog-api-cli')
+    assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_delete_client_is_idempotent_when_already_absent():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'GET':
+            return httpx.Response(200, json=[])
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    deleted = await client.delete_client(client_id='loom-catalog-api-cli')
+    assert deleted is False
+
+
+@pytest.mark.asyncio
+async def test_delete_client_still_raises_on_server_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/clients' and request.method == 'GET':
+            return httpx.Response(200, json=[{'id': 'internal-uuid-123'}])
+        return httpx.Response(500, json={'errorMessage': 'boom'})
+
+    client = KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.delete_client(client_id='loom-catalog-api-cli')

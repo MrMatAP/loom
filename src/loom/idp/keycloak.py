@@ -266,10 +266,11 @@ class KeycloakAdminClient:
         location = response.headers['Location']
         return location.rstrip('/').rsplit('/', 1)[-1]
 
-    async def _lookup_client_id(
+    async def _find_client_ref(
         self, http: httpx.AsyncClient, client_id: str, headers: dict[str, str]
-    ) -> str:
-        """Resolve an existing client's internal id by its clientId."""
+    ) -> str | None:
+        """Resolve an existing client's internal id by its clientId, or
+        `None` if no such client exists."""
         response = await http.get(
             f'{self._realm_admin_base}/clients',
             params={'clientId': client_id},
@@ -278,10 +279,19 @@ class KeycloakAdminClient:
         )
         response.raise_for_status()
         matches = response.json()
-        if not matches:
+        return matches[0]['id'] if matches else None
+
+    async def _lookup_client_id(
+        self, http: httpx.AsyncClient, client_id: str, headers: dict[str, str]
+    ) -> str:
+        """Resolve an existing client's internal id by its clientId --
+        raises if it's missing, unlike `_find_client_ref`, since every
+        caller of this one just hit a 409 telling it the client exists."""
+        internal_ref = await self._find_client_ref(http, client_id, headers)
+        if internal_ref is None:
             detail = f'Client {client_id} not found after a 409 on creation'
             raise RuntimeError(detail)
-        return matches[0]['id']
+        return internal_ref
 
     async def _fetch_client_secret(
         self, http: httpx.AsyncClient, internal_ref: str, headers: dict[str, str]
@@ -296,6 +306,27 @@ class KeycloakAdminClient:
             return None
         response.raise_for_status()
         return response.json().get('value')
+
+    async def delete_client(self, *, client_id: str) -> bool:
+        """Delete a client by its `clientId` via the Admin API -- the
+        inverse of `register_client`/`register_public_client`. Idempotent
+        when the client doesn't exist: returns `False` rather than raising,
+        so `loom idp unregister` stays safe to re-run (same guarantee
+        `_raise_unless_already_exists` gives the create path, just for
+        "already gone" instead of "already exists"). Returns whether a
+        client was actually deleted."""
+        headers = {'Authorization': f'Bearer {self._token}'}
+        async with self._client() as http:
+            internal_ref = await self._find_client_ref(http, client_id, headers)
+            if internal_ref is None:
+                return False
+            response = await http.delete(
+                f'{self._realm_admin_base}/clients/{internal_ref}',
+                headers=headers,
+                timeout=30.0,
+            )
+            response.raise_for_status()
+        return True
 
     async def declare_client_roles(
         self, client_ref: str, roles: list[RoleDefinition]

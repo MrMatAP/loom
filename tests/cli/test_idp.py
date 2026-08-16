@@ -1,8 +1,9 @@
 import argparse
 
+import pydantic
 import pytest
 
-from loom.cli.idp import idp_register
+from loom.cli.idp import idp_register, idp_unregister
 from loom.config import RootConfig
 from loom.idp.client import catalog_role_definitions
 
@@ -26,6 +27,22 @@ def _base_args(**overrides):
         'cli_client_id': None,
         'cli_client_name': None,
         'access_token_lifespan': None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _unregister_args(**overrides):
+    defaults = {
+        'issuer_url': 'https://idp.example/realms/loom',
+        'admin_username': 'admin',
+        'admin_password': 'hunter2',
+        'admin_realm': 'master',
+        'admin_client_id': 'admin-cli',
+        'client_id': None,
+        'mcp_client_id': None,
+        'swagger_client_id': None,
+        'cli_client_id': None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -388,3 +405,167 @@ async def test_idp_register_wires_custom_admin_realm_and_client_id(
 
     assert captured['admin_realm'] == 'internal-admins'
     assert captured['admin_client_id'] == 'custom-admin-cli'
+
+
+# --- idp unregister -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_requires_issuer(tmp_path):
+    config_path = tmp_path / 'config.yaml'
+    config = RootConfig(config_path=config_path)
+    result = await idp_unregister(config, _unregister_args(issuer_url=None))
+    assert result == 1
+    assert not config_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_requires_a_client_id(tmp_path):
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    result = await idp_unregister(config, _unregister_args())
+    assert result == 1
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_deletes_the_ids_a_prior_register_actually_stored(
+    monkeypatch, tmp_path
+):
+    """Deletion must use whatever `idp_register` actually stored in
+    `config.auth`, not re-derive the `{client-id}-mcp`/`-swagger`/`-cli`
+    naming convention -- proven here with client ids that don't follow
+    that convention at all, via `--*-client-name`-style overrides on the
+    register side."""
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register(
+        config,
+        _base_args(
+            mcp_client_id='custom-mcp',
+            swagger_client_id='custom-swagger',
+            cli_client_id='custom-cli',
+        ),
+    )
+
+    class _CapturingKeycloakAdminClient(FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, **kwargs):
+            del kwargs
+            instance = cls(issuer, 'fake-admin-token')
+            captured['client'] = instance
+            return instance
+
+    captured: dict[str, FakeKeycloakAdminClient] = {}
+    monkeypatch.setattr(
+        'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
+    )
+
+    result = await idp_unregister(config, _unregister_args())
+
+    assert result == 0
+    # Reverse of registration order.
+    assert captured['client'].deleted_clients == [
+        'custom-cli',
+        'custom-swagger',
+        'custom-mcp',
+        'loom-catalog-api',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_falls_back_to_the_naming_convention_when_unconfigured(
+    monkeypatch, tmp_path
+):
+    """No prior `register` to read stored ids from -- an explicit
+    `--client-id` alone must still resolve the other three via the same
+    `{client-id}-mcp`/`-swagger`/`-cli` convention `idp_register` uses."""
+    captured: dict[str, FakeKeycloakAdminClient] = {}
+
+    class _CapturingKeycloakAdminClient(FakeKeycloakAdminClient):
+        @classmethod
+        async def login(cls, issuer, **kwargs):
+            del kwargs
+            instance = cls(issuer, 'fake-admin-token')
+            captured['client'] = instance
+            return instance
+
+    monkeypatch.setattr(
+        'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
+    )
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    result = await idp_unregister(
+        config, _unregister_args(client_id='loom-catalog-api')
+    )
+
+    assert result == 0
+    assert captured['client'].deleted_clients == [
+        'loom-catalog-api-cli',
+        'loom-catalog-api-swagger',
+        'loom-catalog-api-mcp',
+        'loom-catalog-api',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_clears_and_persists_auth_config_fields(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
+
+    config_path = tmp_path / 'config.yaml'
+    config = RootConfig(config_path=config_path)
+    await idp_register(config, _base_args())
+
+    result = await idp_unregister(config, _unregister_args())
+    assert result == 0
+
+    assert config.auth.issuer == ''
+    assert config.auth.audience == ''
+    assert config.auth.discovery_url is None
+    assert config.auth.mcp_audience == ''
+    assert config.auth.swagger_client_id == ''
+    assert config.auth.cli_client_id == ''
+
+    reloaded = RootConfig.load(config_path=config_path)
+    assert reloaded.auth.audience == ''
+    assert reloaded.auth.mcp_audience == ''
+    assert reloaded.auth.swagger_client_id == ''
+    assert reloaded.auth.cli_client_id == ''
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_does_not_touch_the_cached_cli_session(
+    monkeypatch, tmp_path
+):
+    """A cached `loom auth login` session is a separate concern (`loom auth
+    logout`) -- unregistering the IDP clients shouldn't silently discard
+    it, even though it may no longer be usable."""
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register(config, _base_args())
+    config.auth.session.access_token = pydantic.SecretStr('access-tok')
+    config.save()
+
+    result = await idp_unregister(config, _unregister_args())
+
+    assert result == 0
+    assert config.auth.session.access_token is not None
+    assert config.auth.session.access_token.get_secret_value() == 'access-tok'
+
+
+@pytest.mark.asyncio
+async def test_idp_unregister_is_idempotent_when_run_twice(monkeypatch, tmp_path):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
+
+    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register(config, _base_args())
+
+    first = await idp_unregister(config, _unregister_args(client_id='loom-catalog-api'))
+    second = await idp_unregister(
+        config, _unregister_args(client_id='loom-catalog-api')
+    )
+
+    assert first == 0
+    assert second == 0

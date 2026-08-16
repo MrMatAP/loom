@@ -392,6 +392,32 @@ loom idp register --issuer-url https://idp.example/realms/loom \
 (seconds; also settable via `LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN`, flag
 takes precedence.)
 
+### `loom idp unregister` reference
+
+The inverse of `register`: deletes the four clients it created and clears
+the `auth.*` fields it set (`issuer`, `audience`, `discovery_url`,
+`mcp_audience`, `swagger_client_id`, `cli_client_id`).
+
+```
+loom idp unregister --issuer-url https://idp.example/realms/loom
+```
+
+Takes the same admin-login flags as `register`
+(`--admin-username`/`--admin-password`/`--admin-realm`/`--admin-client-id`).
+No `--client-id` is required if `config.auth.audience` is already set (the
+common case -- you're unregistering what a prior `register` on this same
+config just created); pass it explicitly to unregister a different
+environment's clients than the ones currently configured locally.
+`--mcp-client-id`/`--swagger-client-id`/`--cli-client-id` likewise default
+to whatever's stored in `config.auth`, falling back to the
+`{client-id}-mcp`/`-swagger`/`-cli` convention only if nothing is stored.
+
+Every deletion is idempotent (a client already gone, or never registered,
+is reported and skipped, not an error), so this is safe to re-run. Does
+**not** clear a cached `loom auth login` session (`config.auth.session`)
+-- run `loom auth logout` separately if the identity that login belongs to
+has nowhere left to authenticate against.
+
 ### `loom db` reference
 
 ```

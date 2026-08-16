@@ -26,7 +26,7 @@ from loom.cli.db import (
     db_revision,
     db_upgrade,
 )
-from loom.cli.idp import idp_register
+from loom.cli.idp import idp_register, idp_unregister
 from loom.config import RootConfig
 
 console = rich.console.Console()
@@ -340,6 +340,52 @@ async def main() -> int:
             ),
         )
         idp_register_parser.set_defaults(func=idp_register)
+
+        idp_unregister_parser = idp_subparser.add_parser(
+            'unregister',
+            help=(
+                'Delete the four Catalog OAuth clients `register` created '
+                '(RESTful API, MCP server, Swagger UI, CLI) and clear the '
+                'local config fields it set'
+            ),
+        )
+        _add_admin_login_args(idp_unregister_parser)
+        idp_unregister_parser.add_argument(
+            '--client-id',
+            dest='client_id',
+            default=None,
+            help=(
+                'OAuth client ID for the RESTful API, defaults to config.auth.audience'
+            ),
+        )
+        idp_unregister_parser.add_argument(
+            '--mcp-client-id',
+            dest='mcp_client_id',
+            default=None,
+            help=(
+                'OAuth client ID for the MCP server, defaults to '
+                'config.auth.mcp_audience, else {client-id}-mcp'
+            ),
+        )
+        idp_unregister_parser.add_argument(
+            '--swagger-client-id',
+            dest='swagger_client_id',
+            default=None,
+            help=(
+                'OAuth client ID for Swagger UI, defaults to '
+                'config.auth.swagger_client_id, else {client-id}-swagger'
+            ),
+        )
+        idp_unregister_parser.add_argument(
+            '--cli-client-id',
+            dest='cli_client_id',
+            default=None,
+            help=(
+                'OAuth client ID for the CLI, defaults to '
+                'config.auth.cli_client_id, else {client-id}-cli'
+            ),
+        )
+        idp_unregister_parser.set_defaults(func=idp_unregister)
 
         auth_parser = subparsers.add_parser('auth', help='CLI login/session commands')
         auth_subparser = auth_parser.add_subparsers(required=True)

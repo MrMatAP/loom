@@ -244,3 +244,100 @@ async def idp_register(config: RootConfig, args: argparse.Namespace) -> int:
     await _register_swagger_client(client, config, args, api_client_id, mcp_client_id)
     await _register_cli_client(client, config, args, api_client_id, mcp_client_id)
     return 0
+
+
+async def _delete_client(
+    client: KeycloakAdminClient, label: str, client_id: str
+) -> None:
+    """Delete one client and print what happened. Idempotent -- "already
+    gone" (e.g. a re-run, or a client `idp_register` never actually
+    created) is a normal outcome, not a failure, same as a 409 is for the
+    create path."""
+    deleted = await client.delete_client(client_id=client_id)
+    if deleted:
+        print(f'Deleted {label} client: {client_id}')
+    else:
+        print(f'{label} client {client_id} was already absent, nothing to delete.')
+
+
+async def idp_unregister(config: RootConfig, args: argparse.Namespace) -> int:
+    """Delete the four Catalog OAuth clients `idp_register` created --
+    RESTful API, MCP server, Swagger UI, CLI -- and clear the local config
+    fields it set, undoing that command. Every deletion is idempotent (see
+    `_delete_client`), so a run interrupted partway through -- or run
+    against a config that was never fully registered -- is safe to just
+    re-run in full, the same guarantee `idp_register` makes for creation.
+
+    Client ids are resolved the same way `idp_register` derives them
+    (`--client-id`/`--mcp-client-id`/etc.), but prefer whatever's actually
+    stored in `config.auth` first, over re-deriving the
+    `{client-id}-mcp`/`-swagger`/`-cli` naming convention -- in case a
+    prior `register` run used custom ids that don't follow it. Roles and
+    protocol mappers `register` attached to a client are Keycloak
+    sub-resources of that client, so deleting the client deletes them too
+    -- there's nothing left over to clean up separately.
+
+    Config is cleared unconditionally once all four deletions have been
+    attempted, even if some (or all) of them reported "already absent".
+    That's deliberate, not a gap: an id resolved from config that Keycloak
+    doesn't recognize means the config was already stale, and clearing it
+    is the correct way to reflect that -- not a reason to leave it in
+    place. What it does mean: if you pass the *wrong* `--client-id` for
+    this environment, unregister will report the (unrelated) client as
+    absent, still wipe local config, and the real client will be
+    untouched in Keycloak under whatever id it actually has. Double-check
+    `--issuer-url`/`--client-id` against the environment you mean to
+    unregister before running this.
+
+    Does not touch `config.auth.session` (the cached CLI login, if any) --
+    the identity that login belongs to may still be usable against a
+    different IDP setup; run `loom auth logout` separately if it isn't."""
+    issuer_url = args.issuer_url or config.auth.issuer
+    if not issuer_url:
+        print('No --issuer-url given and config.auth.issuer is unset.')
+        return 1
+
+    api_client_id = args.client_id or config.auth.audience
+    if not api_client_id:
+        print(
+            'No --client-id given and config.auth.audience is unset -- '
+            'nothing to unregister.'
+        )
+        return 1
+    mcp_client_id = (
+        args.mcp_client_id or config.auth.mcp_audience or f'{api_client_id}-mcp'
+    )
+    swagger_client_id = (
+        args.swagger_client_id
+        or config.auth.swagger_client_id
+        or f'{api_client_id}-swagger'
+    )
+    cli_client_id = (
+        args.cli_client_id or config.auth.cli_client_id or f'{api_client_id}-cli'
+    )
+
+    client = await _login_as_admin(issuer_url, args)
+
+    # Reverse of `idp_register`'s order -- Keycloak doesn't actually
+    # enforce any dependency between these (each public client's protocol
+    # mappers just reference the other's `clientId` string, no DB foreign
+    # key), but it reads as the deletions undoing the creations in the
+    # order they happened.
+    await _delete_client(client, 'CLI device-flow', cli_client_id)
+    await _delete_client(client, 'Swagger UI', swagger_client_id)
+    await _delete_client(client, 'MCP', mcp_client_id)
+    await _delete_client(client, 'API', api_client_id)
+
+    config.auth.issuer = ''
+    config.auth.audience = ''
+    config.auth.discovery_url = None
+    config.auth.mcp_audience = ''
+    config.auth.swagger_client_id = ''
+    config.auth.cli_client_id = ''
+    config.save()
+    print(
+        'Cleared local config: auth.issuer, auth.audience, '
+        'auth.discovery_url, auth.mcp_audience, auth.swagger_client_id, '
+        'auth.cli_client_id.'
+    )
+    return 0
