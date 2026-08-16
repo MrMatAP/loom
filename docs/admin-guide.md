@@ -44,7 +44,7 @@ See "Operate" and "Reference" below for the detail behind each step.
 
 `docker-compose.yaml` at the repo root runs Postgres, a one-shot `loom db
 upgrade` migration, and single instances of both services -- useful for
-trying the Catalog out or developing against it, not a horizontal-scaling
+trying the Catalog out on a single machine, not a horizontal-scaling
 story (that's Kubernetes below).
 
 ```
@@ -155,8 +155,8 @@ one-time bootstrap sequence.
 ### TLS trust for the IdP connection
 
 Every outbound call to the IdP (`loom idp ...`, `loom auth login`, JWKS
-resolution, OIDC discovery) goes through `loom.tls.build_ssl_context()`,
-which defaults to the OS-native trust store. If your IdP's certificate is
+resolution, OIDC discovery) trusts the OS-native certificate store by
+default. If your IdP's certificate is
 issued by a CA that's trusted system-wide but isn't visible to that
 OS-trust-store lookup on your platform (observed on macOS with a CA
 installed via a management tool into the login keychain rather than the
@@ -173,13 +173,12 @@ works well) and set `LOOM_IDP_CA_BUNDLE` to its path.
 
 ### Verifying interactively
 
-Both the Swagger UI and CLI login flows are exercised automatically by
-`tests/integration/` (see "Live IdP integration tests" below) short of the
-one step neither can automate without a browser: a human approving the
-login. To confirm that step works end to end at least once after
-registering clients on a new IdP instance, do it by hand -- open `/docs`,
-click Authorize, log in; then run `loom auth login` and approve the
-printed link. If either fails, the registration command's own output
+The one step in the Swagger UI and CLI login flows that can't be checked
+without a browser is a human approving the login. To confirm that step
+works end to end at least once after registering clients on a new IdP
+instance, do it by hand -- open `/docs`, click Authorize, log in; then run
+`loom auth login` and approve the printed link. If either fails, the
+registration command's own output
 (redirect URI, client ID) is the first thing to check against what
 actually loaded in the browser -- a mismatched redirect URI shows up as
 your IdP's own `invalid_redirect_uri` error page mid-flow, not a silent
@@ -220,11 +219,10 @@ failure back on `/docs`.
   problem: missing, expired, or otherwise fails to decode. `loom auth
   login` again is the fix.
 - **One user gets `403`, even right after `loom auth login` succeeds** --
-  the token is fine; either `get_current_principal` couldn't resolve its
-  `sub` to a `Principal` in the requested Tenant, or the token's
-  scopes/roles don't cover the action (`InsufficientScopeError`). For the
-  Principal case, two possibilities: no `Principal` row exists yet for
-  that `sub` in that Tenant at all -- run `loom principal create
+  the token is fine; either it doesn't resolve to a `Principal` in the
+  requested Tenant, or the identity's scopes/roles don't cover the action.
+  For the Principal case, two possibilities: no `Principal` row exists yet
+  for that `sub` in that Tenant at all -- run `loom principal create
   --tenant-id <their tenant> --external-id <their sub>` as the platform
   administrator to provision one; or it exists in a *different* Tenant
   than the request names -- legitimate for an identity provisioned in more
@@ -239,10 +237,11 @@ failure back on `/docs`.
 
 Access is governed by OAuth2 scopes of the form
 `catalog:{resource}:{action}`, bundled into five composite roles your IdP
-assigns. `src/loom/idp/catalog_roles.py` is the single source of truth;
-`loom idp register` declares all of it under the RESTful API client. See
+assigns. `loom idp register` declares all of it under the RESTful API
+client. See
 [docs/architecture.md](architecture.md#authorization-scopes-and-roles) for
-how a token's scopes are resolved and checked at request time.
+the vocabulary's single source of truth and how a token's scopes are
+resolved and checked at request time.
 
 | Role | Grants |
 |---|---|
@@ -331,20 +330,19 @@ by hand-editing YAML.
 | `LOOM_CATALOG_API_BASE_URL` | `catalog.api_base_url` | no -- only matters running `loom` CLI commands inside the container |
 | `LOOM_IDP_CA_BUNDLE` | *(read directly by `loom.tls.build_ssl_context`)* | only if your IdP's CA isn't in the image's trust store |
 
-**Why a writable path, not a mounted Secret file, for config**: `loom
-config set` round-trips through `RootConfig.save()`, which
-`chmod(0o600)`s the file it just wrote on every `loom` invocation, not
-just `config set` -- so `$LOOM_CONFIG_PATH` can't point at a
-read-only-mounted Secret. Instead, secrets arrive as plain environment
-variables and entrypoint.sh writes them into a path the container itself
-owns (a small `emptyDir`, so this still works under
-`readOnlyRootFilesystem: true`).
+**Why a writable path, not a mounted Secret file, for config**: `loom`
+tightens the permissions on its config file on every invocation, not just
+`config set` -- so `$LOOM_CONFIG_PATH` can't point at a read-only-mounted
+Secret. Instead, secrets arrive as plain environment variables and the
+container writes them into a path it owns itself (a small `emptyDir`, so
+this still works under `readOnlyRootFilesystem: true`). See
+[docs/architecture.md](architecture.md#configuration-and-secrets) for the
+implementation detail behind this.
 
-**Hand-authoring a config YAML directly**: `RootConfig.load()` requires the
-file to contain a `config_path` key matching its own path -- a file
-written by `loom config set`/entrypoint.sh always has one; a hand-authored
-file without it fails validation. Generate it with `loom config set` once
-and reuse that file instead.
+**Hand-authoring a config YAML directly**: a file written by `loom config
+set` is always valid; a hand-authored one usually isn't (see
+[docs/architecture.md](architecture.md#configuration-and-secrets) for why).
+Generate it with `loom config set` once and reuse that file instead.
 
 ### `loom idp register` reference
 
@@ -451,96 +449,7 @@ loom principal show <principal_id>
 ```
 
 `--external-id` is the identity a token has to carry (its `sub` claim) for
-`get_current_principal` to match it up at request time. `--tenant-id` is
-always required on `principal create` -- no token carries one to default
-from. `principal list` defaults it to the locally-selected Tenant
-(`loom auth set-tenant`) instead.
-
-### Live IdP integration tests
-
-`tests/integration/` runs the Swagger/CLI login flows and a claims round
-trip against a real Keycloak instance instead of a mocked transport, and
-is excluded from the default `pytest` run (self-skips without live
-credentials):
-
-```
-export LOOM_IDP_ISSUER_URL=https://idp.example/realms/loom
-export LOOM_IDP_ISSUER_ADMIN_USERNAME=admin
-export LOOM_IDP_ISSUER_ADMIN_PASSWORD=<secret>
-export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem   # only if needed, see above
-
-pytest tests/integration/ -m live_idp
-```
-
-Three tiers, gated independently:
-
-- **`test_discovery.py`** needs only `LOOM_IDP_ISSUER_URL` -- confirms the
-  issuer is reachable and its discovery document advertises what
-  `security.py` needs plus the device code grant.
-- **`test_swagger_login.py`** / **`test_cli_device_flow.py`** need admin
-  credentials too -- register throwaway `loom-it-*` clients and confirm
-  their Keycloak-side config lines up with the live discovery document;
-  the device-flow test drives one real `start()`/`poll()` round trip.
-- **`test_claim_chain.py`** registers a throwaway *password-grant* client
-  purely to pull a real signed token to inspect (Swagger/CLI never use
-  this grant), decodes it with the real `TokenValidator` against the live
-  JWKS, and runs a real bearer token through an in-process FastAPI app.
-
-Every object these tests create is prefixed `loom-it-` and deleted at the
-end of the run. If a run is interrupted between setup and teardown, a
-`loom-it-*` object can be left behind -- worth a manual check afterward,
-particularly `loom-it-claims-probe`, the one object in this suite with
-direct access grants enabled. If admin credentials are rejected, the whole
-suite skips with the Keycloak error rather than failing.
-
-### Live Postgres integration tests
-
-A second, independent live suite exercises a real Postgres instance
-instead of the in-memory sqlite the rest of `pytest` uses, migrated via
-the packaged Alembic revisions -- catches things sqlite's looser typing
-can hide. Also self-skips without live credentials:
-
-```
-export LOOM_DB_HOST=localhost
-# LOOM_DB_PORT/LOOM_DB_NAME/LOOM_DB_USERNAME/LOOM_DB_PASSWORD default
-# the same way they do for `loom db upgrade` -- see "Configuration" above.
-
-pytest tests/integration/ -m live_db
-```
-
-Point it at a disposable database, not production: migrations are applied
-and left in place, and each test runs inside a transaction rolled back on
-exit -- but neither of those makes it safe to run against a database
-anything else depends on.
-
-### Live LLM integration test
-
-A third, independent live suite proves a Capability/ModelEndpoint/Agent
-created through the real Catalog REST routes actually wires up to a real
-model: it drives an in-memory Catalog (Keycloak/Postgres aren't the live
-dependency here -- `test_claim_chain.py` already covers the IdP path), then
-hands the created `ModelEndpoint` to a real
-[LangChain](https://python.langchain.com/) agent
-(`langchain.agents.create_agent`, LangGraph-backed under the hood) and
-asserts it gets a real reply back. Self-skips (with a specific reason)
-when nothing answers, when a server answers but has no model loaded, or
-when the `live-llm` dependency group isn't installed:
-
-```
-uv sync --group live-llm
-
-# LOOM_LLM_BASE_URL defaults to http://localhost:1234 (LM Studio's
-# default) -- override it for vLLM/ollama/any other OpenAI-compatible
-# server. No credentials needed; local servers don't check the API key.
-export LOOM_LLM_BASE_URL=http://localhost:1234
-
-pytest tests/integration/ -m live_llm
-```
-
-The model actually exercised is whatever the live server reports at
-`GET {base_url}/v1/models` -- discovered at test time, never hardcoded,
-since there's no way to know what's loaded locally. The `ModelEndpoint`
-row itself stores the bare origin (`http://localhost:1234`, no `/v1`); the
-test appends the OpenAI-compatible path only when building the LangChain
-client -- see `test_live_llm.py`'s module docstring for why that split
-isn't yet a documented contract anywhere else in the codebase.
+Loom to match it up at request time. `--tenant-id` is always required on
+`principal create` -- no token carries one to default from. `principal
+list` defaults it to the locally-selected Tenant (`loom auth set-tenant`)
+instead.

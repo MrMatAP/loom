@@ -1,11 +1,14 @@
 # Architecture
 
 How the Catalog API, MCP server, and CLI fit together and why they're
-shaped the way they are. For the domain vocabulary (Capability, Agent,
-Skill, ...) and the invariants code in this repo is expected to enforce,
-see [CLAUDE.md](../CLAUDE.md) -- that document is the source of truth for
-the entity model; this one covers what's actually implemented and how the
-pieces talk to each other. For installing/operating the services see
+shaped the way they are -- the developer-facing counterpart to the
+strictly user-facing admin/user guides. For the domain vocabulary
+(Capability, Agent, Skill, ...) and the invariants code in this repo is
+expected to enforce, see [CLAUDE.md](../CLAUDE.md) -- that document is the
+source of truth for the entity model; this one covers what's actually
+implemented, how the pieces talk to each other, and the internal
+implementation detail and test coverage behind operational instructions
+that live in the two guides. For installing/operating the services see
 [docs/admin-guide.md](admin-guide.md); for driving an already-running one
 see [docs/user-guide.md](user-guide.md).
 
@@ -190,6 +193,33 @@ the very first bootstrap most notably; see
 attribute it to, and unlike the two calls above it grants no identity
 access by itself.
 
+## Configuration and secrets
+
+Every container reads its configuration from a YAML file at
+`$LOOM_CONFIG_PATH`, assembled from plain environment variables by
+`docker/entrypoint.sh` at container start (see
+[docs/admin-guide.md](admin-guide.md#configuration) for the variable
+reference an admin actually sets). Two implementation details explain why
+that file has to live on writable storage, not a mounted Secret:
+
+- `RootConfig.save()` -- which `loom config set` round-trips through, and
+  which every `loom` invocation calls, not just `config set` --
+  `chmod(0o600)`s the file it just wrote. A read-only-mounted Secret can't
+  be `chmod`'d, so `entrypoint.sh` instead writes the assembled file into a
+  path the container owns itself (a small `emptyDir`, which still works
+  under `readOnlyRootFilesystem: true`).
+- `RootConfig.load()` requires the file to contain a `config_path` key
+  matching its own path. A file written by `loom config set`/
+  `entrypoint.sh` always has one; a hand-authored file generally won't and
+  fails validation as a result.
+
+TLS trust for outbound IdP calls (`loom idp ...`, `loom auth login`, JWKS
+resolution, OIDC discovery) goes through `loom.tls.build_ssl_context()`,
+which defaults to the OS-native trust store and honors
+`LOOM_IDP_CA_BUNDLE` as an explicit override -- see
+[docs/admin-guide.md](admin-guide.md#tls-trust-for-the-idp-connection) for
+when you need it.
+
 ## Deployment topology
 
 Sandbox, Staging, and Production are meant to be physically isolated
@@ -199,3 +229,105 @@ this at the registry level, but provisioning the isolation itself is
 outside what's built here today. See
 [docs/admin-guide.md](admin-guide.md#operate) for the concrete Docker
 Compose / Kubernetes topology this repo ships.
+
+## Testing
+
+`uv run pytest` runs the full default suite against an in-memory sqlite DB
+and a mocked IdP transport -- fast, no external dependencies. Three live
+suites are excluded by default (self-skip without credentials/a running
+service) and exercise a real Keycloak instance, a real Postgres instance,
+and a real OpenAI-compatible LLM server respectively.
+
+### Live IdP integration tests
+
+`tests/integration/` runs the Swagger/CLI login flows and a claims round
+trip against a real Keycloak instance instead of a mocked transport, and
+is excluded from the default `pytest` run (self-skips without live
+credentials). `LOOM_IDP_CA_BUNDLE` is only needed if your IdP's CA isn't
+in the OS trust store -- see
+[docs/admin-guide.md](admin-guide.md#tls-trust-for-the-idp-connection):
+
+```
+export LOOM_IDP_ISSUER_URL=https://idp.example/realms/loom
+export LOOM_IDP_ISSUER_ADMIN_USERNAME=admin
+export LOOM_IDP_ISSUER_ADMIN_PASSWORD=<secret>
+export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem   # only if needed
+
+pytest tests/integration/ -m live_idp
+```
+
+Three tiers, gated independently:
+
+- **`test_discovery.py`** needs only `LOOM_IDP_ISSUER_URL` -- confirms the
+  issuer is reachable and its discovery document advertises what
+  `security.py` needs plus the device code grant.
+- **`test_swagger_login.py`** / **`test_cli_device_flow.py`** need admin
+  credentials too -- register throwaway `loom-it-*` clients and confirm
+  their Keycloak-side config lines up with the live discovery document;
+  the device-flow test drives one real `start()`/`poll()` round trip --
+  the same login flows checked by hand in
+  [docs/admin-guide.md](admin-guide.md#verifying-interactively).
+- **`test_claim_chain.py`** registers a throwaway *password-grant* client
+  purely to pull a real signed token to inspect (Swagger/CLI never use
+  this grant), decodes it with the real `TokenValidator` against the live
+  JWKS, and runs a real bearer token through an in-process FastAPI app.
+
+Every object these tests create is prefixed `loom-it-` and deleted at the
+end of the run. If a run is interrupted between setup and teardown, a
+`loom-it-*` object can be left behind -- worth a manual check afterward,
+particularly `loom-it-claims-probe`, the one object in this suite with
+direct access grants enabled. If admin credentials are rejected, the whole
+suite skips with the Keycloak error rather than failing.
+
+### Live Postgres integration tests
+
+A second, independent live suite exercises a real Postgres instance
+instead of the in-memory sqlite the rest of `pytest` uses, migrated via
+the packaged Alembic revisions -- catches things sqlite's looser typing
+can hide. Also self-skips without live credentials.
+`LOOM_DB_PORT`/`LOOM_DB_NAME`/`LOOM_DB_USERNAME`/`LOOM_DB_PASSWORD` default
+the same way they do for `loom db upgrade` -- see
+[docs/admin-guide.md](admin-guide.md#configuration):
+
+```
+export LOOM_DB_HOST=localhost
+
+pytest tests/integration/ -m live_db
+```
+
+Point it at a disposable database, not production: migrations are applied
+and left in place, and each test runs inside a transaction rolled back on
+exit -- but neither of those makes it safe to run against a database
+anything else depends on.
+
+### Live LLM integration test
+
+A third, independent live suite proves a Capability/ModelEndpoint/Agent
+created through the real Catalog REST routes actually wires up to a real
+model: it drives an in-memory Catalog (Keycloak/Postgres aren't the live
+dependency here -- `test_claim_chain.py` already covers the IdP path), then
+hands the created `ModelEndpoint` to a real
+[LangChain](https://python.langchain.com/) agent
+(`langchain.agents.create_agent`, LangGraph-backed under the hood) and
+asserts it gets a real reply back. Self-skips (with a specific reason)
+when nothing answers, when a server answers but has no model loaded, or
+when the `live-llm` dependency group isn't installed:
+
+```
+uv sync --group live-llm
+
+# LOOM_LLM_BASE_URL defaults to http://localhost:1234 (LM Studio's
+# default) -- override it for vLLM/ollama/any other OpenAI-compatible
+# server. No credentials needed; local servers don't check the API key.
+export LOOM_LLM_BASE_URL=http://localhost:1234
+
+pytest tests/integration/ -m live_llm
+```
+
+The model actually exercised is whatever the live server reports at
+`GET {base_url}/v1/models` -- discovered at test time, never hardcoded,
+since there's no way to know what's loaded locally. The `ModelEndpoint`
+row itself stores the bare origin (`http://localhost:1234`, no `/v1`); the
+test appends the OpenAI-compatible path only when building the LangChain
+client -- see `test_live_llm.py`'s module docstring for why that split
+isn't yet a documented contract anywhere else in the codebase.

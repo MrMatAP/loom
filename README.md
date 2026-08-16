@@ -39,9 +39,9 @@ external dependencies. Three live suites are excluded by default
 (self-skip without credentials/a running service) and exercise a real
 Keycloak instance, a real Postgres instance, and a real OpenAI-compatible
 LLM server respectively -- see
-[docs/admin-guide.md](docs/admin-guide.md#live-idp-integration-tests),
-[docs/admin-guide.md](docs/admin-guide.md#live-postgres-integration-tests),
-and [docs/admin-guide.md](docs/admin-guide.md#live-llm-integration-test)
+[docs/architecture.md](docs/architecture.md#live-idp-integration-tests),
+[docs/architecture.md](docs/architecture.md#live-postgres-integration-tests),
+and [docs/architecture.md](docs/architecture.md#live-llm-integration-test)
 for the environment variables and `-m live_idp`/`-m live_db`/`-m live_llm`
 invocations. Point the live-IdP suite at a disposable Keycloak realm, not
 a shared one -- every object it creates is prefixed `loom-it-` and torn

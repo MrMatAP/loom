@@ -75,8 +75,7 @@ node|edge {add,list}` (a Skill's graph), `loom tool binding {add,list}`
 DataProduct's lineage edges). `loom environment {create,list,show,update}`
 covers the platform-tier Environment -- not versioned, so no `versions`/
 `transition`, and `update` PATCHes in place instead of creating a new
-version row. Output renders as `rich` tables, styled like
-`openstack`/`freeipa`'s CLIs.
+version row. Output renders as clean, readable tables in your terminal.
 
 A worked example -- register a model endpoint, then an agent bound to it:
 
