@@ -18,6 +18,9 @@ from loom.cli.auth import (
 )
 from loom.config import RootConfig
 from loom.idp.device_flow import DeviceAuthorization, DeviceCodeError, DeviceTokens
+from loom.idp.discovery import DiscoveryError, OidcDiscoveryDocument
+
+_DISCOVERY_URL = 'https://idp.example/realms/loom/.well-known/openid-configuration'
 
 
 def _token_with_claims(**claims: typing.Any) -> str:
@@ -25,7 +28,7 @@ def _token_with_claims(**claims: typing.Any) -> str:
 
 
 def _base_args(**overrides):
-    defaults = {'issuer_url': 'https://idp.example/realms/loom', 'client_id': None}
+    defaults = {'discovery_url': _DISCOVERY_URL, 'client_id': None}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -36,10 +39,36 @@ def _configured_root_config(tmp_path):
     return config
 
 
+def _fake_discovery(**overrides) -> OidcDiscoveryDocument:
+    defaults = {
+        'issuer': 'https://idp.example/realms/loom',
+        'authorization_endpoint': (
+            'https://idp.example/realms/loom/protocol/openid-connect/auth'
+        ),
+        'token_endpoint': 'https://idp.example/realms/loom/protocol/openid-connect/token',
+        'jwks_uri': 'https://idp.example/realms/loom/protocol/openid-connect/certs',
+        'device_authorization_endpoint': (
+            'https://idp.example/realms/loom/protocol/openid-connect/auth/device'
+        ),
+    }
+    defaults.update(overrides)
+    return OidcDiscoveryDocument(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _patch_discovery(monkeypatch):
+    """Every `auth_login` test below goes through `discover_oidc` now --
+    default to a working fake so only the tests specifically about
+    discovery failure need to override this."""
+    monkeypatch.setattr(
+        'loom.cli.auth.discover_oidc', lambda discovery_url: _fake_discovery()
+    )
+
+
 class _FakeDeviceCodeClient:
-    def __init__(self, issuer, client_id, **kwargs):
+    def __init__(self, endpoints, client_id, **kwargs):
         del kwargs
-        self.issuer = issuer
+        self.endpoints = endpoints
         self.client_id = client_id
 
     async def start(self):
@@ -235,9 +264,13 @@ async def test_auth_login_reports_no_tenant_available_without_failing(
 
 
 @pytest.mark.asyncio
-async def test_auth_login_survives_a_tenant_listing_api_error(monkeypatch, tmp_path):
-    """A login already holding valid tokens must not be thrown away just
-    because the best-effort tenant-listing step couldn't reach the API."""
+async def test_auth_login_fails_on_a_tenant_listing_api_error(monkeypatch, tmp_path):
+    """Unable to even list Tenants is a login failure -- unlike "zero
+    Tenants available" or "declined to choose among several" (both
+    legitimate, non-error outcomes), this means the identity's usability
+    couldn't be determined at all. Tokens are still cached (see below) so
+    a caller isn't forced to redo the device-code flow just to retry
+    tenant selection -- only the command's exit code changes."""
     monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _FakeDeviceCodeClient)
     monkeypatch.setattr(
         'loom.cli.auth.CatalogClient',
@@ -247,20 +280,19 @@ async def test_auth_login_survives_a_tenant_listing_api_error(monkeypatch, tmp_p
     config = _configured_root_config(tmp_path)
     result = await auth_login(config, _base_args())
 
-    assert result == 0
+    assert result == 1
     assert config.auth.session.access_token is not None
     assert config.auth.session.tenant_id is None
 
 
 @pytest.mark.asyncio
-async def test_auth_login_survives_a_tenant_listing_connection_error(
+async def test_auth_login_fails_on_a_tenant_listing_connection_error(
     monkeypatch, tmp_path
 ):
     """Same as the API-error case above, but for a transport-level failure
     (unreachable `catalog.api_base_url`, DNS, etc.) rather than an HTTP
     error response -- `CatalogClient` doesn't wrap these as
-    `CatalogApiError`, so `_select_tenant` must catch them too or a login
-    that already holds valid tokens would crash instead of just warning."""
+    `CatalogApiError`, so `_select_tenant` must catch them too."""
     monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _FakeDeviceCodeClient)
     monkeypatch.setattr(
         'loom.cli.auth.CatalogClient',
@@ -270,7 +302,7 @@ async def test_auth_login_survives_a_tenant_listing_connection_error(
     config = _configured_root_config(tmp_path)
     result = await auth_login(config, _base_args())
 
-    assert result == 0
+    assert result == 1
     assert config.auth.session.access_token is not None
     assert config.auth.session.tenant_id is None
 
@@ -474,9 +506,9 @@ async def test_auth_login_warns_when_registration_fails_for_another_reason(
 
 
 @pytest.mark.asyncio
-async def test_auth_login_requires_issuer(tmp_path):
+async def test_auth_login_requires_discovery_url(tmp_path):
     config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args(issuer_url=None))
+    result = await auth_login(config, _base_args(discovery_url=None))
     assert result == 1
 
 
@@ -488,13 +520,49 @@ async def test_auth_login_requires_client_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_auth_login_fails_immediately_when_discovery_is_unreachable(
+    monkeypatch, tmp_path
+):
+    """No degraded mode -- a discovery endpoint that doesn't respond must
+    fail the login outright, not fall back to guessing Keycloak's
+    conventional endpoint paths."""
+
+    def _raise(discovery_url):
+        raise DiscoveryError(
+            f'Could not reach the OIDC discovery endpoint at {discovery_url}'
+        )
+
+    monkeypatch.setattr('loom.cli.auth.discover_oidc', _raise)
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+    assert result == 1
+    assert config.auth.session.access_token is None
+
+
+@pytest.mark.asyncio
+async def test_auth_login_fails_when_discovery_lacks_device_authorization_endpoint(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        'loom.cli.auth.discover_oidc',
+        lambda discovery_url: _fake_discovery(device_authorization_endpoint=None),
+    )
+
+    config = _configured_root_config(tmp_path)
+    result = await auth_login(config, _base_args())
+    assert result == 1
+    assert config.auth.session.access_token is None
+
+
+@pytest.mark.asyncio
 async def test_auth_login_client_id_flag_beats_config(monkeypatch, tmp_path):
     captured = {}
 
     class _SpyDeviceCodeClient(_FakeDeviceCodeClient):
-        def __init__(self, issuer, client_id, **kwargs):
+        def __init__(self, endpoints, client_id, **kwargs):
             captured['client_id'] = client_id
-            super().__init__(issuer, client_id, **kwargs)
+            super().__init__(endpoints, client_id, **kwargs)
 
     monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _SpyDeviceCodeClient)
     monkeypatch.setattr('loom.cli.auth.CatalogClient', _fake_catalog_client())

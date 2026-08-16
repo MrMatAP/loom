@@ -5,6 +5,14 @@ from loom.idp.device_flow import (
     DeviceAuthorization,
     DeviceCodeClient,
     DeviceCodeError,
+    DeviceFlowEndpoints,
+)
+
+_ENDPOINTS = DeviceFlowEndpoints(
+    device_authorization_endpoint=(
+        'https://idp.example/realms/loom/protocol/openid-connect/auth/device'
+    ),
+    token_endpoint='https://idp.example/realms/loom/protocol/openid-connect/token',
 )
 
 
@@ -33,7 +41,7 @@ async def test_start_posts_device_authorization_request():
         )
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
     )
@@ -63,7 +71,7 @@ async def test_start_defaults_interval_when_absent():
         )
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
     )
@@ -96,7 +104,7 @@ async def test_poll_returns_tokens_once_authorized():
         )
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
         sleep=_no_sleep,
@@ -131,7 +139,7 @@ async def test_poll_honors_slow_down_and_still_succeeds():
         )
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
         sleep=_no_sleep,
@@ -157,7 +165,7 @@ async def test_poll_raises_on_access_denied():
         return httpx.Response(400, json={'error': 'access_denied'})
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
         sleep=_no_sleep,
@@ -183,7 +191,7 @@ async def test_poll_raises_when_never_authorized_before_expiry():
         return httpx.Response(400, json={'error': 'authorization_pending'})
 
     client = DeviceCodeClient(
-        'https://idp.example/realms/loom',
+        _ENDPOINTS,
         'loom-cli',
         transport=httpx.MockTransport(handler),
         sleep=_no_sleep,

@@ -9,7 +9,8 @@ import pydantic
 from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
 from loom.idp.catalog_roles import expand_claims_to_scopes
-from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError
+from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError, DeviceFlowEndpoints
+from loom.idp.discovery import DiscoveryError, discover_oidc
 
 # Claims worth calling out by name in `whoami` -- everything else in the
 # token still gets printed, just without a caption. `sub` is first since
@@ -58,9 +59,17 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
     later authenticated commands (e.g. `loom capability create`) can reuse
     the session without logging in again.
     """
-    issuer_url = args.issuer_url or config.auth.issuer
-    if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
+    # No `auth.issuer` fallback here, deliberately: unlike the server (see
+    # `security.discover_and_resolve_issuer`), the CLI has no reason to
+    # cache an issuer at all -- it isn't a trust anchor client-side, and a
+    # discovery fetch on every login is cheap. `discovery_url` is the only
+    # thing this command reads from config.
+    discovery_url = args.discovery_url or config.auth.discovery_url
+    if not discovery_url:
+        print(
+            'No --discovery-url given and config.auth.discovery_url is unset; '
+            'run `loom idp register` first, or pass one explicitly.'
+        )
         return 1
     client_id = args.client_id or config.auth.cli_client_id
     if not client_id:
@@ -70,7 +79,25 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
         )
         return 1
 
-    device_client = DeviceCodeClient(issuer_url, client_id)
+    try:
+        discovery = discover_oidc(discovery_url)
+    except DiscoveryError as exc:
+        print(f'Could not reach the IdP: {exc}')
+        return 1
+    if not discovery.device_authorization_endpoint:
+        print(
+            f'{discovery_url} does not advertise a device_authorization_endpoint '
+            '-- this IdP may not support the Device Authorization Grant.'
+        )
+        return 1
+
+    device_client = DeviceCodeClient(
+        DeviceFlowEndpoints(
+            device_authorization_endpoint=discovery.device_authorization_endpoint,
+            token_endpoint=discovery.token_endpoint,
+        ),
+        client_id,
+    )
     authorization = await device_client.start()
     if authorization.verification_uri_complete:
         print(f'Open {authorization.verification_uri_complete} to log in.')
@@ -97,13 +124,22 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
     config.auth.session.tenant_id = None
     config.save()
 
-    await _select_tenant(config, tokens.access_token)
+    if not await _select_tenant(config, tokens.access_token):
+        # Tokens are already cached above -- a redundant device-code login
+        # isn't needed to retry. But the command itself reports failure:
+        # unlike "zero Tenants available" or "declined to choose among
+        # several" (both legitimate outcomes `_select_tenant` still returns
+        # True for), not being able to even *list* Tenants means this login
+        # isn't usable yet, and a script chaining `loom auth login &&
+        # <authenticated command>` should stop here rather than press on
+        # with no Tenant selected.
+        return 1
 
     print('Logged in.')
     return 0
 
 
-async def _select_tenant(config: RootConfig, access_token: str) -> None:
+async def _select_tenant(config: RootConfig, access_token: str) -> bool:
     """Resolve `config.auth.session.tenant_id` right after a fresh login,
     instead of leaving it unset until either an ambiguous request 401s or
     someone remembers to run `loom auth set-tenant` -- see
@@ -111,19 +147,22 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
     "available" means here: every Tenant for a platform admin, else only
     the Tenants this identity already has a Principal in.
 
-    Never fails the login itself -- a Tenant can always be picked
-    afterwards via `loom auth set-tenant`, and a login that already holds
-    valid tokens shouldn't be thrown away just because this best-effort
-    step couldn't reach the API or the caller declined to choose."""
+    Returns whether Tenants could be *listed* at all -- callers treat
+    `False` as a login failure (see `auth_login`). Does not itself require
+    a Tenant to have been *selected*: zero Tenants available, or the
+    caller declining to choose among several, both still return `True` --
+    those are legitimate outcomes a Tenant can always be picked for
+    afterwards via `loom auth set-tenant`. Only a genuine failure to reach
+    the API counts as unable to log in."""
     client = CatalogClient(config.catalog.api_base_url, access_token)
     try:
         page = await client.get('/api/v1/tenants/mine')
     except (CatalogApiError, httpx.HTTPError) as exc:
         print(
-            f'Could not list available Tenants ({exc}); run `loom auth '
-            'set-tenant <tenant_id>` once you know which to use.'
+            f'Could not list available Tenants ({exc}); log in again once '
+            'the API is reachable.'
         )
-        return
+        return False
 
     tenants = page['items']
     await _register_platform_admin_in_default_tenant(client, tenants, access_token)
@@ -133,7 +172,7 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
             'No Tenant is available to this identity yet -- ask your admin to '
             'run `loom principal create` for you (see docs/admin-guide.md).'
         )
-        return
+        return True
 
     if len(tenants) == 1:
         tenant = tenants[0]
@@ -143,7 +182,7 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
             f"Selected Tenant '{tenant['slug']}' ({tenant['id']}) -- the only "
             'one available.'
         )
-        return
+        return True
 
     print('Multiple Tenants are available to this identity -- choose one:')
     for index, tenant in enumerate(tenants, start=1):
@@ -156,13 +195,13 @@ async def _select_tenant(config: RootConfig, access_token: str) -> None:
                 '\nNo Tenant selected; run `loom auth set-tenant <tenant_id>` '
                 'once you know which to use.'
             )
-            return
+            return True
         if choice.isdigit() and 1 <= int(choice) <= len(tenants):
             tenant = tenants[int(choice) - 1]
             config.auth.session.tenant_id = uuid.UUID(tenant['id'])
             config.save()
             print(f"Selected Tenant '{tenant['slug']}' ({tenant['id']}).")
-            return
+            return True
         print(f'Invalid selection {choice!r}, try again.')
 
 

@@ -49,6 +49,15 @@ subsequent request is scoped to that Tenant. `loom auth set-tenant
 <tenant_id>` changes the selection later; `--tenant-id` on an individual
 command overrides it for just that call.
 
+`loom auth login` fails (non-zero exit) if it can't even *list* your
+Tenants -- an unreachable API, for instance. Your tokens are still cached
+in that case (no need to redo the device-code flow), but the command
+reports failure since it couldn't determine what's usable yet; retry once
+the API is reachable, or run `loom auth set-tenant <tenant_id>` directly
+if you already know it. This is different from *zero* Tenants being
+available, or declining to pick among several -- both of those are
+legitimate outcomes and still exit `0`.
+
 `loom auth status` shows whether you're logged in; `loom auth whoami`
 shows who the server thinks you are (your `sub`, roles/scopes, and your
 selected Tenant) -- useful for diagnosing a `401`/`403`; `loom auth logout`

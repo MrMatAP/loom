@@ -8,6 +8,18 @@ from loom.tls import build_ssl_context
 
 
 @dataclasses.dataclass(frozen=True)
+class DeviceFlowEndpoints:
+    """The two endpoints (out of a full `OidcDiscoveryDocument`) the
+    Device Authorization Grant actually needs -- resolved once via
+    discovery by the caller (`cli/auth.py`'s `auth_login`), never assumed
+    to sit at Keycloak's conventional `/protocol/openid-connect/...`
+    paths."""
+
+    device_authorization_endpoint: str
+    token_endpoint: str
+
+
+@dataclasses.dataclass(frozen=True)
 class DeviceAuthorization:
     """A pending device-code login, as returned by the IDP's device endpoint."""
 
@@ -33,22 +45,25 @@ class DeviceCodeError(RuntimeError):
 
 
 class DeviceCodeClient:
-    """OAuth2 Device Authorization Grant (RFC 8628) against Keycloak.
+    """OAuth2 Device Authorization Grant (RFC 8628).
 
     Used by the `loom` CLI itself to authenticate interactively without a
     local browser redirect target, unlike the Swagger UI's Authorization
-    Code + PKCE flow.
+    Code + PKCE flow. Takes resolved endpoints (`DeviceFlowEndpoints`),
+    never a bare issuer -- the caller is responsible for resolving them via
+    OIDC discovery first (`idp/discovery.py`), so this stays IdP-agnostic
+    rather than assuming Keycloak's URL conventions.
     """
 
     def __init__(
         self,
-        issuer: str,
+        endpoints: DeviceFlowEndpoints,
         client_id: str,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self._issuer = issuer.rstrip('/')
+        self._endpoints = endpoints
         self._client_id = client_id
         self._transport = transport
         self._sleep = sleep
@@ -61,7 +76,7 @@ class DeviceCodeClient:
         """Request a device/user code pair; the caller displays it to the user."""
         async with self._client() as http:
             response = await http.post(
-                f'{self._issuer}/protocol/openid-connect/auth/device',
+                self._endpoints.device_authorization_endpoint,
                 data={'client_id': self._client_id},
                 timeout=30.0,
             )
@@ -89,7 +104,7 @@ class DeviceCodeClient:
                 if attempt > 0:
                     await self._sleep(interval)
                 response = await http.post(
-                    f'{self._issuer}/protocol/openid-connect/token',
+                    self._endpoints.token_endpoint,
                     data={
                         'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
                         'device_code': authorization.device_code,

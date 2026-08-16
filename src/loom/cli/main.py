@@ -348,10 +348,10 @@ async def main() -> int:
             'login', help="Log in interactively via the IDP's device-code flow"
         )
         auth_login_parser.add_argument(
-            '--issuer-url',
-            dest='issuer_url',
+            '--discovery-url',
+            dest='discovery_url',
             default=None,
-            help='OIDC realm issuer URL, defaults to config.auth.issuer',
+            help=('OIDC discovery document URL, defaults to config.auth.discovery_url'),
         )
         auth_login_parser.add_argument(
             '--client-id',
