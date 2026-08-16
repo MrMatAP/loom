@@ -1,0 +1,155 @@
+{
+  "name": "loom-catalog",
+  "displayName": "Loom Catalog",
+  "description": "Authenticate against a Loom Catalog API and browse/create Capabilities, Agents, and Model Endpoints from the sidebar.",
+  "version": "0.0.1",
+  "publisher": "loom",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:loomCatalog"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "loom",
+          "title": "Loom",
+          "icon": "media/loom.svg"
+        }
+      ]
+    },
+    "views": {
+      "loom": [
+        {
+          "id": "loomCatalog",
+          "name": "Catalog",
+          "icon": "media/loom.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "loomCatalog",
+        "contents": "Not signed in to a Loom Catalog API.\n[Sign in](command:loom.signIn)\nConfigure `loom.apiBaseUrl`, `loom.discoveryUrl`, and `loom.clientId` first if you haven't -- see the extension README.",
+        "when": "!loom.authenticated"
+      },
+      {
+        "view": "loomCatalog",
+        "contents": "Signed in, but no Tenant is selected yet.\n[Select Tenant](command:loom.selectTenant)",
+        "when": "loom.authenticated && !loom.tenantSelected"
+      }
+    ],
+    "commands": [
+      {
+        "command": "loom.signIn",
+        "title": "Loom: Sign In"
+      },
+      {
+        "command": "loom.signOut",
+        "title": "Loom: Sign Out"
+      },
+      {
+        "command": "loom.selectTenant",
+        "title": "Loom: Select Tenant"
+      },
+      {
+        "command": "loom.refresh",
+        "title": "Loom: Refresh Catalog",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "loom.createEntity",
+        "title": "Loom: Create...",
+        "icon": "$(add)"
+      },
+      {
+        "command": "loom.showEntity",
+        "title": "Loom: Show Details"
+      },
+      {
+        "command": "loom.editAgentPrompt",
+        "title": "Loom: Edit Prompt",
+        "icon": "$(edit)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "loom.refresh",
+          "when": "view == loomCatalog",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "loom.createEntity",
+          "when": "view == loomCatalog && viewItem == loomCategory",
+          "group": "inline"
+        },
+        {
+          "command": "loom.editAgentPrompt",
+          "when": "view == loomCatalog && viewItem == loomEntity:agents",
+          "group": "inline"
+        },
+        {
+          "command": "loom.showEntity",
+          "when": "view == loomCatalog && viewItem =~ /^loomEntity:/",
+          "group": "1_loom"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "loom.showEntity",
+          "when": "false"
+        },
+        {
+          "command": "loom.editAgentPrompt",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Loom Catalog",
+      "properties": {
+        "loom.apiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL the Loom Catalog API is served from (matches `catalog.api_base_url` in the `loom` CLI's config)."
+        },
+        "loom.discoveryUrl": {
+          "type": "string",
+          "default": "",
+          "description": "OIDC discovery document URL (.well-known/openid-configuration), e.g. https://keycloak.example.com/realms/loom/.well-known/openid-configuration. The issuer and every OAuth endpoint (token, device authorization, ...) are read from this document rather than assumed -- never set a bare issuer URL here."
+        },
+        "loom.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "Public OAuth client id for the Device Authorization Grant. Reuse the `loom` CLI's client (see `auth.cli_client_id` in `~/.loom` after `loom idp register`), or register a dedicated one."
+        },
+        "loom.caBundlePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a PEM file with extra CA certificates to trust when calling the issuer/API, in addition to Node's built-in roots. Set this if `loom auth login` needed LOOM_IDP_CA_BUNDLE to reach your IdP."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}
