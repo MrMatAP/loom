@@ -72,8 +72,6 @@ loom = "loom.cli.main:run"
 loom-catalog-api = "loom.api.catalog.main:run"
 loom-catalog-mcp = "loom.api.catalog.mcp.main:run"
 
-# If you are debugging your tests using PyCharm then comment out the coverage options
-# in addopts
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "--cov=loom --cov-branch --cov-report=term --cov-report=xml:build/coverage.xml --junit-xml=build/junit.xml"
@@ -86,8 +84,6 @@ markers = [
 junit_family = "xunit2"
 log_cli = 1
 log_cli_level = "INFO"
-log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
-log_cli_date_format="%Y-%m-%d %H:%M:%S"
 asyncio_default_fixture_loop_scope='session'
 
 [tool.ruff]
