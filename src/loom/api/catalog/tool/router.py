@@ -6,15 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.dependencies import get_current_principal, require_scopes
 from loom.api.catalog.router_factory import build_versioned_router
 from loom.api.catalog.security import AuthenticatedPrincipal
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.tool import ToolDataBindingRead, ToolRead
 
-from .repository import ToolRepository
+from .application_service import ToolApplicationService
 from .schemas import ToolCreateRequest, ToolDataBindingCreateRequest
-from .service import ToolService
 
 
-def _service_factory(session: AsyncSession) -> ToolService:
-    return ToolService(ToolRepository(session))
+def _service_factory(session: AsyncSession) -> ToolApplicationService:
+    return ToolApplicationService(UnitOfWork(session))
 
 
 router, _service = build_versioned_router(
@@ -36,7 +36,7 @@ async def add_tool_data_binding(
     entity_id: uuid.UUID,
     version: int,
     body: ToolDataBindingCreateRequest,
-    service: ToolService = Depends(_service),
+    service: ToolApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:tool:write')),
 ):
@@ -52,7 +52,7 @@ async def add_tool_data_binding(
 async def list_tool_data_bindings(
     entity_id: uuid.UUID,
     version: int,
-    service: ToolService = Depends(_service),
+    service: ToolApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:tool:read')),
 ):

@@ -6,27 +6,26 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from loom.api.catalog.agent.repository import AgentRepository
+from loom.api.catalog.agent.application_service import AgentApplicationService
 from loom.api.catalog.agent.schemas import AgentCreateRequest
-from loom.api.catalog.agent.service import AgentService
-from loom.api.catalog.capability.repository import CapabilityRepository
+from loom.api.catalog.capability.application_service import CapabilityApplicationService
 from loom.api.catalog.capability.schemas import CapabilityCreateRequest
-from loom.api.catalog.capability.service import CapabilityService
-from loom.api.catalog.dataproduct.repository import DataProductRepository
+from loom.api.catalog.dataproduct.application_service import (
+    DataProductApplicationService,
+)
 from loom.api.catalog.dataproduct.schemas import (
     DataProductCreateRequest,
     DataProductLineageCreateRequest,
 )
-from loom.api.catalog.dataproduct.service import DataProductService
-from loom.api.catalog.datasource.repository import DataSourceRepository
+from loom.api.catalog.datasource.application_service import DataSourceApplicationService
 from loom.api.catalog.datasource.schemas import DataSourceCreateRequest
-from loom.api.catalog.datasource.service import DataSourceService
 from loom.api.catalog.dependencies import get_principal_in_tenant
 from loom.api.catalog.environment.repository import EnvironmentRepository
 from loom.api.catalog.environment.service import EnvironmentService
-from loom.api.catalog.model_endpoint.repository import ModelEndpointRepository
+from loom.api.catalog.model_endpoint.application_service import (
+    ModelEndpointApplicationService,
+)
 from loom.api.catalog.model_endpoint.schemas import ModelEndpointCreateRequest
-from loom.api.catalog.model_endpoint.service import ModelEndpointService
 from loom.api.catalog.pagination import Page
 from loom.api.catalog.security import (
     AuthenticatedPrincipal,
@@ -41,12 +40,11 @@ from loom.api.catalog.skill.schemas import (
     SkillGraphEdgeCreateRequest,
     SkillGraphNodeCreateRequest,
 )
-from loom.api.catalog.tool.repository import ToolRepository
+from loom.api.catalog.tool.application_service import ToolApplicationService
 from loom.api.catalog.tool.schemas import (
     ToolCreateRequest,
     ToolDataBindingCreateRequest,
 )
-from loom.api.catalog.tool.service import ToolService
 from loom.domain.enums import LifecycleState
 from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.agent import AgentRead
@@ -155,8 +153,8 @@ _BINDINGS = (
         label='capability',
         plural='capabilities',
         article='a',
-        service_cls=CapabilityService,
-        repository_cls=CapabilityRepository,
+        service_cls=CapabilityApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=CapabilityCreateRequest,
         read_cls=CapabilityRead,
         read_scope='catalog:capability:read',
@@ -167,8 +165,8 @@ _BINDINGS = (
         label='model',
         plural='models',
         article='a',
-        service_cls=ModelEndpointService,
-        repository_cls=ModelEndpointRepository,
+        service_cls=ModelEndpointApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=ModelEndpointCreateRequest,
         read_cls=ModelEndpointRead,
         read_scope='catalog:model_endpoint:read',
@@ -179,8 +177,8 @@ _BINDINGS = (
         label='agent',
         plural='agents',
         article='an',
-        service_cls=AgentService,
-        repository_cls=AgentRepository,
+        service_cls=AgentApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=AgentCreateRequest,
         read_cls=AgentRead,
         read_scope='catalog:agent:read',
@@ -191,8 +189,8 @@ _BINDINGS = (
         label='tool',
         plural='tools',
         article='a',
-        service_cls=ToolService,
-        repository_cls=ToolRepository,
+        service_cls=ToolApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=ToolCreateRequest,
         read_cls=ToolRead,
         read_scope='catalog:tool:read',
@@ -203,8 +201,8 @@ _BINDINGS = (
         label='datasource',
         plural='datasources',
         article='a',
-        service_cls=DataSourceService,
-        repository_cls=DataSourceRepository,
+        service_cls=DataSourceApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=DataSourceCreateRequest,
         read_cls=DataSourceRead,
         read_scope='catalog:datasource:read',
@@ -215,8 +213,8 @@ _BINDINGS = (
         label='dataproduct',
         plural='dataproducts',
         article='a',
-        service_cls=DataProductService,
-        repository_cls=DataProductRepository,
+        service_cls=DataProductApplicationService,
+        repository_cls=UnitOfWork,
         create_request_cls=DataProductCreateRequest,
         read_cls=DataProductRead,
         read_scope='catalog:dataproduct:read',
@@ -635,7 +633,7 @@ def _register_tool_data_binding_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:tool:write', tenant_id=tenant_id
             )
-            service = ToolService(ToolRepository(session))
+            service = ToolApplicationService(UnitOfWork(session))
             binding = await service.add_data_binding(
                 tenant_id=principal.tenant_id,
                 entity_id=entity_id,
@@ -656,7 +654,7 @@ def _register_tool_data_binding_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:tool:read', tenant_id=tenant_id
             )
-            service = ToolService(ToolRepository(session))
+            service = ToolApplicationService(UnitOfWork(session))
             bindings = await service.list_data_bindings(
                 principal.tenant_id, entity_id, version
             )
@@ -690,7 +688,7 @@ def _register_dataproduct_lineage_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:dataproduct:write', tenant_id=tenant_id
             )
-            service = DataProductService(DataProductRepository(session))
+            service = DataProductApplicationService(UnitOfWork(session))
             lineage = await service.add_lineage(
                 tenant_id=principal.tenant_id,
                 entity_id=entity_id,
@@ -713,7 +711,7 @@ def _register_dataproduct_lineage_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:dataproduct:read', tenant_id=tenant_id
             )
-            service = DataProductService(DataProductRepository(session))
+            service = DataProductApplicationService(UnitOfWork(session))
             lineage = await service.list_lineage(
                 principal.tenant_id, entity_id, version
             )

@@ -9,11 +9,10 @@ import uuid
 import pytest
 
 from loom.domain.enums import GraphNodeType, Layer, LifecycleState, SkillKind
-from loom.domain.errors import NotFoundError, ValidationError
+from loom.domain.errors import IllegalTransitionError, NotFoundError, ValidationError
 from loom.domain.skill import (
     AtomicContentError,
     CycleError,
-    IllegalTransitionError,
     LayerViolationError,
     NodeReferenceError,
     Skill,

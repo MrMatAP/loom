@@ -14,6 +14,7 @@ from loom.domain.enums import Layer
 from loom.domain.skill import Skill as DomainSkill
 from loom.domain.skill import SkillGraphEdge as DomainEdge
 from loom.domain.skill import SkillGraphNode as DomainNode
+from loom.persistence.mappers.base import base_domain_kwargs, base_row_kwargs
 from loom.persistence.skill import Skill as SkillRow
 from loom.persistence.skill import SkillGraphEdge as EdgeRow
 from loom.persistence.skill import SkillGraphNode as NodeRow
@@ -50,21 +51,7 @@ def to_domain(
     queries against Agent/Skill/Tool to produce it -- see CONTEXT.md's
     "Opaque leaf" entry."""
     skill = DomainSkill(
-        id=row.id,
-        entity_id=row.entity_id,
-        version=row.version,
-        is_current=row.is_current,
-        tenant_id=row.tenant_id,
-        owner_id=row.owner_id,
-        created_by_id=row.created_by_id,
-        approved_by_id=row.approved_by_id,
-        name=row.name,
-        description=row.description,
-        lifecycle_state=row.lifecycle_state,
-        maturity=row.maturity,
-        classification=row.classification,
-        created_at=row.created_at,
-        approved_at=row.approved_at,
+        **base_domain_kwargs(row),
         layer=row.layer,
         kind=row.kind,
         is_entry_point=row.is_entry_point,
@@ -87,30 +74,13 @@ def to_row(skill: DomainSkill) -> SkillRow:
     """New or updated row for `skill` itself -- not its nodes/edges, which
     the Repository adds separately since only genuinely new ones need a
     fresh row (existing nodes/edges never change, only gain new edges)."""
-    kwargs = {
-        'id': skill.id,
-        'entity_id': skill.entity_id,
-        'version': skill.version,
-        'is_current': skill.is_current,
-        'tenant_id': skill.tenant_id,
-        'owner_id': skill.owner_id,
-        'created_by_id': skill.created_by_id,
-        'approved_by_id': skill.approved_by_id,
-        'name': skill.name,
-        'description': skill.description,
-        'lifecycle_state': skill.lifecycle_state,
-        'maturity': skill.maturity,
-        'classification': skill.classification,
-        'approved_at': skill.approved_at,
-        'layer': skill.layer,
-        'kind': skill.kind,
-        'is_entry_point': skill.is_entry_point,
-        'atomic_content': skill.atomic_content,
-    }
-    # created_at is server_default=now() -- omit rather than pass None so
-    # a brand-new row still gets the DB's clock, not a NOT NULL violation.
-    if skill.created_at is not None:
-        kwargs['created_at'] = skill.created_at
+    kwargs = base_row_kwargs(skill)
+    kwargs.update(
+        layer=skill.layer,
+        kind=skill.kind,
+        is_entry_point=skill.is_entry_point,
+        atomic_content=skill.atomic_content,
+    )
     return SkillRow(**kwargs)
 
 

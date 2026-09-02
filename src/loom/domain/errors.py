@@ -37,3 +37,9 @@ class ConstraintViolation(DomainError):
     """A write violated a storage-level constraint (uniqueness, a FK, a
     CHECK) -- raised by the persistence layer, not the domain object
     itself, since the domain object can't see the database's own rules."""
+
+
+class IllegalTransitionError(InvariantViolation):
+    """A lifecycle transition is not structurally legal, or targets a
+    version that is no longer current. Shared by every AggregateRoot's
+    `transition()` (see `loom.domain.base`)."""

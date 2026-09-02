@@ -1,15 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.router_factory import build_versioned_router
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.agent import AgentRead
 
-from .repository import AgentRepository
+from .application_service import AgentApplicationService
 from .schemas import AgentCreateRequest
-from .service import AgentService
 
 
-def _service_factory(session: AsyncSession) -> AgentService:
-    return AgentService(AgentRepository(session))
+def _service_factory(session: AsyncSession) -> AgentApplicationService:
+    return AgentApplicationService(UnitOfWork(session))
 
 
 router, _service = build_versioned_router(

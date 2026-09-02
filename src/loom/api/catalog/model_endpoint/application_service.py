@@ -1,15 +1,21 @@
 import uuid
 
-from loom.api.catalog.base import BaseService
-from loom.persistence.model_endpoint import ModelEndpoint
+from loom.api.catalog.base_application_service import VersionedApplicationService
+from loom.domain.model_endpoint import ModelEndpoint as DomainModelEndpoint
+from loom.persistence.unit_of_work import UnitOfWork
+from loom.schemas.model_endpoint import ModelEndpointRead
 
 from .schemas import ModelEndpointCreateRequest
 
 
-class ModelEndpointService(BaseService[ModelEndpoint]):
-    """Use-cases for the ModelEndpoint aggregate."""
-
+class ModelEndpointApplicationService(
+    VersionedApplicationService[DomainModelEndpoint, ModelEndpointRead]
+):
     label = 'ModelEndpoint'
+    read_cls = ModelEndpointRead
+
+    def __init__(self, uow: UnitOfWork) -> None:
+        super().__init__(uow, repository_attr='model_endpoints')
 
     async def create(
         self,
@@ -17,8 +23,8 @@ class ModelEndpointService(BaseService[ModelEndpoint]):
         tenant_id: uuid.UUID,
         created_by_id: uuid.UUID,
         data: ModelEndpointCreateRequest,
-    ) -> ModelEndpoint:
-        model_endpoint = ModelEndpoint(
+    ) -> ModelEndpointRead:
+        model_endpoint = DomainModelEndpoint(
             tenant_id=tenant_id,
             owner_id=created_by_id,
             created_by_id=created_by_id,
@@ -29,7 +35,8 @@ class ModelEndpointService(BaseService[ModelEndpoint]):
             model=data.model,
             auth_binding_id=data.auth_binding_id,
         )
-        return await self._repository.add(model_endpoint)
+        saved = await self._repo.add(model_endpoint)
+        return self._read(saved)
 
     async def create_new_version(
         self,
@@ -38,19 +45,9 @@ class ModelEndpointService(BaseService[ModelEndpoint]):
         created_by_id: uuid.UUID,
         entity_id: uuid.UUID,
         data: ModelEndpointCreateRequest,
-    ) -> ModelEndpoint:
-        current = await self.get_current(tenant_id, entity_id)
-        current.is_current = False
-        await self._repository.save(current)
-        new_version = ModelEndpoint(
-            entity_id=entity_id,
-            version=current.version + 1,
-            is_current=True,
-            tenant_id=tenant_id,
-            # Ownership carries over from the prior version -- there's no
-            # more owner_id input to override it with (always inferred,
-            # never caller-supplied).
-            owner_id=current.owner_id,
+    ) -> ModelEndpointRead:
+        current = await self._get_current_or_raise(tenant_id, entity_id)
+        new_version = current.new_version(
             created_by_id=created_by_id,
             name=data.name,
             description=data.description,
@@ -59,4 +56,6 @@ class ModelEndpointService(BaseService[ModelEndpoint]):
             model=data.model,
             auth_binding_id=data.auth_binding_id,
         )
-        return await self._repository.add(new_version)
+        await self._repo.save(current)
+        saved = await self._repo.add(new_version)
+        return self._read(saved)

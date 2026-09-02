@@ -13,19 +13,11 @@ nothing about how a Skill is stored or served.
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import uuid
 
-from loom.domain.enums import (
-    Classification,
-    GraphNodeType,
-    Layer,
-    LifecycleState,
-    MaturityLevel,
-    SkillKind,
-)
+from loom.domain.base import AggregateRoot
+from loom.domain.enums import GraphNodeType, Layer, SkillKind
 from loom.domain.errors import InvariantViolation, NotFoundError, ValidationError
-from loom.domain.lifecycle import is_legal_transition
 
 # Rank for the "may call same layer or lower" rule (CLAUDE.md's layer
 # table). Not the enum's declaration order -- kept as an explicit mapping
@@ -56,11 +48,6 @@ class CycleError(InvariantViolation):
     """An edge would close a cycle in the Skill's graph. Layer-descent
     legality alone doesn't rule this out -- same-layer edges are legal and
     can still form a cycle -- so this is checked independently."""
-
-
-class IllegalTransitionError(InvariantViolation):
-    """A lifecycle transition is not structurally legal, or targets a
-    version that is no longer current."""
 
 
 @dataclasses.dataclass
@@ -129,32 +116,17 @@ class SkillGraphEdge:
     id: uuid.UUID = dataclasses.field(default_factory=uuid.uuid4)
 
 
-@dataclasses.dataclass
-class Skill:
+@dataclasses.dataclass(kw_only=True)
+class Skill(AggregateRoot):
     """Composable capability: atomic (prompt/code) or composite (a graph
     of Agent/Skill/Tool nodes). The Aggregate root for itself and its own
     `nodes`/`edges` -- see CONTEXT.md's "Aggregate (root)" entry: nothing
     outside this class ever mutates `nodes`/`edges` directly."""
 
-    tenant_id: uuid.UUID
-    owner_id: uuid.UUID
-    created_by_id: uuid.UUID
-    name: str
     layer: Layer
     kind: SkillKind
-    description: str | None = None
     is_entry_point: bool = False
     atomic_content: dict | None = None
-    lifecycle_state: LifecycleState = LifecycleState.DRAFT
-    maturity: MaturityLevel = MaturityLevel.EXPERIMENTAL
-    classification: Classification = Classification.INTERNAL
-    entity_id: uuid.UUID = dataclasses.field(default_factory=uuid.uuid4)
-    version: int = 1
-    is_current: bool = True
-    id: uuid.UUID = dataclasses.field(default_factory=uuid.uuid4)
-    created_at: datetime.datetime | None = None
-    approved_at: datetime.datetime | None = None
-    approved_by_id: uuid.UUID | None = None
     nodes: list[SkillGraphNode] = dataclasses.field(default_factory=list)
     edges: list[SkillGraphEdge] = dataclasses.field(default_factory=list)
 
@@ -166,73 +138,17 @@ class Skill:
 
     # -- versioning ---------------------------------------------------
 
-    def new_version(
-        self,
-        *,
-        created_by_id: uuid.UUID,
-        name: str,
-        layer: Layer,
-        kind: SkillKind,
-        description: str | None = None,
-        is_entry_point: bool = False,
-        atomic_content: dict | None = None,
-    ) -> Skill:
-        """Content changes always create a new, immutable version row --
-        never an in-place edit (see CONTEXT.md / the registry data-model
-        design doc). Marks `self` no-longer-current as bookkeeping on the
-        prior row, same as `VersionedEntityMixin.is_current`'s docstring
-        describes, and returns the new current version. A fresh graph:
-        nodes/edges belong to one specific version, never carried forward.
-        """
-        self.is_current = False
-        return Skill(
-            entity_id=self.entity_id,
-            version=self.version + 1,
-            is_current=True,
-            tenant_id=self.tenant_id,
-            owner_id=self.owner_id,  # ownership carries over, never re-specified
-            created_by_id=created_by_id,
-            name=name,
-            description=description,
-            layer=layer,
-            kind=kind,
-            is_entry_point=is_entry_point,
-            atomic_content=atomic_content,
-        )
-
-    def transition(
-        self, to_state: LifecycleState, *, actor_id: uuid.UUID, now: datetime.datetime
-    ) -> None:
-        """Mutate `lifecycle_state` in place on this (current) version row --
-        a deliberate, documented deviation from "content changes always
-        version" for governance-state changes specifically (see the
-        catalog-api design doc's flagged deviation)."""
-        if not is_legal_transition(self.lifecycle_state, to_state):
-            raise IllegalTransitionError(
-                f'{self.lifecycle_state} -> {to_state} is not a legal transition'
-            )
-        self.lifecycle_state = to_state
-        if to_state == LifecycleState.APPROVED:
-            self.approved_by_id = actor_id
-            self.approved_at = now
-
-    # -- descriptive fields: no invariant, so a generic setter is fine --
-
-    def update(self, **fields: object) -> None:
-        """Mutate purely descriptive fields with no business rule attached
-        (name, description, maturity, classification) -- the generic half
-        of the hybrid mutation API (CONTEXT.md's `update(**fields)`
-        decision). `layer`/`kind`/lifecycle/graph edits all go through
-        their own named, invariant-checked methods instead."""
-        allowed = {'name', 'description', 'maturity', 'classification'}
-        unknown = fields.keys() - allowed
-        if unknown:
-            raise ValidationError(
-                f'update() cannot set {sorted(unknown)} -- '
-                f'those fields have dedicated methods'
-            )
-        for field, value in fields.items():
-            setattr(self, field, value)
+    def new_version(self, *, created_by_id: uuid.UUID, **content_fields: object) -> Skill:
+        """Same as `AggregateRoot.new_version`, except a fresh version
+        always starts with an empty graph -- nodes/edges belong to one
+        specific version, never carried forward. `dataclasses.replace`
+        (which the base method uses) would otherwise alias the *same*
+        `nodes`/`edges` list objects from `self` rather than resetting
+        them, unless a caller remembered to pass `nodes=[]`/`edges=[]`
+        explicitly every time -- so this does it for them."""
+        content_fields.setdefault('nodes', [])
+        content_fields.setdefault('edges', [])
+        return super().new_version(created_by_id=created_by_id, **content_fields)
 
     # -- graph -----------------------------------------------------------
 

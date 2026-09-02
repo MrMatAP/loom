@@ -8,8 +8,7 @@ import datetime
 import uuid
 
 from loom.domain.enums import LifecycleState
-from loom.domain.errors import NotFoundError
-from loom.domain.skill import IllegalTransitionError
+from loom.domain.errors import IllegalTransitionError, NotFoundError
 from loom.domain.skill import Skill as DomainSkill
 from loom.domain.skill import SkillGraphEdge as DomainEdge
 from loom.domain.skill import SkillGraphNode as DomainNode

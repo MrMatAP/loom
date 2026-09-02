@@ -6,15 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.dependencies import get_current_principal, require_scopes
 from loom.api.catalog.router_factory import build_versioned_router
 from loom.api.catalog.security import AuthenticatedPrincipal
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.capability import CapabilityRead, CapabilityRealizationRead
 
-from .repository import CapabilityRepository
+from .application_service import CapabilityApplicationService
 from .schemas import CapabilityCreateRequest, CapabilityRealizationCreateRequest
-from .service import CapabilityService
 
 
-def _service_factory(session: AsyncSession) -> CapabilityService:
-    return CapabilityService(CapabilityRepository(session))
+def _service_factory(session: AsyncSession) -> CapabilityApplicationService:
+    return CapabilityApplicationService(UnitOfWork(session))
 
 
 router, _service = build_versioned_router(
@@ -36,7 +36,7 @@ async def add_capability_realization(
     entity_id: uuid.UUID,
     version: int,
     body: CapabilityRealizationCreateRequest,
-    service: CapabilityService = Depends(_service),
+    service: CapabilityApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:capability:write')),
 ):
@@ -52,7 +52,7 @@ async def add_capability_realization(
 async def list_capability_realizations(
     entity_id: uuid.UUID,
     version: int,
-    service: CapabilityService = Depends(_service),
+    service: CapabilityApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:capability:read')),
 ):

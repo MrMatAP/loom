@@ -1,8 +1,7 @@
 """Owns the transaction boundary for one logical operation and exposes one
 Repository per Aggregate it touches -- see CONTEXT.md's "Unit of Work"
-entry. Only `skills` today (the pilot); a future Aggregate's Repository
-gets its own lazily-constructed property here, not a second UnitOfWork
-class.
+entry. One property per Aggregate root, all seven now generalized from the
+Skill pilot (docs/adr/0001-ddd-separation-for-catalog-domain.md).
 """
 
 from collections.abc import AsyncGenerator
@@ -11,7 +10,15 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from loom.persistence.repositories.agent_repository import AgentRepository
+from loom.persistence.repositories.capability_repository import CapabilityRepository
+from loom.persistence.repositories.dataproduct_repository import DataProductRepository
+from loom.persistence.repositories.datasource_repository import DataSourceRepository
+from loom.persistence.repositories.model_endpoint_repository import (
+    ModelEndpointRepository,
+)
 from loom.persistence.repositories.skill_repository import SkillRepository
+from loom.persistence.repositories.tool_repository import ToolRepository
 
 
 class UnitOfWork:
@@ -22,7 +29,13 @@ class UnitOfWork:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self.capabilities = CapabilityRepository(session)
+        self.agents = AgentRepository(session)
         self.skills = SkillRepository(session)
+        self.tools = ToolRepository(session)
+        self.datasources = DataSourceRepository(session)
+        self.dataproducts = DataProductRepository(session)
+        self.model_endpoints = ModelEndpointRepository(session)
 
     async def commit(self) -> None:
         await self._session.commit()

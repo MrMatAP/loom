@@ -6,15 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.dependencies import get_current_principal, require_scopes
 from loom.api.catalog.router_factory import build_versioned_router
 from loom.api.catalog.security import AuthenticatedPrincipal
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.dataproduct import DataProductLineageRead, DataProductRead
 
-from .repository import DataProductRepository
+from .application_service import DataProductApplicationService
 from .schemas import DataProductCreateRequest, DataProductLineageCreateRequest
-from .service import DataProductService
 
 
-def _service_factory(session: AsyncSession) -> DataProductService:
-    return DataProductService(DataProductRepository(session))
+def _service_factory(session: AsyncSession) -> DataProductApplicationService:
+    return DataProductApplicationService(UnitOfWork(session))
 
 
 router, _service = build_versioned_router(
@@ -36,7 +36,7 @@ async def add_dataproduct_lineage(
     entity_id: uuid.UUID,
     version: int,
     body: DataProductLineageCreateRequest,
-    service: DataProductService = Depends(_service),
+    service: DataProductApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:dataproduct:write')),
 ):
@@ -52,7 +52,7 @@ async def add_dataproduct_lineage(
 async def list_dataproduct_lineage(
     entity_id: uuid.UUID,
     version: int,
-    service: DataProductService = Depends(_service),
+    service: DataProductApplicationService = Depends(_service),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     _scopes: None = Depends(require_scopes('catalog:dataproduct:read')),
 ):

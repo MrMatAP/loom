@@ -1,15 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.router_factory import build_versioned_router
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.datasource import DataSourceRead
 
-from .repository import DataSourceRepository
+from .application_service import DataSourceApplicationService
 from .schemas import DataSourceCreateRequest
-from .service import DataSourceService
 
 
-def _service_factory(session: AsyncSession) -> DataSourceService:
-    return DataSourceService(DataSourceRepository(session))
+def _service_factory(session: AsyncSession) -> DataSourceApplicationService:
+    return DataSourceApplicationService(UnitOfWork(session))
 
 
 router, _service = build_versioned_router(
