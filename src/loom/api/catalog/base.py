@@ -11,8 +11,8 @@ from loom.api.catalog.db import (
     flush_or_raise,
 )
 from loom.api.catalog.exceptions import EntityNotFoundError, IllegalTransitionError
-from loom.api.catalog.lifecycle import is_legal_transition
 from loom.domain.enums import LifecycleState
+from loom.domain.lifecycle import is_legal_transition
 from loom.persistence.base import VersionedEntityMixin
 
 T = TypeVar('T', bound=VersionedEntityMixin)

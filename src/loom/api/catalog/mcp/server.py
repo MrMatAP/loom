@@ -35,13 +35,12 @@ from loom.api.catalog.security import (
     assert_scopes,
     expand_claims_to_scopes,
 )
-from loom.api.catalog.skill.repository import SkillRepository
+from loom.api.catalog.skill.application_service import SkillApplicationService
 from loom.api.catalog.skill.schemas import (
     SkillCreateRequest,
     SkillGraphEdgeCreateRequest,
     SkillGraphNodeCreateRequest,
 )
-from loom.api.catalog.skill.service import SkillService
 from loom.api.catalog.tool.repository import ToolRepository
 from loom.api.catalog.tool.schemas import (
     ToolCreateRequest,
@@ -49,6 +48,7 @@ from loom.api.catalog.tool.schemas import (
 )
 from loom.api.catalog.tool.service import ToolService
 from loom.domain.enums import LifecycleState
+from loom.persistence.unit_of_work import UnitOfWork
 from loom.schemas.agent import AgentRead
 from loom.schemas.capability import CapabilityRead
 from loom.schemas.dataproduct import DataProductLineageRead, DataProductRead
@@ -186,18 +186,6 @@ _BINDINGS = (
         read_scope='catalog:agent:read',
         write_scope='catalog:agent:write',
         transition_scope='catalog:agent:transition',
-    ),
-    ResourceBinding(
-        label='skill',
-        plural='skills',
-        article='a',
-        service_cls=SkillService,
-        repository_cls=SkillRepository,
-        create_request_cls=SkillCreateRequest,
-        read_cls=SkillRead,
-        read_scope='catalog:skill:read',
-        write_scope='catalog:skill:write',
-        transition_scope='catalog:skill:transition',
     ),
     ResourceBinding(
         label='tool',
@@ -410,12 +398,18 @@ def _register_resource_tools(
             return binding.read_cls.model_validate(transitioned)
 
 
-def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
-    """Register `add_skill_node`/`list_skill_nodes`/`add_skill_edge`/
-    `list_skill_edges` -- Skill's graph sub-resource, keyed on
-    `(entity_id, version)` rather than `entity_id` alone, so it doesn't fit
-    `_register_resource_tools`'s shape (mirrors `skill/router.py`'s
-    node/edge endpoints)."""
+def _register_skill_tools(mcp: FastMCP, state: McpState) -> None:
+    """Register every Skill tool: the same create/get/list/versions/
+    update/transition six `_register_resource_tools` gives the other six
+    resources, plus `add_skill_node`/`list_skill_nodes`/`add_skill_edge`/
+    `list_skill_edges` for its graph sub-resource. Skill gets its own
+    registration function, not a `_BINDINGS` entry, because it no longer
+    goes through a bare `Service(Repository(session))` pair -- it's
+    `SkillApplicationService(UnitOfWork(session))` now (see
+    docs/adr/0001-ddd-separation-for-catalog-domain.md), and the graph
+    tools are keyed on `(entity_id, version)` rather than `entity_id`
+    alone either way, so they never fit `_register_resource_tools`'s
+    shape (mirrors `skill/router.py`'s routes)."""
 
     async def _principal(
         session: AsyncSession, *, scope: str, tenant_id: uuid.UUID
@@ -423,6 +417,125 @@ def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
         principal = await _authenticated_principal(state, session, tenant_id=tenant_id)
         assert_scopes(principal.scopes, scope)
         return principal
+
+    @mcp.tool(description='Create a Skill in tenant_id.')
+    async def create_skill(tenant_id: uuid.UUID, data: SkillCreateRequest) -> SkillRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:write', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            result = await svc.create(
+                tenant_id=principal.tenant_id,
+                created_by_id=principal.principal_id,
+                data=data,
+            )
+            await session.commit()
+            return result
+
+    @mcp.tool(description='Get the current version of a Skill in tenant_id.')
+    async def get_skill(tenant_id: uuid.UUID, entity_id: uuid.UUID) -> SkillRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            return await svc.get_current(principal.tenant_id, entity_id)
+
+    @mcp.tool(
+        description='List current versions of Skills in tenant_id, optionally '
+        'filtered by lifecycle_state.'
+    )
+    async def list_skills(
+        tenant_id: uuid.UUID,
+        lifecycle_state: LifecycleState | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page[SkillRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            items, total = await svc.list_current(
+                principal.tenant_id,
+                lifecycle_state=lifecycle_state,
+                limit=limit,
+                offset=offset,
+            )
+            return Page[SkillRead](items=items, total=total, limit=limit, offset=offset)
+
+    @mcp.tool(description='List every version of a Skill in tenant_id.')
+    async def list_skill_versions(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID
+    ) -> list[SkillRead]:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            return await svc.list_versions(principal.tenant_id, entity_id)
+
+    @mcp.tool(description='Get one specific version of a Skill in tenant_id.')
+    async def get_skill_version(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int
+    ) -> SkillRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:read', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            return await svc.get_version(principal.tenant_id, entity_id, version)
+
+    @mcp.tool(
+        description=(
+            'Create a new version of a Skill in tenant_id -- entities in this '
+            'registry are append-only/versioned, so "update" means a new version '
+            'row, not an in-place mutation of the current one.'
+        )
+    )
+    async def update_skill(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, data: SkillCreateRequest
+    ) -> SkillRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:write', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            result = await svc.create_new_version(
+                tenant_id=principal.tenant_id,
+                created_by_id=principal.principal_id,
+                entity_id=entity_id,
+                data=data,
+            )
+            await session.commit()
+            return result
+
+    @mcp.tool(description='Transition a Skill in tenant_id to a new lifecycle state.')
+    async def transition_skill(
+        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int, to_state: LifecycleState
+    ) -> SkillRead:
+        session_factory = _require_session_factory(state)
+        async with session_factory() as session:
+            principal = await _principal(
+                session, scope='catalog:skill:transition', tenant_id=tenant_id
+            )
+            svc = SkillApplicationService(UnitOfWork(session))
+            result = await svc.transition(
+                tenant_id=principal.tenant_id,
+                entity_id=entity_id,
+                version=version,
+                to_state=to_state,
+                actor_id=principal.principal_id,
+            )
+            await session.commit()
+            return result
 
     @mcp.tool(description="Add a node to one version of a Skill's graph in tenant_id.")
     async def add_skill_node(
@@ -436,15 +549,15 @@ def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:skill:write', tenant_id=tenant_id
             )
-            service = SkillService(SkillRepository(session))
-            node = await service.add_node(
+            svc = SkillApplicationService(UnitOfWork(session))
+            result = await svc.add_node(
                 tenant_id=principal.tenant_id,
                 entity_id=entity_id,
                 version=version,
                 data=data,
             )
             await session.commit()
-            return SkillGraphNodeRead.model_validate(node)
+            return result
 
     @mcp.tool(
         description="List the nodes of one version of a Skill's graph in tenant_id."
@@ -457,9 +570,8 @@ def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:skill:read', tenant_id=tenant_id
             )
-            service = SkillService(SkillRepository(session))
-            nodes = await service.list_nodes(principal.tenant_id, entity_id, version)
-            return [SkillGraphNodeRead.model_validate(n) for n in nodes]
+            svc = SkillApplicationService(UnitOfWork(session))
+            return await svc.list_nodes(principal.tenant_id, entity_id, version)
 
     @mcp.tool(description="Add an edge to one version of a Skill's graph in tenant_id.")
     async def add_skill_edge(
@@ -473,15 +585,15 @@ def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:skill:write', tenant_id=tenant_id
             )
-            service = SkillService(SkillRepository(session))
-            edge = await service.add_edge(
+            svc = SkillApplicationService(UnitOfWork(session))
+            result = await svc.add_edge(
                 tenant_id=principal.tenant_id,
                 entity_id=entity_id,
                 version=version,
                 data=data,
             )
             await session.commit()
-            return SkillGraphEdgeRead.model_validate(edge)
+            return result
 
     @mcp.tool(
         description="List the edges of one version of a Skill's graph in tenant_id."
@@ -494,9 +606,8 @@ def _register_skill_graph_tools(mcp: FastMCP, state: McpState) -> None:
             principal = await _principal(
                 session, scope='catalog:skill:read', tenant_id=tenant_id
             )
-            service = SkillService(SkillRepository(session))
-            edges = await service.list_edges(principal.tenant_id, entity_id, version)
-            return [SkillGraphEdgeRead.model_validate(e) for e in edges]
+            svc = SkillApplicationService(UnitOfWork(session))
+            return await svc.list_edges(principal.tenant_id, entity_id, version)
 
 
 def _register_tool_data_binding_tools(mcp: FastMCP, state: McpState) -> None:
@@ -720,7 +831,7 @@ def create_mcp_server(state: McpState) -> FastMCP:
     mcp = FastMCP('Loom Catalog')
     for binding in _BINDINGS:
         _register_resource_tools(mcp, state, binding)
-    _register_skill_graph_tools(mcp, state)
+    _register_skill_tools(mcp, state)
     _register_tool_data_binding_tools(mcp, state)
     _register_dataproduct_lineage_tools(mcp, state)
     _register_environment_tools(mcp, state)

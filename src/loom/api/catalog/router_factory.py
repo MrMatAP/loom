@@ -9,10 +9,10 @@ from loom.api.catalog.dependencies import (
     get_session,
     require_scopes,
 )
-from loom.api.catalog.lifecycle import TransitionRequest
 from loom.api.catalog.pagination import Page, PaginationParams
 from loom.api.catalog.security import AuthenticatedPrincipal
 from loom.domain.enums import LifecycleState
+from loom.schemas.lifecycle import TransitionRequest
 
 from .base import BaseService
 

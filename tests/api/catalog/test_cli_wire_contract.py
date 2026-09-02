@@ -369,16 +369,36 @@ async def test_skill_create_and_node_edge_wire_contract(
     assert rendered['detail']['is_entry_point'] is True
     entity_id = uuid.UUID(rendered['detail']['entity_id'])
 
+    # A second Skill purely to give 'step-1' below a non-Tool reference:
+    # Tool is never a legal edge *source* (loom.domain.skill.add_edge --
+    # it's the unconditionally-legal call *target* every layer may reach,
+    # never the caller), so the two-Tool-node edge this test used to wire
+    # would now be rejected as a layer violation.
+    sub_skill_exit_code = await catalog.skill_create(
+        config,
+        argparse.Namespace(
+            name='Wire Contract Sub-Skill',
+            description=None,
+            layer='business_ops',
+            kind='composite',
+            is_entry_point=False,
+            atomic_content=None,
+            tenant_id=tenant_id,
+        ),
+    )
+    assert sub_skill_exit_code == 0
+    sub_skill_id = uuid.UUID(rendered['detail']['id'])
+
     node_add_exit_code = await catalog.skill_node_add(
         config,
         argparse.Namespace(
             entity_id=entity_id,
             version=1,
             node_key='step-1',
-            node_type='tool',
+            node_type='skill',
             agent_id=None,
-            skill_ref_id=None,
-            tool_id=tool_id,
+            skill_ref_id=sub_skill_id,
+            tool_id=None,
             position=None,
             tenant_id=tenant_id,
         ),

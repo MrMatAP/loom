@@ -14,5 +14,6 @@
 ## Consequences
 
 - The Skill Aggregate treats a referenced Skill (`skill_ref_id`) node as an **opaque leaf** — layer-descent checking uses that Skill's own stored `layer`, never its internal graph. Cycle detection is scoped to one Skill's own node/edge graph only; a cross-Skill reference cycle (A references B, B references A) is explicitly out of scope for this pass — a separate, later catalog-wide concern.
+- A Tool-referencing node can never originate an edge (`add_edge` raises `LayerViolationError`) — an inference beyond what was explicitly grilled, not stated verbatim in CLAUDE.md's layer table. Reasoning: that table only ever lists Tool as something a layer *may call*, never as a caller, and nothing in the entity model gives a deterministic automation endpoint the ability to invoke something else in the graph. Revisit if that reading turns out wrong.
 - `loom.cli.catalog` is unaffected — it already talks to the Catalog over HTTP via `CatalogClient`/httpx, not by importing `loom.model`/services directly.
 - `loom.model` → `loom.persistence` and `loom.model.schemas` → `loom.schemas` are mass renames touching every import in the codebase; not undone lightly.

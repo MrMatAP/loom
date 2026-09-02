@@ -494,9 +494,23 @@ async def test_skill_node_and_edge_tools(mcp_server, monkeypatch, tenant_id):
         )
         entity_id = str(skill.data.entity_id)
 
-        tool_a = await client.call_tool(
-            'create_tool',
-            {'tenant_id': tenant_id, 'data': {'name': 'A', 'invocation_spec': {}}},
+        # node_a references an Agent, not a Tool: Tool is never a legal
+        # edge *source* (loom.domain.skill.add_edge -- it's the
+        # unconditionally-legal call *target* every layer may reach,
+        # never the caller), so two Tool-referencing nodes can't be wired
+        # to each other.
+        agent_a = await client.call_tool(
+            'create_agent',
+            {
+                'tenant_id': tenant_id,
+                'data': {
+                    'name': 'A',
+                    'layer': 'infra_ops',
+                    'llm_config': {},
+                    'prompt': 'p',
+                    'memory_scope': 'none',
+                },
+            },
         )
         tool_b = await client.call_tool(
             'create_tool',
@@ -511,8 +525,8 @@ async def test_skill_node_and_edge_tools(mcp_server, monkeypatch, tenant_id):
                 'version': 1,
                 'data': {
                     'node_key': 'a',
-                    'node_type': 'tool',
-                    'tool_id': str(tool_a.data.id),
+                    'node_type': 'agent',
+                    'agent_id': str(agent_a.data.id),
                 },
             },
         )

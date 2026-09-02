@@ -49,14 +49,21 @@ async def test_composite_skill_graph_lifecycle(api_client, fake_principal):
     assert node_resp.status_code == 201
     node_id = node_resp.json()['id']
 
+    second_node_resp = await api_client.post(
+        f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes',
+        json={'node_key': 'end', 'node_type': 'agent', 'agent_id': agent_version_id},
+    )
+    assert second_node_resp.status_code == 201
+    second_node_id = second_node_resp.json()['id']
+
     nodes_resp = await api_client.get(
         f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes'
     )
-    assert len(nodes_resp.json()) == 1
+    assert len(nodes_resp.json()) == 2
 
     edge_resp = await api_client.post(
         f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/edges',
-        json={'from_node_id': node_id, 'to_node_id': node_id},
+        json={'from_node_id': node_id, 'to_node_id': second_node_id},
     )
     assert edge_resp.status_code == 201
 
@@ -169,3 +176,104 @@ async def test_edge_on_a_different_version_of_the_same_skill_is_rejected(
         json={'from_node_id': v1_node_id, 'to_node_id': v1_node_id},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_edge_closing_a_cycle_is_rejected(api_client, fake_principal):
+    tenant_id = fake_principal.tenant_id
+    entity_id = await _create_composite_skill(api_client, tenant_id, 'cyclic-flow')
+    agent_resp = await api_client.post(
+        f'/api/v1/tenants/{tenant_id}/agents',
+        json={
+            'name': 'Cycle Agent',
+            'layer': 'business_ops',
+            'llm_config': {},
+            'prompt': 'p',
+            'memory_scope': 'none',
+        },
+    )
+    agent_version_id = agent_resp.json()['id']
+
+    node_a = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes',
+            json={'node_key': 'a', 'node_type': 'agent', 'agent_id': agent_version_id},
+        )
+    ).json()['id']
+    node_b = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes',
+            json={'node_key': 'b', 'node_type': 'agent', 'agent_id': agent_version_id},
+        )
+    ).json()['id']
+
+    first_edge = await api_client.post(
+        f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/edges',
+        json={'from_node_id': node_a, 'to_node_id': node_b},
+    )
+    assert first_edge.status_code == 201
+
+    closing_edge = await api_client.post(
+        f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/edges',
+        json={'from_node_id': node_b, 'to_node_id': node_a},
+    )
+    assert closing_edge.status_code == 409
+    assert closing_edge.json()['error_code'] == 'invariant_violation'
+
+
+@pytest.mark.asyncio
+async def test_edge_violating_layer_descent_is_rejected(api_client, fake_principal):
+    """InfraOps may not call upward into BusinessOps (CLAUDE.md's layer
+    table) -- even though both nodes belong to the same Skill and the DB
+    has no column encoding this rule anywhere."""
+    tenant_id = fake_principal.tenant_id
+    entity_id = await _create_composite_skill(api_client, tenant_id, 'layered-flow')
+
+    infra_agent = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/agents',
+            json={
+                'name': 'Infra Agent',
+                'layer': 'infra_ops',
+                'llm_config': {},
+                'prompt': 'p',
+                'memory_scope': 'none',
+            },
+        )
+    ).json()['id']
+    business_agent = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/agents',
+            json={
+                'name': 'Business Agent',
+                'layer': 'business_ops',
+                'llm_config': {},
+                'prompt': 'p',
+                'memory_scope': 'none',
+            },
+        )
+    ).json()['id']
+
+    node_infra = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes',
+            json={'node_key': 'infra', 'node_type': 'agent', 'agent_id': infra_agent},
+        )
+    ).json()['id']
+    node_business = (
+        await api_client.post(
+            f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/nodes',
+            json={
+                'node_key': 'business',
+                'node_type': 'agent',
+                'agent_id': business_agent,
+            },
+        )
+    ).json()['id']
+
+    resp = await api_client.post(
+        f'/api/v1/tenants/{tenant_id}/skills/{entity_id}/versions/1/edges',
+        json={'from_node_id': node_infra, 'to_node_id': node_business},
+    )
+    assert resp.status_code == 409
+    assert resp.json()['error_code'] == 'invariant_violation'
