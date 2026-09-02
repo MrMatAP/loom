@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import ModelProtocol
+from loom.domain.enums import ModelProtocol
 
 
 class ModelEndpointCreateRequest(BaseModel):

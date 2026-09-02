@@ -1,9 +1,9 @@
 import uuid
 
 from loom.api.catalog.base import BaseService
-from loom.model.dataproduct import DataProduct
-from loom.model.datasource import DataSource
-from loom.model.tool import Tool, ToolDataBinding
+from loom.persistence.dataproduct import DataProduct
+from loom.persistence.datasource import DataSource
+from loom.persistence.tool import Tool, ToolDataBinding
 
 from .schemas import ToolCreateRequest, ToolDataBindingCreateRequest
 

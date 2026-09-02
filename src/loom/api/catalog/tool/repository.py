@@ -4,7 +4,7 @@ import sqlalchemy as sa
 
 from loom.api.catalog.base import BaseRepository
 from loom.api.catalog.db import flush_or_raise
-from loom.model.tool import Tool, ToolDataBinding
+from loom.persistence.tool import Tool, ToolDataBinding
 
 
 class ToolRepository(BaseRepository[Tool]):

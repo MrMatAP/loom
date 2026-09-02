@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.audit import AuditActor, get_audit_actor, record_audit_event
 from loom.api.catalog.dependencies import get_session, require_scopes
 from loom.api.catalog.pagination import Page, PaginationParams
-from loom.model.schemas.tenant import PrincipalCreate, PrincipalRead
+from loom.schemas.tenant import PrincipalCreate, PrincipalRead
 
 from .repository import PrincipalRepository
 from .service import PrincipalService

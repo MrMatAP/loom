@@ -26,8 +26,8 @@ async def test_dataproduct_full_lifecycle(api_client, fake_principal):
 
 @pytest.mark.asyncio
 async def test_lineage_is_version_scoped(api_client, fake_principal, async_session):
-    from loom.model.datasource import DataSource
-    from loom.model.enums import DataSourceKind
+    from loom.domain.enums import DataSourceKind
+    from loom.persistence.datasource import DataSource
 
     tenant_id = fake_principal.tenant_id
     datasource = DataSource(

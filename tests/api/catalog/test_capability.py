@@ -1,7 +1,7 @@
 import pytest
 
-from loom.model.agent import Agent
-from loom.model.enums import Layer, MemoryScope, RealizingEntityType
+from loom.domain.enums import Layer, MemoryScope, RealizingEntityType
+from loom.persistence.agent import Agent
 
 
 @pytest.mark.asyncio

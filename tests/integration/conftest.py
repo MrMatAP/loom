@@ -12,7 +12,7 @@ from sqlalchemy import Engine
 
 from loom.config.database_config import DatabaseConfig
 from loom.idp.keycloak import KeycloakAdminClient
-from loom.model.engine import get_engine
+from loom.persistence.engine import get_engine
 from loom.tls import build_ssl_context
 
 from .live import (

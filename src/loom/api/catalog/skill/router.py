@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.dependencies import get_current_principal, require_scopes
 from loom.api.catalog.router_factory import build_versioned_router
 from loom.api.catalog.security import AuthenticatedPrincipal
-from loom.model.schemas.skill import SkillGraphEdgeRead, SkillGraphNodeRead, SkillRead
+from loom.schemas.skill import SkillGraphEdgeRead, SkillGraphNodeRead, SkillRead
 
 from .repository import SkillRepository
 from .schemas import (

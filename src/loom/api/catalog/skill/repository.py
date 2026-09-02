@@ -4,7 +4,7 @@ import sqlalchemy as sa
 
 from loom.api.catalog.base import BaseRepository
 from loom.api.catalog.db import flush_or_raise
-from loom.model.skill import Skill, SkillGraphEdge, SkillGraphNode
+from loom.persistence.skill import Skill, SkillGraphEdge, SkillGraphNode
 
 
 class SkillRepository(BaseRepository[Skill]):

@@ -1,5 +1,5 @@
 from loom.api.catalog.base import BaseRepository
-from loom.model.agent import Agent
+from loom.persistence.agent import Agent
 
 
 class AgentRepository(BaseRepository[Agent]):

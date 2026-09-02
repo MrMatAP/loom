@@ -1,5 +1,5 @@
 from loom.api.catalog.base import BaseRepository
-from loom.model.model_endpoint import ModelEndpoint
+from loom.persistence.model_endpoint import ModelEndpoint
 
 
 class ModelEndpointRepository(BaseRepository[ModelEndpoint]):

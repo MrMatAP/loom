@@ -1,8 +1,8 @@
 import uuid
 
 from loom.api.catalog.base import BaseService
-from loom.model.agent import Agent
-from loom.model.model_endpoint import ModelEndpoint
+from loom.persistence.agent import Agent
+from loom.persistence.model_endpoint import ModelEndpoint
 
 from .schemas import AgentCreateRequest
 

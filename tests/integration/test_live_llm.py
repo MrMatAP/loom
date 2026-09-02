@@ -43,15 +43,15 @@ from loom.api.catalog.dependencies import (
 from loom.api.catalog.main import create_app
 from loom.api.catalog.security import AuthenticatedPrincipal
 from loom.config import RootConfig
+from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
-from loom.model import (
+from loom.persistence import (
     agent,  # noqa: F401 -- table registration side effect
     capability,  # noqa: F401
     model_endpoint,  # noqa: F401
 )
-from loom.model.base import Base
-from loom.model.enums import PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.persistence.base import Base
+from loom.persistence.tenant import Principal, Tenant
 
 from .live_llm import live_llm_base_url, probe_live_llm
 

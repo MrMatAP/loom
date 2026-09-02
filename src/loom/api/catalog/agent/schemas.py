@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import Layer, MemoryScope
+from loom.domain.enums import Layer, MemoryScope
 
 
 class AgentCreateRequest(BaseModel):

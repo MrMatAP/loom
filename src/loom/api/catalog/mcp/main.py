@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from loom import default_config_path
 from loom.config import RootConfig
-from loom.model.engine import get_async_session_factory
+from loom.persistence.engine import get_async_session_factory
 
 from ..security import TokenValidator, discover_and_resolve_issuer
 from .server import McpState, create_mcp_server

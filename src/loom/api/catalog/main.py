@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from loom import __version__, default_config_path
 from loom.config import RootConfig
-from loom.model.engine import get_async_session_factory
+from loom.persistence.engine import get_async_session_factory
 
 from .agent.router import router as agent_router
 from .capability.router import router as capability_router

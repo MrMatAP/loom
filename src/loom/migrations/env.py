@@ -3,7 +3,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from loom.model import (  # noqa: F401  (imported for side effect: table registration)
+from loom.persistence import (  # noqa: F401  (imported for side effect: table registration)
     agent,
     capability,
     dataproduct,
@@ -17,7 +17,7 @@ from loom.model import (  # noqa: F401  (imported for side effect: table registr
     tenant,
     tool,
 )
-from loom.model.base import Base
+from loom.persistence.base import Base
 
 config = context.config
 

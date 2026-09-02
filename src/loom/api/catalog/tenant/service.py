@@ -1,8 +1,8 @@
 import uuid
 
 from loom.api.catalog.exceptions import EntityNotFoundError
-from loom.model.schemas.tenant import TenantCreate, TenantUpdate
-from loom.model.tenant import Tenant
+from loom.persistence.tenant import Tenant
+from loom.schemas.tenant import TenantCreate, TenantUpdate
 
 from .repository import TenantRepository
 

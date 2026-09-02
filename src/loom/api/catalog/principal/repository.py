@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.db import flush_or_raise
-from loom.model.tenant import Principal
+from loom.persistence.tenant import Principal
 
 
 class PrincipalRepository:

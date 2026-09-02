@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import GraphNodeType, Layer, SkillKind
+from loom.domain.enums import GraphNodeType, Layer, SkillKind
 
 
 class SkillCreateRequest(BaseModel):

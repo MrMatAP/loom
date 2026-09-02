@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2AuthorizationCodeBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.model.tenant import Principal
+from loom.persistence.tenant import Principal
 
 from .security import (
     AuthenticatedPrincipal,

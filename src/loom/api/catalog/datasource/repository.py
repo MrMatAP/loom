@@ -1,5 +1,5 @@
 from loom.api.catalog.base import BaseRepository
-from loom.model.datasource import DataSource
+from loom.persistence.datasource import DataSource
 
 
 class DataSourceRepository(BaseRepository[DataSource]):

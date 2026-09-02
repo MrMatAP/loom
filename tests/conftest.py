@@ -4,24 +4,24 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from loom.model.agent import Agent  # noqa: F401
-from loom.model.base import Base
-from loom.model.capability import Capability  # noqa: F401
-from loom.model.dataproduct import (  # noqa: F401
+from loom.persistence.agent import Agent  # noqa: F401
+from loom.persistence.base import Base
+from loom.persistence.capability import Capability  # noqa: F401
+from loom.persistence.dataproduct import (  # noqa: F401
     DataProduct,
     DataProductLineage,
 )
-from loom.model.datasource import DataSource  # noqa: F401
-from loom.model.environment import Environment  # noqa: F401
-from loom.model.model_endpoint import ModelEndpoint  # noqa: F401
-from loom.model.observability import Metric  # noqa: F401
-from loom.model.skill import (  # noqa: F401
+from loom.persistence.datasource import DataSource  # noqa: F401
+from loom.persistence.environment import Environment  # noqa: F401
+from loom.persistence.model_endpoint import ModelEndpoint  # noqa: F401
+from loom.persistence.observability import Metric  # noqa: F401
+from loom.persistence.skill import (  # noqa: F401
     Skill,
     SkillGraphEdge,
     SkillGraphNode,
 )
-from loom.model.tenant import Principal, Tenant  # noqa: F401
-from loom.model.tool import Tool, ToolDataBinding  # noqa: F401
+from loom.persistence.tenant import Principal, Tenant  # noqa: F401
+from loom.persistence.tool import Tool, ToolDataBinding  # noqa: F401
 
 
 @sa.event.listens_for(sa.engine.Engine, 'connect')

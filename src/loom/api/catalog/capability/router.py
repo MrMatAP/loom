@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.api.catalog.dependencies import get_current_principal, require_scopes
 from loom.api.catalog.router_factory import build_versioned_router
 from loom.api.catalog.security import AuthenticatedPrincipal
-from loom.model.schemas.capability import CapabilityRead, CapabilityRealizationRead
+from loom.schemas.capability import CapabilityRead, CapabilityRealizationRead
 
 from .repository import CapabilityRepository
 from .schemas import CapabilityCreateRequest, CapabilityRealizationCreateRequest

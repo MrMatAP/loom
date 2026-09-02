@@ -27,7 +27,7 @@ async def test_missing_token_returns_401(api_client):
 
     from loom.api.catalog.main import create_app
     from loom.config import RootConfig
-    from loom.model.engine import get_async_session_factory
+    from loom.persistence.engine import get_async_session_factory
 
     config = RootConfig(config_path='/dev/null')
     real_app = create_app(config)

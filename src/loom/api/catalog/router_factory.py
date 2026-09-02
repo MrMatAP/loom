@@ -12,7 +12,7 @@ from loom.api.catalog.dependencies import (
 from loom.api.catalog.lifecycle import TransitionRequest
 from loom.api.catalog.pagination import Page, PaginationParams
 from loom.api.catalog.security import AuthenticatedPrincipal
-from loom.model.enums import LifecycleState
+from loom.domain.enums import LifecycleState
 
 from .base import BaseService
 

@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import DataSourceKind
+from loom.domain.enums import DataSourceKind
 
 
 class DataSourceCreateRequest(BaseModel):

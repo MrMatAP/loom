@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.dependencies import get_session, require_scopes
 from loom.api.catalog.pagination import Page, PaginationParams
-from loom.model.schemas.environment import (
+from loom.schemas.environment import (
     EnvironmentCreate,
     EnvironmentRead,
     EnvironmentUpdate,

@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.api.catalog.router_factory import build_versioned_router
-from loom.model.schemas.agent import AgentRead
+from loom.schemas.agent import AgentRead
 
 from .repository import AgentRepository
 from .schemas import AgentCreateRequest

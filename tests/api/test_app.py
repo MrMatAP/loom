@@ -2,7 +2,7 @@ import pytest
 import sqlalchemy as sa
 
 from loom.api.catalog.dependencies import get_session
-from loom.model.tenant import Tenant
+from loom.persistence.tenant import Tenant
 
 
 @pytest.mark.asyncio

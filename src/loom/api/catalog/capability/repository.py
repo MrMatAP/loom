@@ -4,7 +4,7 @@ import sqlalchemy as sa
 
 from loom.api.catalog.base import BaseRepository
 from loom.api.catalog.db import flush_or_raise
-from loom.model.capability import Capability, CapabilityRealization
+from loom.persistence.capability import Capability, CapabilityRealization
 
 
 class CapabilityRepository(BaseRepository[Capability]):

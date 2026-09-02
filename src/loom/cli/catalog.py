@@ -13,7 +13,7 @@ import rich.table
 
 from loom.catalog_client import CatalogApiError, CatalogClient
 from loom.config import RootConfig
-from loom.model.enums import (
+from loom.domain.enums import (
     DataBindingAccessMode,
     DataSourceKind,
     EnvironmentKind,

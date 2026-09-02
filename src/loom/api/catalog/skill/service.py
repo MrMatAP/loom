@@ -2,9 +2,9 @@ import uuid
 
 from loom.api.catalog.base import BaseService
 from loom.api.catalog.exceptions import EntityNotFoundError
-from loom.model.agent import Agent
-from loom.model.skill import Skill, SkillGraphEdge, SkillGraphNode
-from loom.model.tool import Tool
+from loom.persistence.agent import Agent
+from loom.persistence.skill import Skill, SkillGraphEdge, SkillGraphNode
+from loom.persistence.tool import Tool
 
 from .schemas import (
     SkillCreateRequest,

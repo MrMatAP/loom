@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 
 from loom.config import RootConfig
-from loom.model import (  # noqa: F401  (imported for side effect: table registration)
+from loom.persistence import (  # noqa: F401  (imported for side effect: table registration)
     agent,
     capability,
     dataproduct,
@@ -18,8 +18,8 @@ from loom.model import (  # noqa: F401  (imported for side effect: table registr
     skill,
     tool,
 )
-from loom.model.engine import get_session_factory
-from loom.model.tenant import Tenant
+from loom.persistence.engine import get_session_factory
+from loom.persistence.tenant import Tenant
 
 
 def _alembic_config(root_config: RootConfig) -> Config:

@@ -33,8 +33,8 @@ async def test_tool_full_lifecycle(api_client, fake_principal):
 async def test_tool_data_binding_is_version_scoped(
     api_client, fake_principal, async_session
 ):
-    from loom.model.datasource import DataSource
-    from loom.model.enums import DataSourceKind
+    from loom.domain.enums import DataSourceKind
+    from loom.persistence.datasource import DataSource
 
     tenant_id = fake_principal.tenant_id
     datasource = DataSource(

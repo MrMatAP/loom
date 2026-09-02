@@ -1,8 +1,8 @@
 import pytest
 
-from loom.model.enums import ModelProtocol
-from loom.model.model_endpoint import ModelEndpoint
-from loom.model.tenant import Principal, Tenant
+from loom.domain.enums import ModelProtocol
+from loom.persistence.model_endpoint import ModelEndpoint
+from loom.persistence.tenant import Principal, Tenant
 
 
 @pytest.mark.asyncio

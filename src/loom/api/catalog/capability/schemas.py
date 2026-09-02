@@ -3,7 +3,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import RealizingEntityType
+from loom.domain.enums import RealizingEntityType
 
 
 class CapabilityCreateRequest(BaseModel):

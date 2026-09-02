@@ -2,7 +2,7 @@ import pytest
 
 from loom.api.catalog.db import flush_or_raise
 from loom.api.catalog.exceptions import DomainValidationError
-from loom.model.tenant import Tenant
+from loom.persistence.tenant import Tenant
 
 
 @pytest.mark.asyncio

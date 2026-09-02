@@ -8,8 +8,8 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
-from loom.model.enums import PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.domain.enums import PrincipalKind
+from loom.persistence.tenant import Principal, Tenant
 
 from .live import IT_PREFIX
 from .live_db import requires_live_db

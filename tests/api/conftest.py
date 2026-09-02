@@ -11,8 +11,9 @@ from loom.api.catalog.dependencies import (
     get_session,
 )
 from loom.api.catalog.security import AuthenticatedPrincipal
+from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
-from loom.model import (
+from loom.persistence import (
     agent,  # noqa: F401
     capability,  # noqa: F401
     dataproduct,  # noqa: F401
@@ -25,9 +26,8 @@ from loom.model import (
     skill,  # noqa: F401
     tool,  # noqa: F401
 )
-from loom.model.base import Base
-from loom.model.enums import PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.persistence.base import Base
+from loom.persistence.tenant import Principal, Tenant
 
 ALL_SCOPES = content_scopes() | platform_scopes()
 

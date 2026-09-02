@@ -1,8 +1,8 @@
 import uuid
 
 from loom.api.catalog.exceptions import EntityNotFoundError
-from loom.model.schemas.tenant import PrincipalCreate
-from loom.model.tenant import Principal
+from loom.persistence.tenant import Principal
+from loom.schemas.tenant import PrincipalCreate
 
 from .repository import PrincipalRepository
 

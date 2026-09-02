@@ -1,10 +1,10 @@
 import uuid
 
 from loom.api.catalog.base import BaseService
-from loom.model.agent import Agent
-from loom.model.capability import Capability, CapabilityRealization
-from loom.model.skill import Skill
-from loom.model.tool import Tool
+from loom.persistence.agent import Agent
+from loom.persistence.capability import Capability, CapabilityRealization
+from loom.persistence.skill import Skill
+from loom.persistence.tool import Tool
 
 from .schemas import CapabilityCreateRequest, CapabilityRealizationCreateRequest
 

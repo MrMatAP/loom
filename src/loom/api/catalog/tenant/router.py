@@ -16,7 +16,7 @@ from loom.api.catalog.dependencies import (
 )
 from loom.api.catalog.pagination import Page, PaginationParams
 from loom.api.catalog.security import expand_claims_to_scopes
-from loom.model.schemas.tenant import TenantCreate, TenantRead, TenantUpdate
+from loom.schemas.tenant import TenantCreate, TenantRead, TenantUpdate
 
 from .repository import TenantRepository
 from .service import TenantService

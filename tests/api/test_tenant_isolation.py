@@ -4,10 +4,10 @@ import pytest
 import pytest_asyncio
 
 from loom.api.catalog.dependencies import get_current_principal, get_current_token
+from loom.domain.enums import Layer, MemoryScope, PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
-from loom.model.agent import Agent
-from loom.model.enums import Layer, MemoryScope, PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.persistence.agent import Agent
+from loom.persistence.tenant import Principal, Tenant
 
 EVERY_SCOPE = ' '.join(sorted(content_scopes() | platform_scopes()))
 

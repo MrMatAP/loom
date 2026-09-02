@@ -1,7 +1,7 @@
 import uuid
 
 from loom.api.catalog.base import BaseService
-from loom.model.datasource import DataSource
+from loom.persistence.datasource import DataSource
 
 from .schemas import DataSourceCreateRequest
 

@@ -12,9 +12,9 @@ from starlette.routing import Mount
 from loom.api.catalog.mcp import main as mcp_main
 from loom.api.catalog.mcp.main import create_app
 from loom.config import RootConfig
+from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
-from loom.model.enums import PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.persistence.tenant import Principal, Tenant
 
 ALL_SCOPES = content_scopes() | platform_scopes()
 

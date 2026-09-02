@@ -1,8 +1,8 @@
 import uuid
 
 from loom.api.catalog.exceptions import EntityNotFoundError
-from loom.model.environment import Environment
-from loom.model.schemas.environment import EnvironmentCreate, EnvironmentUpdate
+from loom.persistence.environment import Environment
+from loom.schemas.environment import EnvironmentCreate, EnvironmentUpdate
 
 from .repository import EnvironmentRepository
 

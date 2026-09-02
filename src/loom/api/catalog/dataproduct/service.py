@@ -1,8 +1,8 @@
 import uuid
 
 from loom.api.catalog.base import BaseService
-from loom.model.dataproduct import DataProduct, DataProductLineage
-from loom.model.datasource import DataSource
+from loom.persistence.dataproduct import DataProduct, DataProductLineage
+from loom.persistence.datasource import DataSource
 
 from .schemas import DataProductCreateRequest, DataProductLineageCreateRequest
 

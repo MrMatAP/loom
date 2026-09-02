@@ -37,12 +37,12 @@ from loom.api.catalog.dependencies import get_session
 from loom.api.catalog.main import create_app
 from loom.api.catalog.security import TokenValidator, expand_claims_to_scopes
 from loom.config import RootConfig
+from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import ROLE_BUNDLES
 from loom.idp.discovery import default_discovery_url, discover_oidc
-from loom.model import agent  # noqa: F401 -- table registration side effect
-from loom.model.base import Base
-from loom.model.enums import PrincipalKind
-from loom.model.tenant import Principal, Tenant
+from loom.persistence import agent  # noqa: F401 -- table registration side effect
+from loom.persistence.base import Base
+from loom.persistence.tenant import Principal, Tenant
 from loom.tls import build_ssl_context
 
 from .live import (

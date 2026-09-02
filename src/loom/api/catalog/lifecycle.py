@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from loom.model.enums import LifecycleState
+from loom.domain.enums import LifecycleState
 
 LEGAL_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.DRAFT: frozenset({LifecycleState.IN_REVIEW}),

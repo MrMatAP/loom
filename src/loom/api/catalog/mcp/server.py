@@ -48,19 +48,19 @@ from loom.api.catalog.tool.schemas import (
     ToolDataBindingCreateRequest,
 )
 from loom.api.catalog.tool.service import ToolService
-from loom.model.enums import LifecycleState
-from loom.model.schemas.agent import AgentRead
-from loom.model.schemas.capability import CapabilityRead
-from loom.model.schemas.dataproduct import DataProductLineageRead, DataProductRead
-from loom.model.schemas.datasource import DataSourceRead
-from loom.model.schemas.environment import (
+from loom.domain.enums import LifecycleState
+from loom.schemas.agent import AgentRead
+from loom.schemas.capability import CapabilityRead
+from loom.schemas.dataproduct import DataProductLineageRead, DataProductRead
+from loom.schemas.datasource import DataSourceRead
+from loom.schemas.environment import (
     EnvironmentCreate,
     EnvironmentRead,
     EnvironmentUpdate,
 )
-from loom.model.schemas.model_endpoint import ModelEndpointRead
-from loom.model.schemas.skill import SkillGraphEdgeRead, SkillGraphNodeRead, SkillRead
-from loom.model.schemas.tool import ToolDataBindingRead, ToolRead
+from loom.schemas.model_endpoint import ModelEndpointRead
+from loom.schemas.skill import SkillGraphEdgeRead, SkillGraphNodeRead, SkillRead
+from loom.schemas.tool import ToolDataBindingRead, ToolRead
 
 
 @dataclasses.dataclass

@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from loom.model.enums import DataBindingAccessMode
+from loom.domain.enums import DataBindingAccessMode
 
 
 class ToolCreateRequest(BaseModel):

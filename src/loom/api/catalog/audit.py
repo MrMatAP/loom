@@ -4,8 +4,8 @@ import uuid
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.model.enums import AuditDecision
-from loom.model.governance import AuditEvent
+from loom.domain.enums import AuditDecision
+from loom.persistence.governance import AuditEvent
 
 from .db import flush_or_raise
 from .dependencies import get_current_token, get_principal_in_tenant, get_session

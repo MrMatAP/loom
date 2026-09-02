@@ -4,7 +4,7 @@ import sqlalchemy as sa
 
 from loom.api.catalog.base import BaseRepository
 from loom.api.catalog.db import flush_or_raise
-from loom.model.dataproduct import DataProduct, DataProductLineage
+from loom.persistence.dataproduct import DataProduct, DataProductLineage
 
 
 class DataProductRepository(BaseRepository[DataProduct]):

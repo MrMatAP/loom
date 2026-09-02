@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from loom.api.catalog.mcp.server import McpState, create_mcp_server
 from loom.idp.catalog_roles import content_scopes, platform_scopes
-from loom.model.capability import Capability
+from loom.persistence.capability import Capability
 
 ALL_SCOPES = content_scopes() | platform_scopes()
 

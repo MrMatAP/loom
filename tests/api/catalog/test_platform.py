@@ -4,10 +4,10 @@ import pytest
 import sqlalchemy as sa
 
 from loom.api.catalog.dependencies import get_current_principal, get_current_token
+from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import ROLE_BUNDLES, content_scopes, platform_scopes
-from loom.model.enums import PrincipalKind
-from loom.model.governance import AuditEvent
-from loom.model.tenant import Principal, Tenant
+from loom.persistence.governance import AuditEvent
+from loom.persistence.tenant import Principal, Tenant
 
 
 @pytest.mark.asyncio
