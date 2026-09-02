@@ -351,6 +351,37 @@ async def resource_transition(
     return await _post_and_show(config, tenant_id, suffix, {'to_state': args.to_state})
 
 
+async def resource_create(
+    spec: ResourceSpec,
+    payload_fn: typing.Callable[[argparse.Namespace], dict | None],
+    config: RootConfig,
+    args: argparse.Namespace,
+) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = payload_fn(args)
+    if payload is None:
+        return 1
+    return await _post_and_show(config, tenant_id, spec.api_path, payload)
+
+
+async def resource_update(
+    spec: ResourceSpec,
+    payload_fn: typing.Callable[[argparse.Namespace], dict | None],
+    config: RootConfig,
+    args: argparse.Namespace,
+) -> int:
+    tenant_id = _resolve_tenant_id(config, args)
+    if tenant_id is None:
+        return 1
+    payload = payload_fn(args)
+    if payload is None:
+        return 1
+    suffix = f'{spec.api_path}/{args.entity_id}/versions'
+    return await _post_and_show(config, tenant_id, suffix, payload)
+
+
 # --- Capability: create/update ---------------------------------------------
 
 
@@ -367,29 +398,12 @@ def _capability_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def capability_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a Capability via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _capability_payload(args)
-    if payload is None:
-        return 1
-    return await _post_and_show(
-        config, tenant_id, RESOURCES['capability'].api_path, payload
-    )
-
-
-async def capability_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new Capability version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _capability_payload(args)
-    if payload is None:
-        return 1
-    suffix = f'{RESOURCES["capability"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+capability_create = functools.partial(
+    resource_create, RESOURCES['capability'], _capability_payload
+)
+capability_update = functools.partial(
+    resource_update, RESOURCES['capability'], _capability_payload
+)
 
 
 # --- ModelEndpoint: create/update -------------------------------------------
@@ -406,23 +420,8 @@ def _model_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def model_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a ModelEndpoint via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _model_payload(args)
-    return await _post_and_show(config, tenant_id, RESOURCES['model'].api_path, payload)
-
-
-async def model_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new ModelEndpoint version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _model_payload(args)
-    suffix = f'{RESOURCES["model"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+model_create = functools.partial(resource_create, RESOURCES['model'], _model_payload)
+model_update = functools.partial(resource_update, RESOURCES['model'], _model_payload)
 
 
 # --- Agent: create/update ----------------------------------------------------
@@ -454,27 +453,8 @@ def _agent_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def agent_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create an Agent via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _agent_payload(args)
-    if payload is None:
-        return 1
-    return await _post_and_show(config, tenant_id, RESOURCES['agent'].api_path, payload)
-
-
-async def agent_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new Agent version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _agent_payload(args)
-    if payload is None:
-        return 1
-    suffix = f'{RESOURCES["agent"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+agent_create = functools.partial(resource_create, RESOURCES['agent'], _agent_payload)
+agent_update = functools.partial(resource_update, RESOURCES['agent'], _agent_payload)
 
 
 # --- Skill: create/update, plus graph node/edge sub-resources ---------------
@@ -500,29 +480,10 @@ def _skill_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def skill_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a Skill via the Catalog API. A deployable workflow is just a
-    Composite Skill with `--is-entry-point` -- there is no separate
-    "Topology" resource (see CLAUDE.md's entity model)."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _skill_payload(args)
-    if payload is None:
-        return 1
-    return await _post_and_show(config, tenant_id, RESOURCES['skill'].api_path, payload)
-
-
-async def skill_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new Skill version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _skill_payload(args)
-    if payload is None:
-        return 1
-    suffix = f'{RESOURCES["skill"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+# A deployable workflow is just a Composite Skill with `--is-entry-point`
+# -- there is no separate "Topology" resource (see CLAUDE.md's entity model).
+skill_create = functools.partial(resource_create, RESOURCES['skill'], _skill_payload)
+skill_update = functools.partial(resource_update, RESOURCES['skill'], _skill_payload)
 
 
 _SKILL_NODE_COLUMNS = (
@@ -638,29 +599,11 @@ def _tool_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def tool_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a Tool via the Catalog API. Tools bind to DataSource/
-    DataProduct statically at design time (`tool data-binding add`), unlike
-    an Agent, which never gets a direct data binding (see CLAUDE.md)."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _tool_payload(args)
-    if payload is None:
-        return 1
-    return await _post_and_show(config, tenant_id, RESOURCES['tool'].api_path, payload)
-
-
-async def tool_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new Tool version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _tool_payload(args)
-    if payload is None:
-        return 1
-    suffix = f'{RESOURCES["tool"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+# Tools bind to DataSource/DataProduct statically at design time (`tool
+# data-binding add`), unlike an Agent, which never gets a direct data
+# binding (see CLAUDE.md).
+tool_create = functools.partial(resource_create, RESOURCES['tool'], _tool_payload)
+tool_update = functools.partial(resource_update, RESOURCES['tool'], _tool_payload)
 
 
 _TOOL_BINDING_COLUMNS = ('id', 'datasource_id', 'dataproduct_id', 'access_mode')
@@ -717,25 +660,12 @@ def _datasource_payload(args: argparse.Namespace) -> dict:
     }
 
 
-async def datasource_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a DataSource via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _datasource_payload(args)
-    return await _post_and_show(
-        config, tenant_id, RESOURCES['datasource'].api_path, payload
-    )
-
-
-async def datasource_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new DataSource version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _datasource_payload(args)
-    suffix = f'{RESOURCES["datasource"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+datasource_create = functools.partial(
+    resource_create, RESOURCES['datasource'], _datasource_payload
+)
+datasource_update = functools.partial(
+    resource_update, RESOURCES['datasource'], _datasource_payload
+)
 
 
 # --- DataProduct: create/update, plus lineage sub-resource --------------
@@ -754,29 +684,12 @@ def _dataproduct_payload(args: argparse.Namespace) -> dict | None:
     }
 
 
-async def dataproduct_create(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a DataProduct via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _dataproduct_payload(args)
-    if payload is None:
-        return 1
-    return await _post_and_show(
-        config, tenant_id, RESOURCES['dataproduct'].api_path, payload
-    )
-
-
-async def dataproduct_update(config: RootConfig, args: argparse.Namespace) -> int:
-    """Create a new DataProduct version via the Catalog API."""
-    tenant_id = _resolve_tenant_id(config, args)
-    if tenant_id is None:
-        return 1
-    payload = _dataproduct_payload(args)
-    if payload is None:
-        return 1
-    suffix = f'{RESOURCES["dataproduct"].api_path}/{args.entity_id}/versions'
-    return await _post_and_show(config, tenant_id, suffix, payload)
+dataproduct_create = functools.partial(
+    resource_create, RESOURCES['dataproduct'], _dataproduct_payload
+)
+dataproduct_update = functools.partial(
+    resource_update, RESOURCES['dataproduct'], _dataproduct_payload
+)
 
 
 _DATAPRODUCT_LINEAGE_COLUMNS = (
@@ -1224,8 +1137,10 @@ def _add_dataproduct_fields(parser: argparse.ArgumentParser) -> None:
 
 def _add_generic_verbs(sub: argparse._SubParsersAction, spec: ResourceSpec) -> None:
     """The four verbs identical in shape across every resource: list, show,
-    versions, transition. create/update stay resource-specific (see the
-    `_add_*_fields` helpers above) since their payload shape differs."""
+    versions, transition. create/update are wired separately, per resource
+    (see `_add_*_fields` above and `resource_create`/`resource_update`
+    below) -- their argparse fields differ per resource even though their
+    execution (resolve tenant, build payload, POST) is generic."""
     list_parser = sub.add_parser('list', help=f'List {spec.plural}')
     list_parser.add_argument(
         '--lifecycle-state',

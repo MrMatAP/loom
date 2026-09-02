@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from loom import default_config_path
+from loom import __version__, default_config_path
 from loom.config import RootConfig
 from loom.model.engine import get_async_session_factory
 
@@ -78,6 +78,7 @@ def create_app(config: RootConfig) -> FastAPI:
         title='Loom Catalog Service',
         lifespan=lifespan,
         swagger_ui_init_oauth=swagger_ui_init_oauth,
+        version=__version__
     )
     register_exception_handlers(app)
 
@@ -91,9 +92,16 @@ def create_app(config: RootConfig) -> FastAPI:
     return app
 
 
-app = create_app(RootConfig.load(config_path=default_config_path()))
-
-
 def run() -> None:
-    """Entry point for the loom-catalog-api console script."""
+    """Entry point for the loom-catalog-api console script.
+
+    `app` is built here, not as a module-level singleton, so that plain
+    `import loom.api.catalog.main` (e.g. tests that only want
+    `create_app` to build their own app against test config) never
+    resolves OIDC discovery against the real configured issuer. Nothing
+    else needs the module-level object: nothing imports `main:app` as a
+    string (`uvicorn.run` below is passed the object directly), so
+    deferring construction to here is free.
+    """
+    app = create_app(RootConfig.load(config_path=default_config_path()))
     uvicorn.run(app, host='0.0.0.0', port=8000)

@@ -72,9 +72,15 @@ def create_app(config: RootConfig) -> FastAPI:
     return app
 
 
-app = create_app(RootConfig.load(config_path=default_config_path()))
-
-
 def run() -> None:
-    """Entry point for the loom-catalog-mcp console script."""
+    """Entry point for the loom-catalog-mcp console script.
+
+    `app` is built here, not as a module-level singleton -- see the
+    identical reasoning in `api.catalog.main.run`. This module's own
+    discovery is already deferred to the lifespan rather than `create_app`,
+    so a plain import doesn't hit the network today, but constructing a
+    real app from the local machine's config as an import-time side effect
+    is the same latent trap either way.
+    """
+    app = create_app(RootConfig.load(config_path=default_config_path()))
     uvicorn.run(app, host='0.0.0.0', port=8100)
