@@ -94,6 +94,8 @@ export interface VersionedEntity {
   tenant_id: string;
   owner_id: string;
   created_by_id: string;
+  approved_by_id: string | null;
+  approved_at: string | null;
 }
 
 export interface Tenant {
@@ -113,4 +115,12 @@ export interface AgentRead extends VersionedEntity {
   prompt: string;
   memory_scope: string;
   permission_boundary: Record<string, unknown>;
+}
+
+/** `CapabilityRead` -- see `src/loom/schemas/capability.py`. `target_metrics`
+ * is a free-form list of objects (no fixed shape in the schema); the
+ * Capability editor round-trips `name`/`description`/`target_metrics` into a
+ * new version on save. */
+export interface CapabilityRead extends VersionedEntity {
+  target_metrics: Array<Record<string, unknown>>;
 }

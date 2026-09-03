@@ -1,3 +1,6 @@
+# Everything not needed at runtime. `media/` is intentionally NOT ignored:
+# it ships in the .vsix (the activity-bar icon and media/manual.md, which
+# `Loom: Open Manual` renders).
 .vscode/**
 src/**
 .gitignore

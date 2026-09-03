@@ -1,5 +1,5 @@
 // Owns the extension's login/tenant state: token storage (SecretStorage,
-// never settings or globalState -- see the README), tenant selection
+// never settings or globalState), tenant selection
 // (globalState -- not secret, mirrors `config.auth.session.tenant_id` in
 // the CLI's `~/.loom`), and handing out a ready-to-use `CatalogClient`.
 import * as vscode from 'vscode';

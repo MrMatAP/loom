@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 
-import { AgentRead, CatalogApiError, VersionedEntity } from './client';
+import { AgentEditorPanel } from './agentEditor';
+import { CapabilityEditorPanel } from './capabilityEditor';
+import { AgentRead, CapabilityRead, CatalogApiError, VersionedEntity } from './client';
 import { agentPromptUri, AgentPromptFileSystemProvider } from './promptFs';
 import { ENTITY_KINDS, entityKindById } from './registry';
 import { LoomSession, NoTenantSelectedError, NotSignedInError } from './session';
@@ -59,13 +61,28 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('loom.refresh', () => tree.refresh()),
     vscode.commands.registerCommand('loom.createEntity', (item?: CategoryItem) =>
-      runOrReport(createEntity(session, tree, promptFs, item))
+      runOrReport(createEntity(context, session, tree, item))
     ),
     vscode.commands.registerCommand('loom.showEntity', (item: EntityItem) =>
       showEntity(item)
     ),
+    vscode.commands.registerCommand('loom.editAgent', (item: EntityItem) =>
+      runOrReport(editAgent(context, session, tree, item))
+    ),
     vscode.commands.registerCommand('loom.editAgentPrompt', (item: EntityItem) =>
       runOrReport(editAgentPrompt(session, promptFs, item))
+    ),
+    vscode.commands.registerCommand('loom.editCapability', (item: EntityItem) =>
+      runOrReport(editCapability(context, session, tree, item))
+    ),
+    vscode.commands.registerCommand('loom.openManual', () =>
+      vscode.commands.executeCommand(
+        'markdown.showPreview',
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'manual.md')
+      )
+    ),
+    vscode.commands.registerCommand('loom.openSettings', () =>
+      vscode.commands.executeCommand('workbench.action.openSettings', 'loom.')
     )
   );
 }
@@ -152,6 +169,42 @@ async function editAgentPrompt(
   await openAgentPromptEditor(uri);
 }
 
+/** Opens an Agent in the form/JSON editor (see `agentEditor.ts`); saving
+ * posts a new Agent version. Fetches the current version fresh
+ * (`GET /agents/{entity_id}`) rather than trusting the tree's cached
+ * `item.entity`, a `VersionedEntity` projection without `prompt`/`layer`/
+ * the JSON blobs. */
+async function editAgent(
+  context: vscode.ExtensionContext,
+  session: LoomSession,
+  tree: LoomTreeProvider,
+  item: EntityItem
+): Promise<void> {
+  const { client, tenantId } = await session.requireTenantClient();
+  const agent = await client.get<AgentRead>(
+    client.tenantPath(tenantId, `/agents/${item.entity.entity_id}`)
+  );
+  AgentEditorPanel.openForEdit(context, session, agent, () => tree.refresh());
+}
+
+/** Opens a Capability in the form/JSON editor (see `capabilityEditor.ts`);
+ * saving posts a new Capability version. Fetches the current version fresh
+ * (`GET /capabilities/{entity_id}`) rather than trusting the tree's cached
+ * `item.entity`, which is a `VersionedEntity` projection without
+ * `target_metrics`. */
+async function editCapability(
+  context: vscode.ExtensionContext,
+  session: LoomSession,
+  tree: LoomTreeProvider,
+  item: EntityItem
+): Promise<void> {
+  const { client, tenantId } = await session.requireTenantClient();
+  const capability = await client.get<CapabilityRead>(
+    client.tenantPath(tenantId, `/capabilities/${item.entity.entity_id}`)
+  );
+  CapabilityEditorPanel.openForEdit(context, session, capability, () => tree.refresh());
+}
+
 /** Shared by `editAgentPrompt` (fetches fresh) and `createEntity` below
  * (already holds the just-created `AgentRead` -- no need to re-fetch it). */
 async function openAgentPromptEditor(uri: vscode.Uri): Promise<void> {
@@ -167,9 +220,9 @@ async function openAgentPromptEditor(uri: vscode.Uri): Promise<void> {
 // authenticated principal or the lifecycle gate, never a client input.
 
 async function createEntity(
+  context: vscode.ExtensionContext,
   session: LoomSession,
   tree: LoomTreeProvider,
-  promptFs: AgentPromptFileSystemProvider,
   item?: CategoryItem
 ): Promise<void> {
   const kindId = item?.kind.id ?? (await pickEntityKind());
@@ -181,16 +234,22 @@ async function createEntity(
     return;
   }
 
+  // Capabilities and Agents aren't wizard-shaped -- they carry free-form
+  // JSON and (for Agents) a long prompt -- so they open the same form/JSON
+  // editor "edit" uses, in create mode.
+  if (kind.id === 'capabilities') {
+    CapabilityEditorPanel.openForCreate(context, session, () => tree.refresh());
+    return;
+  }
+  if (kind.id === 'agents') {
+    AgentEditorPanel.openForCreate(context, session, () => tree.refresh());
+    return;
+  }
+
   const { client, tenantId } = await session.requireTenantClient();
 
   let payload: Record<string, unknown> | undefined;
   switch (kind.id) {
-    case 'capabilities':
-      payload = await promptCapability();
-      break;
-    case 'agents':
-      payload = await promptAgent(client, tenantId);
-      break;
     case 'model-endpoints':
       payload = await promptModelEndpoint();
       break;
@@ -206,21 +265,9 @@ async function createEntity(
     payload
   );
   tree.refresh();
-  void vscode.window.showInformationMessage(`Created ${kind.label.replace(/s$/, '')} "${created.name}".`);
-
-  if (kind.id === 'agents') {
-    // The create wizard only takes a placeholder prompt (see
-    // `promptAgent`) -- hand straight to the same rich prompt editor
-    // "Edit Prompt" uses, seeded with what's already on the server, rather
-    // than leaving the real prompt-writing to a separate click. `created`
-    // is structurally an `AgentRead` on this branch -- it's what
-    // `POST .../agents` actually returns -- `VersionedEntity` above is
-    // just the common projection every `*CreateRequest` response shares.
-    const agent = created as AgentRead;
-    const uri = agentPromptUri(tenantId, agent.entity_id);
-    promptFs.prime(uri, client, tenantId, agent);
-    await openAgentPromptEditor(uri);
-  }
+  void vscode.window.showInformationMessage(
+    `Created ${kind.label.replace(/s$/, '')} "${created.name}".`
+  );
 }
 
 async function pickEntityKind(): Promise<string | undefined> {
@@ -229,22 +276,6 @@ async function pickEntityKind(): Promise<string | undefined> {
     { placeHolder: 'What do you want to create?' }
   );
   return picked?.id;
-}
-
-async function promptCapability(): Promise<Record<string, unknown> | undefined> {
-  const name = await vscode.window.showInputBox({
-    prompt: 'Capability name',
-    ignoreFocusOut: true,
-    validateInput: requireNonEmpty,
-  });
-  if (!name) return undefined;
-
-  const description = await vscode.window.showInputBox({
-    prompt: 'Description (optional)',
-    ignoreFocusOut: true,
-  });
-
-  return { name, description: description || null, target_metrics: [] };
 }
 
 async function promptModelEndpoint(): Promise<Record<string, unknown> | undefined> {
@@ -288,94 +319,6 @@ async function promptModelEndpoint(): Promise<Record<string, unknown> | undefine
     base_url: baseUrl || null,
     model,
   };
-}
-
-async function promptAgent(
-  client: Awaited<ReturnType<LoomSession['requireTenantClient']>>['client'],
-  tenantId: string
-): Promise<Record<string, unknown> | undefined> {
-  const name = await vscode.window.showInputBox({
-    prompt: 'Agent name',
-    ignoreFocusOut: true,
-    validateInput: requireNonEmpty,
-  });
-  if (!name) return undefined;
-
-  const layer = await vscode.window.showQuickPick(
-    [
-      { label: 'business_ops', description: 'May call BusinessOps/BusinessTech/InfraOps/Tool' },
-      { label: 'business_tech', description: 'May call BusinessTech/InfraOps/Tool' },
-      { label: 'infra_ops', description: 'May call InfraOps/Tool only' },
-    ],
-    { placeHolder: 'Layer (see CLAUDE.md layer-descent rule)', ignoreFocusOut: true }
-  );
-  if (!layer) return undefined;
-
-  const memoryScope = await vscode.window.showQuickPick(
-    ['session', 'user', 'org', 'none'].map((label) => ({ label })),
-    { placeHolder: 'Memory scope', ignoreFocusOut: true }
-  );
-  if (!memoryScope) return undefined;
-
-  const prompt = await vscode.window.showInputBox({
-    prompt: 'Agent system prompt',
-    ignoreFocusOut: true,
-    validateInput: requireNonEmpty,
-  });
-  if (prompt === undefined) return undefined;
-
-  const modelBindingId = await promptModelBinding(client, tenantId);
-  if (modelBindingId === 'cancelled') return undefined;
-
-  return {
-    name,
-    description: null,
-    layer: layer.label,
-    memory_scope: memoryScope.label,
-    prompt,
-    model_binding_id: modelBindingId,
-    // Required by `AgentCreateRequest` with no server-side default; kept
-    // empty here rather than exposed as a JSON text box -- edit via
-    // `loom agent update` for anything beyond a Draft placeholder.
-    llm_config: {},
-    permission_boundary: {},
-  };
-}
-
-/** Returns a ModelEndpoint's `entity_id` (never its row `id` -- see
- * CLAUDE.md: `Agent.model_binding_id` is a *floating* reference that
- * always resolves to whichever version `is_current`), `null` for "no model
- * yet" (a Draft agent), or the string `'cancelled'` if the user backed out
- * of the picker entirely. */
-async function promptModelBinding(
-  client: Awaited<ReturnType<LoomSession['requireTenantClient']>>['client'],
-  tenantId: string
-): Promise<string | null | 'cancelled'> {
-  interface ModelEndpointSummary {
-    entity_id: string;
-    name: string;
-    model: string;
-  }
-  let endpoints: ModelEndpointSummary[] = [];
-  try {
-    const page = await client.get<{ items: ModelEndpointSummary[] }>(
-      client.tenantPath(tenantId, '/model-endpoints?limit=200')
-    );
-    endpoints = page.items;
-  } catch {
-    // Best-effort -- fall through to "no model" rather than blocking agent
-    // creation on a ModelEndpoint list call that failed.
-  }
-
-  const NONE = '(none -- bind a model later)';
-  const picked = await vscode.window.showQuickPick(
-    [NONE, ...endpoints.map((e) => `${e.name} (${e.model})`)],
-    { placeHolder: 'Model binding', ignoreFocusOut: true }
-  );
-  if (picked === undefined) return 'cancelled';
-  if (picked === NONE) return null;
-  const index = endpoints.findIndex((e) => `${e.name} (${e.model})` === picked);
-  return index >= 0 ? endpoints[index].entity_id : null;
 }
 
 function requireNonEmpty(value: string): string | undefined {

@@ -37,12 +37,12 @@
     "viewsWelcome": [
       {
         "view": "loomCatalog",
-        "contents": "Not signed in to a Loom Catalog API.\n[Sign in](command:loom.signIn)\nConfigure `loom.apiBaseUrl`, `loom.discoveryUrl`, and `loom.clientId` first if you haven't -- see the extension README.",
+        "contents": "Not signed in to a Loom Catalog API.\n[Sign in](command:loom.signIn)\n[Open Settings](command:loom.openSettings) to configure `loom.discoveryUrl` and `loom.clientId` first.\n[Open the Manual](command:loom.openManual) for setup and usage.",
         "when": "!loom.authenticated"
       },
       {
         "view": "loomCatalog",
-        "contents": "Signed in, but no Tenant is selected yet.\n[Select Tenant](command:loom.selectTenant)",
+        "contents": "Signed in, but no Tenant is selected yet.\n[Select Tenant](command:loom.selectTenant)\n[Open the Manual](command:loom.openManual)",
         "when": "loom.authenticated && !loom.tenantSelected"
       }
     ],
@@ -74,9 +74,29 @@
         "title": "Loom: Show Details"
       },
       {
+        "command": "loom.editAgent",
+        "title": "Loom: Edit Agent",
+        "icon": "$(edit)"
+      },
+      {
         "command": "loom.editAgentPrompt",
         "title": "Loom: Edit Prompt",
+        "icon": "$(note)"
+      },
+      {
+        "command": "loom.editCapability",
+        "title": "Loom: Edit Capability",
         "icon": "$(edit)"
+      },
+      {
+        "command": "loom.openManual",
+        "title": "Loom: Open Manual",
+        "icon": "$(book)"
+      },
+      {
+        "command": "loom.openSettings",
+        "title": "Loom: Open Settings",
+        "icon": "$(gear)"
       }
     ],
     "menus": {
@@ -85,6 +105,16 @@
           "command": "loom.refresh",
           "when": "view == loomCatalog",
           "group": "navigation"
+        },
+        {
+          "command": "loom.openManual",
+          "when": "view == loomCatalog",
+          "group": "9_loom@1"
+        },
+        {
+          "command": "loom.openSettings",
+          "when": "view == loomCatalog",
+          "group": "9_loom@2"
         }
       ],
       "view/item/context": [
@@ -94,14 +124,24 @@
           "group": "inline"
         },
         {
-          "command": "loom.editAgentPrompt",
+          "command": "loom.editAgent",
           "when": "view == loomCatalog && viewItem == loomEntity:agents",
           "group": "inline"
         },
         {
+          "command": "loom.editCapability",
+          "when": "view == loomCatalog && viewItem == loomEntity:capabilities",
+          "group": "inline"
+        },
+        {
+          "command": "loom.editAgentPrompt",
+          "when": "view == loomCatalog && viewItem == loomEntity:agents",
+          "group": "1_loom@1"
+        },
+        {
           "command": "loom.showEntity",
           "when": "view == loomCatalog && viewItem =~ /^loomEntity:/",
-          "group": "1_loom"
+          "group": "1_loom@2"
         }
       ],
       "commandPalette": [
@@ -110,7 +150,15 @@
           "when": "false"
         },
         {
+          "command": "loom.editAgent",
+          "when": "false"
+        },
+        {
           "command": "loom.editAgentPrompt",
+          "when": "false"
+        },
+        {
+          "command": "loom.editCapability",
           "when": "false"
         }
       ]

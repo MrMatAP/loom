@@ -6,6 +6,27 @@ import { CatalogApiError, Page, VersionedEntity } from './client';
 import { ENTITY_KINDS, EntityKind } from './registry';
 import { LoomSession, NoTenantSelectedError, NotSignedInError } from './session';
 
+// The sidebar shows an entity's lifecycle state as its item icon rather
+// than as text -- the entity kind is already clear from the category it
+// sits under, so the icon slot is better spent on the state. The full
+// textual state stays in the item tooltip and in the editor panel.
+const LIFECYCLE_ICONS: Record<string, { icon: string; color?: string }> = {
+  draft: { icon: 'edit', color: 'disabledForeground' },
+  in_review: { icon: 'eye', color: 'charts.yellow' },
+  approved: { icon: 'verified', color: 'charts.blue' },
+  published: { icon: 'rocket', color: 'charts.green' },
+  deprecated: { icon: 'warning', color: 'charts.orange' },
+  retired: { icon: 'circle-slash', color: 'charts.red' },
+};
+
+function lifecycleIcon(state: string): vscode.ThemeIcon {
+  const spec = LIFECYCLE_ICONS[state] ?? { icon: 'circle-outline' };
+  return new vscode.ThemeIcon(
+    spec.icon,
+    spec.color ? new vscode.ThemeColor(spec.color) : undefined
+  );
+}
+
 export class CategoryItem extends vscode.TreeItem {
   readonly contextValue = 'loomCategory';
   constructor(readonly kind: EntityKind) {
@@ -26,7 +47,7 @@ export class EntityItem extends vscode.TreeItem {
   ) {
     super(entity.name, vscode.TreeItemCollapsibleState.None);
     this.contextValue = `loomEntity:${kind.id}`;
-    this.description = `v${entity.version} · ${entity.lifecycle_state}`;
+    this.description = `v${entity.version}`;
     this.tooltip = new vscode.MarkdownString(
       [
         `**${entity.name}**`,
@@ -36,17 +57,22 @@ export class EntityItem extends vscode.TreeItem {
         `lifecycle: \`${entity.lifecycle_state}\` · maturity: \`${entity.maturity}\``,
       ].join('\n')
     );
-    this.iconPath = new vscode.ThemeIcon(kind.icon);
+    // Icon = lifecycle state (see `lifecycleIcon`); the kind icon lives on
+    // the parent category node.
+    this.iconPath = lifecycleIcon(entity.lifecycle_state);
     this.id = `entity:${kind.id}:${entity.id}`;
-    // Agents click straight into an editable prompt buffer -- CLAUDE.md's
-    // authoring/measurement feedback loop is the whole point of this
-    // client, so the entity a user cares most about editing shouldn't need
-    // a right-click detour. Everything else still opens read-only JSON
-    // (also reachable for Agents via the context menu).
+    // Agents and Capabilities click straight into a form/JSON editor --
+    // CLAUDE.md's authoring/measurement feedback loop is the whole point of
+    // this client, so the entities a user cares most about editing
+    // shouldn't need a right-click detour. Everything else opens read-only
+    // JSON; "Loom: Show Details" is still on the context menu for every
+    // kind, and Agents also keep "Loom: Edit Prompt" for prompt-only work.
     this.command =
       kind.id === 'agents'
-        ? { command: 'loom.editAgentPrompt', title: 'Edit Prompt', arguments: [this] }
-        : { command: 'loom.showEntity', title: 'Show Details', arguments: [this] };
+        ? { command: 'loom.editAgent', title: 'Edit Agent', arguments: [this] }
+        : kind.id === 'capabilities'
+          ? { command: 'loom.editCapability', title: 'Edit Capability', arguments: [this] }
+          : { command: 'loom.showEntity', title: 'Show Details', arguments: [this] };
   }
 }
 
