@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="loom-catalog-api" type="UvRunConfigurationType" factoryName="UvRunConfigurationType">
+    <option name="args">
+      <list />
+    </option>
+    <option name="checkSync" value="false" />
+    <option name="debugJustMyCode" value="false" />
+    <option name="env">
+      <map />
+    </option>
+    <option name="runType" value="MODULE" />
+    <option name="scriptOrModule" value="loom-catalog-api" />
+    <option name="uvArgs">
+      <list />
+    </option>
+    <option name="uvSdkKey" value="~/projects/loom/.venv" />
+    <method v="2" />
+  </configuration>
+</component>
