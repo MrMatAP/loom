@@ -69,6 +69,7 @@ exclude = ["ci"]
 
 [project.scripts]
 loom = "loom.cli.main:run"
+loom-admin = "loom.cli.admin:run"
 loom-catalog-api = "loom.api.catalog.main:run"
 loom-catalog-mcp = "loom.api.catalog.mcp.main:run"
 

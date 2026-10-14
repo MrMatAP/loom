@@ -18,8 +18,8 @@ READ_ROUTES = [
     ('/tools', 'catalog:tool:read'),
     ('/datasources', 'catalog:datasource:read'),
     ('/dataproducts', 'catalog:dataproduct:read'),
-    ('/principals', 'catalog:principal:read'),
-    ('/environments', 'catalog:environment:read'),
+    ('/principals', 'platform:principal:read'),
+    ('/environments', 'platform:environment:read'),
 ]
 
 WRITE_ROUTES = [
@@ -61,12 +61,12 @@ WRITE_ROUTES = [
     ),
     (
         '/principals',
-        'catalog:principal:write',
+        'platform:principal:write',
         {'kind': 'user', 'external_id': 'x'},
     ),
     (
         '/environments',
-        'catalog:environment:write',
+        'platform:environment:write',
         {
             'name': 'n',
             'kind': 'sandbox',
@@ -104,10 +104,10 @@ async def test_read_route_requires_its_own_scope(
 async def test_tenant_read_requires_its_own_scope(api_client, fake_principal):
     assert (await api_client.get('/api/v1/tenants')).status_code == 200
 
-    _withhold(api_client, 'catalog:tenant:read', fake_principal)
+    _withhold(api_client, 'platform:tenant:read', fake_principal)
     resp = await api_client.get('/api/v1/tenants')
     assert resp.status_code == 403
-    assert 'catalog:tenant:read' in resp.json()['detail']
+    assert 'platform:tenant:read' in resp.json()['detail']
 
 
 @pytest.mark.parametrize(('suffix', 'scope', 'body'), WRITE_ROUTES)
@@ -124,7 +124,7 @@ async def test_write_route_requires_its_own_scope(
 
 @pytest.mark.asyncio
 async def test_tenant_write_requires_its_own_scope(api_client, fake_principal):
-    _withhold(api_client, 'catalog:tenant:write', fake_principal)
+    _withhold(api_client, 'platform:tenant:write', fake_principal)
     resp = await api_client.post('/api/v1/tenants', json={'slug': 's', 'name': 'n'})
     assert resp.status_code == 403
-    assert 'catalog:tenant:write' in resp.json()['detail']
+    assert 'platform:tenant:write' in resp.json()['detail']

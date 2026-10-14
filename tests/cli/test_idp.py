@@ -1,21 +1,29 @@
 import argparse
 
-import pydantic
 import pytest
 
 from loom.cli.idp import idp_register, idp_unregister
-from loom.config import RootConfig
+from loom.config import AdminConfig
 from loom.idp.client import catalog_role_definitions
+from loom.idp.discovery import DiscoveryError, OidcDiscoveryDocument
 
 from .fake_keycloak import FakeKeycloakAdminClient
 
 
+def _fake_discovery() -> OidcDiscoveryDocument:
+    return OidcDiscoveryDocument(
+        issuer='https://idp.example/realms/loom',
+        authorization_endpoint='https://idp.example/realms/loom/protocol/openid-connect/auth',
+        token_endpoint='https://idp.example/realms/loom/protocol/openid-connect/token',
+        jwks_uri='https://idp.example/realms/loom/protocol/openid-connect/certs',
+    )
+
+
 def _base_args(**overrides):
     defaults = {
-        'issuer_url': 'https://idp.example/realms/loom',
+        'discovery_url': 'https://idp.example/realms/loom/.well-known/openid-configuration',
         'admin_username': 'admin',
         'admin_password': 'hunter2',
-        'admin_realm': 'master',
         'admin_client_id': 'admin-cli',
         'client_id': 'loom-catalog-api',
         'client_name': None,
@@ -27,6 +35,7 @@ def _base_args(**overrides):
         'cli_client_id': None,
         'cli_client_name': None,
         'access_token_lifespan': None,
+        'grant_operator': None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -34,10 +43,9 @@ def _base_args(**overrides):
 
 def _unregister_args(**overrides):
     defaults = {
-        'issuer_url': 'https://idp.example/realms/loom',
+        'discovery_url': 'https://idp.example/realms/loom/.well-known/openid-configuration',
         'admin_username': 'admin',
         'admin_password': 'hunter2',
-        'admin_realm': 'master',
         'admin_client_id': 'admin-cli',
         'client_id': None,
         'mcp_client_id': None,
@@ -51,8 +59,8 @@ def _unregister_args(**overrides):
 @pytest.mark.asyncio
 async def test_idp_register_requires_issuer(tmp_path):
     config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
-    result = await idp_register(config, _base_args(issuer_url=None))
+    config = AdminConfig(config_path=config_path)
+    result = await idp_register(config, _base_args(discovery_url=None))
     assert result == 1
     assert not config_path.exists()
 
@@ -63,7 +71,7 @@ async def test_idp_register_registers_the_api_client_and_declares_roles(
 ):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     result = await idp_register(config, _base_args())
     assert result == 0
 
@@ -93,7 +101,7 @@ async def test_idp_register_registers_api_then_mcp_then_public_clients_in_order(
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     result = await idp_register(config, _base_args())
     assert result == 0
 
@@ -104,7 +112,7 @@ async def test_idp_register_registers_api_then_mcp_then_public_clients_in_order(
     ]
     assert [c['client_id'] for c in fake.registered_public_clients] == [
         'loom-catalog-api-swagger',
-        'loom-catalog-api-cli',
+        'loom-cli',
     ]
 
     # Roles declared exactly once, against the API client's internal ref.
@@ -135,7 +143,7 @@ async def test_idp_register_defaults_client_names_to_indicative_labels(
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     fake = captured['client']
@@ -165,7 +173,7 @@ async def test_idp_register_honors_client_name_overrides(monkeypatch, tmp_path):
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(
         config,
         _base_args(
@@ -194,51 +202,81 @@ async def test_idp_register_updates_and_saves_all_auth_config_fields(
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
     config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
+    config = AdminConfig(config_path=config_path)
     result = await idp_register(config, _base_args())
     assert result == 0
 
-    assert config.auth.issuer == 'https://idp.example/realms/loom'
     assert config.auth.audience == 'loom-catalog-api'
     assert config.auth.discovery_url == (
         'https://idp.example/realms/loom/.well-known/openid-configuration'
     )
     assert config.auth.mcp_audience == 'loom-catalog-api-mcp'
     assert config.auth.swagger_client_id == 'loom-catalog-api-swagger'
-    assert config.auth.cli_client_id == 'loom-catalog-api-cli'
+    assert config.auth.cli_client_id == 'loom-cli'
 
-    reloaded = RootConfig.load(config_path=config_path)
+    reloaded = AdminConfig.load(config_path=config_path)
     assert reloaded.auth.audience == 'loom-catalog-api'
     assert reloaded.auth.mcp_audience == 'loom-catalog-api-mcp'
     assert reloaded.auth.swagger_client_id == 'loom-catalog-api-swagger'
-    assert reloaded.auth.cli_client_id == 'loom-catalog-api-cli'
+    assert reloaded.auth.cli_client_id == 'loom-cli'
 
 
 @pytest.mark.asyncio
-async def test_idp_register_recomputes_discovery_url_from_issuer(monkeypatch, tmp_path):
-    """A stale `discovery_url` left over from a previous IdP must be
-    overwritten with one derived from the freshly-registered issuer, not
-    just nulled out -- `discovery_url` is now the primary, stored value
-    (see `security.discover_and_resolve_issuer`), so leaving it unset would
-    make a freshly-registered environment start unconfigured."""
+async def test_idp_register_stores_the_given_discovery_url_when_none_is_configured(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
     config_path = tmp_path / 'config.yaml'
-    seed = RootConfig(config_path=config_path)
-    seed.auth.discovery_url = (
-        'https://old-idp.example/realms/old/.well-known/openid-configuration'
-    )
-    seed.save()
-
-    config = RootConfig.load(config_path=config_path)
-    assert config.auth.discovery_url is not None
+    config = AdminConfig(config_path=config_path)
 
     await idp_register(config, _base_args())
 
-    expected = 'https://idp.example/realms/loom/.well-known/openid-configuration'
-    assert config.auth.discovery_url == expected
-    reloaded = RootConfig.load(config_path=config_path)
-    assert reloaded.auth.discovery_url == expected
+    assert (
+        config.auth.discovery_url
+        == 'https://idp.example/realms/loom/.well-known/openid-configuration'
+    )
+    reloaded = AdminConfig.load(config_path=config_path)
+    assert (
+        reloaded.auth.discovery_url
+        == 'https://idp.example/realms/loom/.well-known/openid-configuration'
+    )
+
+
+@pytest.mark.asyncio
+async def test_idp_register_prefers_the_configured_discovery_url(monkeypatch, tmp_path):
+    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
+    fetched = []
+    monkeypatch.setattr(
+        'loom.cli.idp.discover_oidc',
+        lambda url: fetched.append(url) or _fake_discovery(),
+    )
+
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
+    config.auth.discovery_url = (
+        'https://configured.example/.well-known/openid-configuration'
+    )
+
+    await idp_register(config, _base_args())
+
+    assert fetched == ['https://configured.example/.well-known/openid-configuration']
+    assert config.auth.discovery_url == fetched[0]
+
+
+@pytest.mark.asyncio
+async def test_idp_register_does_not_store_a_discovery_url_that_cannot_be_fetched(
+    monkeypatch, tmp_path
+):
+    def _raise(url):
+        raise DiscoveryError('unreachable')
+
+    monkeypatch.setattr('loom.cli.idp.discover_oidc', _raise)
+    config_path = tmp_path / 'config.yaml'
+    config = AdminConfig(config_path=config_path)
+
+    assert await idp_register(config, _base_args()) == 1
+    assert config.auth.discovery_url is None
+    assert not config_path.exists()
 
 
 @pytest.mark.asyncio
@@ -263,11 +301,11 @@ async def test_idp_register_progress_survives_a_later_step_failing(
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _FailingOnMcpClient)
 
     config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
+    config = AdminConfig(config_path=config_path)
     with pytest.raises(RuntimeError):
         await idp_register(config, _base_args())
 
-    reloaded = RootConfig.load(config_path=config_path)
+    reloaded = AdminConfig.load(config_path=config_path)
     assert reloaded.auth.audience == 'loom-catalog-api'
     assert reloaded.auth.mcp_audience == ''
 
@@ -281,7 +319,6 @@ async def test_admin_username_env_var_fallback(monkeypatch, tmp_path):
         async def login(cls, issuer, *, username, password, **kwargs):
             del password
             captured['username'] = username
-            captured['admin_realm'] = kwargs['admin_realm']
             captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
@@ -289,10 +326,9 @@ async def test_admin_username_env_var_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv('LOOM_IDP_ADMIN_USERNAME', 'env-admin')
     monkeypatch.delenv('LOOM_IDP_ADMIN_PASSWORD', raising=False)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(admin_username=None))
     assert captured['username'] == 'env-admin'
-    assert captured['admin_realm'] == 'master'
     assert captured['admin_client_id'] == 'admin-cli'
 
 
@@ -307,7 +343,6 @@ async def test_admin_password_prompted_when_flag_and_env_both_absent(
         async def login(cls, issuer, *, username, password, **kwargs):
             del username
             captured['password'] = password
-            captured['admin_realm'] = kwargs['admin_realm']
             captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
@@ -315,10 +350,9 @@ async def test_admin_password_prompted_when_flag_and_env_both_absent(
     monkeypatch.delenv('LOOM_IDP_ADMIN_PASSWORD', raising=False)
     monkeypatch.setattr('loom.cli.idp.getpass.getpass', lambda prompt: 'prompted-pw')
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(admin_password=None))
     assert captured['password'] == 'prompted-pw'
-    assert captured['admin_realm'] == 'master'
     assert captured['admin_client_id'] == 'admin-cli'
 
 
@@ -336,7 +370,7 @@ async def test_admin_username_flag_beats_env(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
     monkeypatch.setenv('LOOM_IDP_ADMIN_USERNAME', 'env-admin')
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(admin_username='flag-admin'))
     assert captured['username'] == 'flag-admin'
 
@@ -355,55 +389,46 @@ async def test_admin_password_flag_beats_env(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
     monkeypatch.setenv('LOOM_IDP_ADMIN_PASSWORD', 'env-pw')
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(admin_password='flag-pw'))
     assert captured['password'] == 'flag-pw'
 
 
 @pytest.mark.asyncio
-async def test_idp_register_wires_admin_realm_and_client_id(monkeypatch, tmp_path):
+async def test_idp_register_wires_admin_client_id(monkeypatch, tmp_path):
     captured = {}
 
     class _SpyKeycloakAdminClient(FakeKeycloakAdminClient):
         @classmethod
         async def login(cls, issuer, *, username, password, **kwargs):
             del username, password
-            captured['admin_realm'] = kwargs['admin_realm']
             captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
-    assert captured['admin_realm'] == 'master'
     assert captured['admin_client_id'] == 'admin-cli'
 
 
 @pytest.mark.asyncio
-async def test_idp_register_wires_custom_admin_realm_and_client_id(
-    monkeypatch, tmp_path
-):
+async def test_idp_register_wires_custom_admin_client_id(monkeypatch, tmp_path):
     captured = {}
 
     class _SpyKeycloakAdminClient(FakeKeycloakAdminClient):
         @classmethod
         async def login(cls, issuer, *, username, password, **kwargs):
             del username, password
-            captured['admin_realm'] = kwargs['admin_realm']
             captured['admin_client_id'] = kwargs['admin_client_id']
             return cls(issuer, 'fake-admin-token')
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    await idp_register(
-        config,
-        _base_args(admin_realm='internal-admins', admin_client_id='custom-admin-cli'),
-    )
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
+    await idp_register(config, _base_args(admin_client_id='custom-admin-cli'))
 
-    assert captured['admin_realm'] == 'internal-admins'
     assert captured['admin_client_id'] == 'custom-admin-cli'
 
 
@@ -413,15 +438,15 @@ async def test_idp_register_wires_custom_admin_realm_and_client_id(
 @pytest.mark.asyncio
 async def test_idp_unregister_requires_issuer(tmp_path):
     config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
-    result = await idp_unregister(config, _unregister_args(issuer_url=None))
+    config = AdminConfig(config_path=config_path)
+    result = await idp_unregister(config, _unregister_args(discovery_url=None))
     assert result == 1
     assert not config_path.exists()
 
 
 @pytest.mark.asyncio
 async def test_idp_unregister_requires_a_client_id(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     result = await idp_unregister(config, _unregister_args())
     assert result == 1
 
@@ -437,7 +462,7 @@ async def test_idp_unregister_deletes_the_ids_a_prior_register_actually_stored(
     register side."""
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(
         config,
         _base_args(
@@ -493,14 +518,14 @@ async def test_idp_unregister_falls_back_to_the_naming_convention_when_unconfigu
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     result = await idp_unregister(
         config, _unregister_args(client_id='loom-catalog-api')
     )
 
     assert result == 0
     assert captured['client'].deleted_clients == [
-        'loom-catalog-api-cli',
+        'loom-cli',
         'loom-catalog-api-swagger',
         'loom-catalog-api-mcp',
         'loom-catalog-api',
@@ -514,52 +539,30 @@ async def test_idp_unregister_clears_and_persists_auth_config_fields(
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
     config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
+    config = AdminConfig(config_path=config_path)
     await idp_register(config, _base_args())
 
     result = await idp_unregister(config, _unregister_args())
     assert result == 0
 
-    assert config.auth.issuer == ''
     assert config.auth.audience == ''
     assert config.auth.discovery_url is None
     assert config.auth.mcp_audience == ''
     assert config.auth.swagger_client_id == ''
-    assert config.auth.cli_client_id == ''
+    assert config.auth.cli_client_id == 'loom-cli'
 
-    reloaded = RootConfig.load(config_path=config_path)
+    reloaded = AdminConfig.load(config_path=config_path)
     assert reloaded.auth.audience == ''
     assert reloaded.auth.mcp_audience == ''
     assert reloaded.auth.swagger_client_id == ''
-    assert reloaded.auth.cli_client_id == ''
-
-
-@pytest.mark.asyncio
-async def test_idp_unregister_does_not_touch_the_cached_cli_session(
-    monkeypatch, tmp_path
-):
-    """A cached `loom auth login` session is a separate concern (`loom auth
-    logout`) -- unregistering the IDP clients shouldn't silently discard
-    it, even though it may no longer be usable."""
-    monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
-
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    await idp_register(config, _base_args())
-    config.auth.session.access_token = pydantic.SecretStr('access-tok')
-    config.save()
-
-    result = await idp_unregister(config, _unregister_args())
-
-    assert result == 0
-    assert config.auth.session.access_token is not None
-    assert config.auth.session.access_token.get_secret_value() == 'access-tok'
+    assert reloaded.auth.cli_client_id == 'loom-cli'
 
 
 @pytest.mark.asyncio
 async def test_idp_unregister_is_idempotent_when_run_twice(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     first = await idp_unregister(config, _unregister_args(client_id='loom-catalog-api'))

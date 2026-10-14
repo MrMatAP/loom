@@ -39,7 +39,7 @@ async def create_tenant(
     session: AsyncSession = Depends(get_session),
     service: TenantService = Depends(_service),
     actor: AuditActor = Depends(get_audit_actor_for_new_tenant),
-    _scopes: None = Depends(require_scopes('catalog:tenant:write')),
+    _scopes: None = Depends(require_scopes('platform:tenant:write')),
 ):
     tenant = await service.create(body)
     await record_audit_event(
@@ -57,7 +57,7 @@ async def create_tenant(
 async def list_tenants(
     pagination: PaginationParams = Depends(),
     service: TenantService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:tenant:read')),
+    _scopes: None = Depends(require_scopes('platform:tenant:read')),
 ):
     items, total = await service.list_all(
         limit=pagination.limit, offset=pagination.offset
@@ -73,14 +73,14 @@ async def list_my_tenants(
     session: AsyncSession = Depends(get_session),
     service: TenantService = Depends(_service),
 ):
-    """Tenants available to the caller -- self-service, no `catalog:tenant:
-    read`/`catalog:principal:read` scope required, since it only ever
+    """Tenants available to the caller -- self-service, no `platform:tenant:
+    read`/`platform:principal:read` scope required, since it only ever
     returns the caller's own data. Backs `loom auth login`'s tenant
     selection step, which needs this *before* a Tenant has been chosen --
     every other route's `get_current_principal` takes `tenant_id` from the
     URL path, which is exactly what hasn't been picked yet here.
 
-    A token carrying `catalog:tenant:read` (the `catalog-platform-admin`
+    A token carrying `platform:tenant:read` (the `platform-operator`
     bundle -- see docs/admin-guide.md's "Platform administrator" section)
     sees every Tenant, since a platform admin may not have a Principal of
     their own in any of them yet. Everyone else sees only the Tenants
@@ -88,7 +88,7 @@ async def list_my_tenants(
     `principals_for_external_id`), never more -- this must not become a
     way to discover Tenants a caller isn't otherwise provisioned in."""
     scopes = expand_claims_to_scopes(claims)
-    if 'catalog:tenant:read' in scopes:
+    if 'platform:tenant:read' in scopes:
         items, total = await service.list_all(limit=_MINE_LIMIT, offset=0)
         return Page(items=items, total=total, limit=_MINE_LIMIT, offset=0)
 
@@ -105,7 +105,7 @@ async def list_my_tenants(
 async def get_tenant(
     tenant_id: uuid.UUID,
     service: TenantService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:tenant:read')),
+    _scopes: None = Depends(require_scopes('platform:tenant:read')),
 ):
     return await service.get(tenant_id)
 
@@ -115,6 +115,6 @@ async def update_tenant(
     tenant_id: uuid.UUID,
     body: TenantUpdate,
     service: TenantService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:tenant:write')),
+    _scopes: None = Depends(require_scopes('platform:tenant:write')),
 ):
     return await service.update(tenant_id, body)

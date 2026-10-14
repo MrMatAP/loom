@@ -1,6 +1,6 @@
-# Applies pending Alembic migrations (`loom db upgrade`) once, before the
+# Applies pending Alembic migrations (`loom-admin db upgrade`) once, before the
 # catalog-api/catalog-mcp Deployments start. Deliberately a single-run Job,
-# not a per-pod initContainer: `loom db upgrade` racing across N
+# not a per-pod initContainer: `loom-admin db upgrade` racing across N
 # concurrently-starting replicas is exactly the failure this project's
 # history already hit once (DuplicateObject on a shared Postgres enum
 # type, created twice by two migrations racing against a fresh database).
@@ -33,7 +33,7 @@ spec:
           image: loom:dev # CHANGEME -- set via `kustomize edit set image`, see kustomization.yaml
           # `args`, not `command` -- see catalog-mcp-deployment.yaml's
           # comment on the same point.
-          args: ['loom', 'db', 'upgrade']
+          args: ['loom-admin', 'db', 'upgrade']
           envFrom:
             - configMapRef:
                 name: loom-catalog-config

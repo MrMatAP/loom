@@ -1,29 +1,63 @@
-from pydantic import BaseModel
+import pathlib
+from typing import Self
 
-import loom.config
+import yaml
+from pydantic import BaseModel, Field, computed_field
+
+from loom import __version__
 
 
-class RootConfigAware(BaseModel):
+class ConfigFile(BaseModel):
     """
-    The common base class for all configuration models except for the RootConfig
-    itself. It defines a reference back to the root configuration instance so
-    configuration classes further down in the hierarchy have access to all other
-    configuration no matter where it is.
+    Base class for a top-level configuration model backed by one YAML file.
 
-    We accept the slight uglyness for this to be a dunder attribute we set from
-    outside __init__. This is required for pydantic to not complain about it.
+    There is deliberately no single root configuration: `UserConfig` (`loom`),
+    `AdminConfig` (`loom-admin`), `ApiServerConfig` and `McpServerConfig` each live
+    in their own file, so a process only ever has access to the secrets of
+    its own trust domain (see docs/adr/0002-split-cli-and-config-by-trust-
+    domain.md).
     """
 
-    _root_config: loom.config.RootConfig = None
+    config_path: pathlib.Path = Field(
+        description='The configuration file backing this object'
+    )
 
-    def propagate_root_config(self, root_config: loom.config.RootConfig) -> None:
+    @computed_field
+    @property
+    def version(self) -> str:
+        """The current version of loom."""
+        return __version__
+
+    def save(self) -> None:
         """
-        Evaluate all attributes of this instance. If the field has a type that
-        inherits from this class then recursively invoke ourselves.
-        Args:
-            root_config (RootConfig): The root configuration instance
+        Save the current in-memory configuration to disk.
+
+        The file may carry cleartext secrets (database password, cached CLI
+        session tokens) once `reveal_secrets` is set below, so it's
+        restricted to owner-only access same as any credentials file.
         """
-        self._root_config = root_config
-        for attr in dict(self).values():
-            if issubclass(type(attr), RootConfigAware):
-                attr.propagate_root_config(root_config)
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.config_path.open('w') as f:
+            yaml.dump(
+                self.model_dump(
+                    mode='json',
+                    exclude_none=True,
+                    exclude_computed_fields=True,
+                    context={'reveal_secrets': True},
+                ),
+                f,
+            )
+        self.config_path.chmod(0o600)
+
+    @classmethod
+    def load(cls, config_path: pathlib.Path) -> Self:
+        """
+        Load the configuration from disk, or return an all-defaults
+        instance bound to `config_path` if the file doesn't exist yet.
+        """
+        if config_path.exists():
+            with config_path.open() as f:
+                data = yaml.safe_load(f) or {}
+            data['config_path'] = config_path
+            return cls.model_validate(data)
+        return cls(config_path=config_path)

@@ -2,7 +2,7 @@ import httpx
 
 from loom.tls import build_ssl_context
 
-from .client import ClientRegistrationResult, RoleDefinition
+from .client import ClientRegistrationResult, RoleDefinition, RoleMember
 
 
 class KeycloakAdminClient:
@@ -371,3 +371,87 @@ class KeycloakAdminClient:
                     timeout=30.0,
                 )
                 self._raise_unless_already_exists(composite_response)
+
+    async def grant_client_roles(
+        self, *, username: str, client_id: str, role_names: list[str]
+    ) -> str | None:
+        """Assign client roles of `client_id` directly to an existing user.
+        Returns the user's id (their token `sub`), or `None` if no such user
+        exists -- creating accounts is the IdP's job, not Loom's. Idempotent:
+        re-assigning a role the user already holds is a no-op in Keycloak."""
+        headers = {'Authorization': f'Bearer {self._token}'}
+        async with self._client() as http:
+            response = await http.get(
+                f'{self._realm_admin_base}/users',
+                params={'username': username, 'exact': 'true'},
+                headers=headers,
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            matches = response.json()
+            if not matches:
+                return None
+            user_id = matches[0]['id']
+
+            client_ref = await self._find_client_ref(http, client_id, headers)
+            if client_ref is None:
+                raise RuntimeError(
+                    f'Client {client_id} is not registered; run `loom-admin idp register` first'
+                )
+            roles = []
+            for name in role_names:
+                role_response = await http.get(
+                    f'{self._realm_admin_base}/clients/{client_ref}/roles/{name}',
+                    headers=headers,
+                    timeout=30.0,
+                )
+                if role_response.status_code == httpx.codes.NOT_FOUND:
+                    raise RuntimeError(
+                        f'Role {name} does not exist on client {client_id}; '
+                        'run `loom-admin idp register` first'
+                    )
+                role_response.raise_for_status()
+                roles.append(role_response.json())
+
+            mapping = await http.post(
+                f'{self._realm_admin_base}/users/{user_id}/role-mappings/clients/{client_ref}',
+                json=roles,
+                headers=headers,
+                timeout=30.0,
+            )
+            mapping.raise_for_status()
+        return user_id
+
+    async def list_client_role_members(
+        self, *, client_id: str, role_name: str
+    ) -> list[RoleMember]:
+        """Users holding a client role directly (not via composite roles or
+        groups -- `grant_client_roles` assigns directly)."""
+        headers = {'Authorization': f'Bearer {self._token}'}
+        page_size = 100
+        members: list[RoleMember] = []
+        async with self._client() as http:
+            client_ref = await self._find_client_ref(http, client_id, headers)
+            if client_ref is None:
+                raise RuntimeError(
+                    f'Client {client_id} is not registered; run `loom-admin idp register` first'
+                )
+            while True:
+                response = await http.get(
+                    f'{self._realm_admin_base}/clients/{client_ref}/roles/{role_name}/users',
+                    params={'first': len(members), 'max': page_size},
+                    headers=headers,
+                    timeout=30.0,
+                )
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    raise RuntimeError(
+                        f'Role {role_name} does not exist on client {client_id}; '
+                        'run `loom-admin idp register` first'
+                    )
+                response.raise_for_status()
+                page = response.json()
+                members.extend(
+                    RoleMember(user_id=u['id'], username=u['username']) for u in page
+                )
+                if len(page) < page_size:
+                    return members

@@ -22,7 +22,7 @@ so no session is pinned to one process either (see
 `src/loom/api/catalog/mcp/main.py`). That's what makes horizontal scaling a
 replica-count knob rather than a code-level concern: any request can go to
 any replica. One container image serves both processes plus the `loom` CLI
-(used for one-shot jobs like `loom db upgrade`), selected by which command
+(used for one-shot jobs like `loom-admin db upgrade`), selected by which command
 runs, not by building three images.
 
 ## What's implemented
@@ -73,7 +73,7 @@ One consequence: `external_id` is only unique *per Tenant*
 same `sub` can legitimately be provisioned in more than one Tenant -- a
 consultant working across two customer Tenants, for instance. `GET
 /tenants/mine` lists which Tenants a caller can act in (every Tenant for a
-platform admin, i.e. anyone whose token carries `catalog:tenant:read`;
+Platform Operator, i.e. anyone whose token carries `platform:tenant:read`;
 otherwise only the Tenants where they already have a Principal) so a
 client can choose *before* making a Tenant-scoped request. The CLI
 (`loom auth login`) drives this automatically -- see
@@ -102,7 +102,7 @@ Every content-tier request requires a scope of the form
 `principal`, `environment` (`read`/`write` only). `src/loom/idp/
 catalog_roles.py` is the single source of truth for this vocabulary and
 for the five composite roles that bundle it (`catalog-viewer` through
-`catalog-platform-admin` -- see
+`platform-operator` -- see
 [docs/admin-guide.md](admin-guide.md#authorization-model) for what each
 grants). A token can carry either a raw `scope` claim (space-separated) or
 a `roles` claim naming these bundles; `expand_claims_to_scopes` flattens
@@ -112,21 +112,21 @@ about roles vs. scopes separately.
 A missing scope is a `403` (`InsufficientScopeError`), not a `401` -- the
 token is fine, it just doesn't authorize this call. `POST /tenants` and
 `POST /tenants/{tenant_id}/principals` are the one exception to the
-content-tier pattern: they only check `catalog:tenant:write`/
-`catalog:principal:write` and never call `get_current_principal`, which is
-what lets a platform administrator bootstrap a Tenant/Principal before any
+content-tier pattern: they only check `platform:tenant:write`/
+`platform:principal:write` and never call `get_current_principal`, which is
+what lets a Platform Operator bootstrap a Tenant/Principal before any
 Principal row exists for them at all.
 
 ## OAuth client topology
 
-Four OAuth clients, registered together by `loom idp register` in
+Four OAuth clients, registered together by `loom-admin idp register` in
 dependency order:
 
 1. **RESTful API** -- confidential, with a service account. Declares all 27
    leaf scopes plus the 5 composite roles as roles under this one client --
    the single source every other client's tokens read from.
 2. **MCP server** -- confidential, its own resource-server client with its
-   own audience (`auth.mcp_audience`), so `loom-catalog-mcp` validates
+   own audience (`McpServerConfig.auth.audience`), so `loom-catalog-mcp` validates
    tokens against a different `aud` than `loom-catalog-api` does.
    Deliberately gets no role declarations of its own.
 3. **Swagger UI** -- public, Authorization Code + PKCE, for interactive
@@ -185,35 +185,34 @@ URL path plays on the REST side -- see "Multi-tenancy" above):
 `AuditEvent` (`tenant.create`/`principal.create`) regardless of whether the
 caller has a resolvable Principal yet -- attributed to the caller's
 Principal when they have one, or to their token's `sub` claim in
-`details.actor_external_id` when they don't (a platform administrator, on
+`details.actor_external_id` when they don't (a Platform Operator, on
 the very first bootstrap most notably; see
 `src/loom/api/catalog/audit.py`). The one write that is *not* audited is
-`loom db upgrade`'s default-Tenant seed (`_seed_default_tenant`,
+`loom-admin db upgrade`'s default-Tenant seed (`_seed_default_tenant`,
 `src/loom/cli/db.py`) -- it runs before any login, so there is no `sub` to
 attribute it to, and unlike the two calls above it grants no identity
 access by itself.
 
 ## Configuration and secrets
 
-Every container reads its configuration from a YAML file at
-`$LOOM_CONFIG_PATH`, assembled from plain environment variables by
-`docker/entrypoint.sh` at container start (see
-[docs/admin-guide.md](admin-guide.md#configuration) for the variable
-reference an admin actually sets). Two implementation details explain why
+There is no single root configuration. `UserConfig` (`loom`), `AdminConfig`
+(`loom-admin`), `ApiServerConfig` and `McpServerConfig` each live in
+their own YAML file, so a process only has the secrets of its own trust
+domain (see [ADR 0002](adr/0002-split-cli-and-config-by-trust-domain.md)).
+Containers read the API's file from `$LOOM_API_CONFIG_PATH` and the MCP
+server's from `$LOOM_MCP_CONFIG_PATH` (or, for `loom-admin`, the admin file from `$LOOM_ADMIN_CONFIG_PATH`), assembled from
+plain environment variables by `docker/entrypoint.sh` at container start
+(see [docs/admin-guide.md](admin-guide.md#configuration) for the variable
+reference an admin actually sets). An implementation detail explains why
 that file has to live on writable storage, not a mounted Secret:
 
-- `RootConfig.save()` -- which `loom config set` round-trips through, and
-  which every `loom` invocation calls, not just `config set` --
-  `chmod(0o600)`s the file it just wrote. A read-only-mounted Secret can't
+- `ConfigFile.save()` -- which every CLI invocation calls, not just `config
+  set` -- `chmod(0o600)`s the file it just wrote. A read-only-mounted Secret can't
   be `chmod`'d, so `entrypoint.sh` instead writes the assembled file into a
   path the container owns itself (a small `emptyDir`, which still works
   under `readOnlyRootFilesystem: true`).
-- `RootConfig.load()` requires the file to contain a `config_path` key
-  matching its own path. A file written by `loom config set`/
-  `entrypoint.sh` always has one; a hand-authored file generally won't and
-  fails validation as a result.
 
-TLS trust for outbound IdP calls (`loom idp ...`, `loom auth login`, JWKS
+TLS trust for outbound IdP calls (`loom-admin idp ...`, `loom auth login`, JWKS
 resolution, OIDC discovery) goes through `loom.tls.build_ssl_context()`,
 which defaults to the OS-native trust store and honors
 `LOOM_IDP_CA_BUNDLE` as an explicit override -- see
@@ -286,7 +285,7 @@ instead of the in-memory sqlite the rest of `pytest` uses, migrated via
 the packaged Alembic revisions -- catches things sqlite's looser typing
 can hide. Also self-skips without live credentials.
 `LOOM_DB_PORT`/`LOOM_DB_NAME`/`LOOM_DB_USERNAME`/`LOOM_DB_PASSWORD` default
-the same way they do for `loom db upgrade` -- see
+the same way they do for `loom-admin db upgrade` -- see
 [docs/admin-guide.md](admin-guide.md#configuration):
 
 ```

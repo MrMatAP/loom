@@ -53,7 +53,11 @@ class SkillApplicationService:
         self._uow = uow
 
     async def create(
-        self, *, tenant_id: uuid.UUID, created_by_id: uuid.UUID, data: SkillCreateRequest
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        created_by_id: uuid.UUID,
+        data: SkillCreateRequest,
     ) -> SkillRead:
         skill = DomainSkill(
             tenant_id=tenant_id,
@@ -91,7 +95,9 @@ class SkillApplicationService:
         saved = await self._uow.skills.add(new_version)
         return _skill_read(saved)
 
-    async def get_current(self, tenant_id: uuid.UUID, entity_id: uuid.UUID) -> SkillRead:
+    async def get_current(
+        self, tenant_id: uuid.UUID, entity_id: uuid.UUID
+    ) -> SkillRead:
         return _skill_read(await self._get_current_or_raise(tenant_id, entity_id))
 
     async def get_version(
@@ -187,7 +193,9 @@ class SkillApplicationService:
         version: int,
         data: SkillGraphEdgeCreateRequest,
     ) -> SkillGraphEdgeRead:
-        skill = await self._uow.skills.get_version_with_graph(tenant_id, entity_id, version)
+        skill = await self._uow.skills.get_version_with_graph(
+            tenant_id, entity_id, version
+        )
         if skill is None:
             raise NotFoundError(f'Skill {entity_id} version {version} not found')
         edge = skill.add_edge(data.from_node_id, data.to_node_id)

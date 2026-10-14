@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from loom.api.catalog.dependencies import get_session
 from loom.api.catalog.main import create_app
 from loom.api.catalog.security import TokenValidator, expand_claims_to_scopes
-from loom.config import RootConfig
+from loom.config import ApiServerConfig, McpServerConfig
 from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import ROLE_BUNDLES
 from loom.idp.discovery import default_discovery_url, discover_oidc
@@ -211,7 +211,7 @@ def test_live_token_carries_the_expected_audience_and_roles(
     scopes = expand_claims_to_scopes(claims)
     # `catalog-viewer` grants only the read scopes (see `ROLE_BUNDLES`) --
     # not `content_scopes()`, which also includes write/transition and is
-    # what `catalog-admin` maps to.
+    # what `catalog-maintainer` maps to.
     assert scopes >= ROLE_BUNDLES['catalog-viewer']
     assert 'catalog:agent:write' not in scopes  # ...but none of the write ones
 
@@ -224,8 +224,8 @@ def test_token_validator_verifies_the_live_signature(
     just claim shape (the previous test intentionally skips verification
     to isolate mapper output from signature validity)."""
     resource_server_id, _ = resource_server_client
-    config = RootConfig(config_path='/dev/null')
-    config.auth.issuer = live_issuer
+    config = ApiServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = default_discovery_url(live_issuer)
     config.auth.audience = resource_server_id
 
     discovery = discover_oidc(default_discovery_url(live_issuer))
@@ -239,13 +239,13 @@ def test_token_validator_also_accepts_the_mcp_audience(
     live_issuer, live_user_token, mcp_resource_server_client
 ):
     """The MCP server builds its own `TokenValidator` against
-    `auth.mcp_audience` (see `mcp.main.create_app`'s lifespan), not
-    `auth.audience` -- proves the same token that satisfies the REST API's
+    `McpServerConfig.auth.audience` (see `mcp.main.create_app`'s lifespan),
+    not the REST API's -- proves the same token that satisfies the REST API's
     validator above also satisfies a validator scoped to the MCP resource
     server, via the second audience mapper on the public client."""
     mcp_resource_server_id, _ = mcp_resource_server_client
-    config = RootConfig(config_path='/dev/null')
-    config.auth.issuer = live_issuer
+    config = McpServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = default_discovery_url(live_issuer)
     config.auth.audience = mcp_resource_server_id
 
     discovery = discover_oidc(default_discovery_url(live_issuer))
@@ -287,14 +287,14 @@ async def test_live_token_authorizes_a_real_api_request(
         )
         await session.commit()
 
-    config = RootConfig(config_path='/dev/null')
-    config.auth.issuer = live_issuer
+    config = ApiServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = default_discovery_url(live_issuer)
     config.auth.audience = resource_server_id
     app = create_app(config)
     # Bypass the Postgres-backed lifespan entirely: we only need the real
     # TokenValidator (set directly below), not the app's default database.
     # A second discovery fetch (`create_app` above already did one via
-    # `discover_and_resolve_issuer`) -- acceptable here, this is a live
+    # `discover_auth`) -- acceptable here, this is a live
     # integration test, not a latency-sensitive path.
     discovery = discover_oidc(default_discovery_url(live_issuer))
     app.state.token_validator = TokenValidator(config.auth, discovery)

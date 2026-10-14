@@ -34,7 +34,9 @@ def node_to_domain(row: NodeRow, *, resolved_layer: Layer | None) -> DomainNode:
 
 
 def edge_to_domain(row: EdgeRow) -> DomainEdge:
-    return DomainEdge(id=row.id, from_node_id=row.from_node_id, to_node_id=row.to_node_id)
+    return DomainEdge(
+        id=row.id, from_node_id=row.from_node_id, to_node_id=row.to_node_id
+    )
 
 
 def to_domain(

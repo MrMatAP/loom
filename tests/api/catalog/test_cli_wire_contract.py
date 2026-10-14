@@ -23,11 +23,11 @@ import pytest
 
 from loom.catalog_client import CatalogClient
 from loom.cli import catalog
-from loom.config import RootConfig
+from loom.config import UserConfig
 
 
-def _cli_config() -> RootConfig:
-    config = RootConfig(config_path='/dev/null')
+def _cli_config() -> UserConfig:
+    config = UserConfig(config_path='/dev/null')
     config.catalog.api_base_url = 'http://test'
     config.auth.session.access_token = pydantic.SecretStr('irrelevant-under-asgi')
     config.auth.session.expires_at = int(time.time()) + 300
@@ -70,7 +70,7 @@ def rendered(monkeypatch) -> dict:
 
 
 async def _create_capability(
-    config: RootConfig,
+    config: UserConfig,
     transport: httpx.ASGITransport,
     tenant_id: uuid.UUID,
     name: str,

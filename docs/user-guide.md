@@ -19,8 +19,8 @@ you can do:
 | `catalog-viewer` | Read Capabilities, Agents, Skills, Tools, DataSources, DataProducts, ModelEndpoints |
 | `catalog-editor` | ...plus create and update them |
 | `catalog-approver` | Read, plus move them through lifecycle states (approve/publish/deprecate/retire) |
-| `catalog-admin` | Full read/write/transition access across all of the above |
-| `catalog-platform-admin` | Everything `catalog-admin` has, plus managing Tenants and other users' Principals -- usually held by an administrator, not a typical end user |
+| `catalog-maintainer` | Full read/write/transition access across all of the above |
+| `platform-operator` | Managing Tenants, Principals and Environments (platform scopes only; no content access of its own -- usually granted together with `catalog-maintainer`) |
 
 A role alone isn't enough to act: your admin also provisions a `Principal`
 record for you, scoped to one Tenant. If a command fails with `403`
@@ -30,19 +30,19 @@ a role problem -- see "Getting help" below.
 
 ## Logging in
 
-Point the CLI at your Catalog:
+Log in, giving the CLI your Catalog's URL. It asks the server for the IdP
+settings it needs, so there is nothing else to configure (opens a
+device-code flow -- a URL and a short code to approve in any browser,
+including on a different device):
 
 ```
-loom config set catalog.api_base_url https://catalog.example.com
+loom auth login --server https://catalog.example.com
 ```
 
-Log in (opens a device-code flow -- a URL and a short code to approve in
-any browser, including on a different device):
-
-```
-loom auth login
-```
-
+The server's settings are cached in `~/.config/loom/config.yaml`, so later
+logins are just `loom auth login`. If you've overridden `auth.cli_client_id`
+locally and it differs from what the server advertises, the CLI warns and
+uses your override.
 If you're provisioned in more than one Tenant, `loom auth login` lists
 them and asks you to pick one; otherwise it's selected automatically. Every
 subsequent request is scoped to that Tenant. `loom auth set-tenant
@@ -105,7 +105,7 @@ A few things that surprise people the first time:
   `transition`, e.g. `loom capability transition <entity_id> 1 in_review`.
   Skipping states isn't allowed -- the API rejects an illegal transition
   rather than silently applying it. This needs `catalog-approver` (or
-  `catalog-admin`), not just `catalog-editor`.
+  `catalog-maintainer`), not just `catalog-editor`.
 - **JSON-shaped flags** (`--target-metrics`, `--llm-config`,
   `--permission-boundary`) default to an empty array/object if omitted.
 

@@ -2,9 +2,10 @@ import argparse
 import getpass
 import os
 
-from loom.config import RootConfig
+from loom.config import AdminConfig
+from loom.config.auth_config import DEFAULT_CLI_CLIENT_ID
 from loom.idp.client import catalog_role_definitions
-from loom.idp.discovery import default_discovery_url
+from loom.idp.discovery import DiscoveryError, discover_oidc
 from loom.idp.keycloak import KeycloakAdminClient
 
 
@@ -41,7 +42,29 @@ def _resolve_access_token_lifespan(args: argparse.Namespace) -> int | None:
     return int(env_value) if env_value else None
 
 
-async def _login_as_admin(
+def resolve_issuer_url(config: AdminConfig, args: argparse.Namespace) -> str | None:
+    """The issuer published by the IdP's discovery document. The document's
+    URL is `config.auth.discovery_url` if already stored; otherwise it is
+    `--discovery-url`, persisted into `config.auth.discovery_url` once it
+    has actually been fetched. Prints the reason and returns None if
+    there's no URL or it can't be fetched."""
+    discovery_url = config.auth.discovery_url or args.discovery_url
+    if not discovery_url:
+        print('No --discovery-url given and config.auth.discovery_url is unset.')
+        return None
+    try:
+        issuer = discover_oidc(discovery_url).issuer
+    except DiscoveryError as exc:
+        print(f'Discovery failed: {exc}')
+        return None
+    if not config.auth.discovery_url:
+        config.auth.discovery_url = discovery_url
+        config.save()
+        print(f'Updated local config: auth.discovery_url={discovery_url}')
+    return issuer
+
+
+async def login_as_admin(
     issuer_url: str, args: argparse.Namespace
 ) -> KeycloakAdminClient:
     """Resolve admin credentials and log in to the Keycloak Admin API."""
@@ -51,7 +74,6 @@ async def _login_as_admin(
         issuer_url,
         username=username,
         password=password,
-        admin_realm=args.admin_realm,
         admin_client_id=args.admin_client_id,
     )
 
@@ -80,8 +102,7 @@ async def _grant_resource_server_claims(
 
 async def _register_api_client(
     client: KeycloakAdminClient,
-    config: RootConfig,
-    issuer_url: str,
+    config: AdminConfig,
     args: argparse.Namespace,
 ) -> str:
     """Register the confidential RESTful API resource-server client and
@@ -104,26 +125,14 @@ async def _register_api_client(
         print(result.client_secret)
     print(f'Declared {len(roles)} roles under the client.')
 
-    config.auth.issuer = issuer_url
     config.auth.audience = result.client_id
-    # `discovery_url` is the primary, stored value going forward (the
-    # server re-derives `issuer` from it, and fails startup if a stored
-    # `issuer` ever disagrees -- see `security.discover_and_resolve_
-    # issuer`); populate it here too, rather than leaving it to whatever
-    # was there before, so a freshly-registered environment starts
-    # consistent instead of relying on the two ever being reconciled later.
-    config.auth.discovery_url = default_discovery_url(issuer_url)
     config.save()
-    print(
-        f'Updated local config: auth.issuer={issuer_url}, '
-        f'auth.audience={result.client_id}, '
-        f'auth.discovery_url={config.auth.discovery_url}'
-    )
+    print(f'Updated local config: auth.audience={result.client_id}')
     return result.client_id
 
 
 async def _register_mcp_client(
-    client: KeycloakAdminClient, config: RootConfig, args: argparse.Namespace
+    client: KeycloakAdminClient, config: AdminConfig, args: argparse.Namespace
 ) -> str:
     """Register the confidential MCP server resource-server client --
     deliberately no role declarations here; see `_grant_resource_server_claims`
@@ -150,7 +159,7 @@ async def _register_mcp_client(
 
 async def _register_swagger_client(
     client: KeycloakAdminClient,
-    config: RootConfig,
+    config: AdminConfig,
     args: argparse.Namespace,
     api_client_id: str,
     mcp_client_id: str,
@@ -188,13 +197,13 @@ async def _register_swagger_client(
 
 async def _register_cli_client(
     client: KeycloakAdminClient,
-    config: RootConfig,
+    config: AdminConfig,
     args: argparse.Namespace,
     api_client_id: str,
     mcp_client_id: str,
 ) -> None:
     """Register the public device-flow client used by `loom auth login`."""
-    cli_client_id = args.cli_client_id or f'{args.client_id}-cli'
+    cli_client_id = args.cli_client_id or DEFAULT_CLI_CLIENT_ID
     client_name = args.cli_client_name or 'Loom :: CLI'
     result = await client.register_public_client(
         client_id=cli_client_id, client_name=client_name, device_flow=True
@@ -223,7 +232,7 @@ async def _register_cli_client(
     print(f'Updated local config: auth.cli_client_id={result.client_id}')
 
 
-async def idp_register(config: RootConfig, args: argparse.Namespace) -> int:
+async def idp_register(config: AdminConfig, args: argparse.Namespace) -> int:
     """Register all four Catalog OAuth clients -- RESTful API, MCP server,
     Swagger UI, CLI -- against the IDP in one run, in dependency order: the
     two resource-server clients first (the public clients need both to
@@ -232,17 +241,22 @@ async def idp_register(config: RootConfig, args: argparse.Namespace) -> int:
     (see `KeycloakAdminClient`), and `config` is saved after each
     successful step, so a run interrupted partway through is safe to just
     re-run in full."""
-    issuer_url = args.issuer_url or config.auth.issuer
+    issuer_url = resolve_issuer_url(config, args)
     if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
         return 1
 
-    client = await _login_as_admin(issuer_url, args)
+    client = await login_as_admin(issuer_url, args)
 
-    api_client_id = await _register_api_client(client, config, issuer_url, args)
+    api_client_id = await _register_api_client(client, config, args)
     mcp_client_id = await _register_mcp_client(client, config, args)
     await _register_swagger_client(client, config, args, api_client_id, mcp_client_id)
     await _register_cli_client(client, config, args, api_client_id, mcp_client_id)
+
+    print(
+        "Next: generate the servers' configuration with `loom-admin api "
+        'config` and `loom-admin mcp config`, and make someone the first '
+        'Platform Operator with `loom-admin operator grant <username>`.'
+    )
     return 0
 
 
@@ -260,7 +274,7 @@ async def _delete_client(
         print(f'{label} client {client_id} was already absent, nothing to delete.')
 
 
-async def idp_unregister(config: RootConfig, args: argparse.Namespace) -> int:
+async def idp_unregister(config: AdminConfig, args: argparse.Namespace) -> int:
     """Delete the four Catalog OAuth clients `idp_register` created --
     RESTful API, MCP server, Swagger UI, CLI -- and clear the local config
     fields it set, undoing that command. Every deletion is idempotent (see
@@ -286,15 +300,14 @@ async def idp_unregister(config: RootConfig, args: argparse.Namespace) -> int:
     this environment, unregister will report the (unrelated) client as
     absent, still wipe local config, and the real client will be
     untouched in Keycloak under whatever id it actually has. Double-check
-    `--issuer-url`/`--client-id` against the environment you mean to
+    `--discovery-url`/`--client-id` against the environment you mean to
     unregister before running this.
 
     Does not touch `config.auth.session` (the cached CLI login, if any) --
     the identity that login belongs to may still be usable against a
     different IDP setup; run `loom auth logout` separately if it isn't."""
-    issuer_url = args.issuer_url or config.auth.issuer
+    issuer_url = resolve_issuer_url(config, args)
     if not issuer_url:
-        print('No --issuer-url given and config.auth.issuer is unset.')
         return 1
 
     api_client_id = args.client_id or config.auth.audience
@@ -312,11 +325,9 @@ async def idp_unregister(config: RootConfig, args: argparse.Namespace) -> int:
         or config.auth.swagger_client_id
         or f'{api_client_id}-swagger'
     )
-    cli_client_id = (
-        args.cli_client_id or config.auth.cli_client_id or f'{api_client_id}-cli'
-    )
+    cli_client_id = args.cli_client_id or config.auth.cli_client_id
 
-    client = await _login_as_admin(issuer_url, args)
+    client = await login_as_admin(issuer_url, args)
 
     # Reverse of `idp_register`'s order -- Keycloak doesn't actually
     # enforce any dependency between these (each public client's protocol
@@ -328,16 +339,176 @@ async def idp_unregister(config: RootConfig, args: argparse.Namespace) -> int:
     await _delete_client(client, 'MCP', mcp_client_id)
     await _delete_client(client, 'API', api_client_id)
 
-    config.auth.issuer = ''
     config.auth.audience = ''
     config.auth.discovery_url = None
     config.auth.mcp_audience = ''
     config.auth.swagger_client_id = ''
-    config.auth.cli_client_id = ''
+    config.auth.cli_client_id = DEFAULT_CLI_CLIENT_ID
     config.save()
     print(
-        'Cleared local config: auth.issuer, auth.audience, '
+        'Cleared local config: auth.audience, '
         'auth.discovery_url, auth.mcp_audience, auth.swagger_client_id, '
         'auth.cli_client_id.'
     )
     return 0
+
+
+def add_admin_login_args(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by every `idp register-*` command's admin login."""
+    parser.add_argument(
+        '--discovery-url',
+        dest='discovery_url',
+        default=None,
+        help=(
+            "IdP's OIDC discovery document URL. Config's auth.discovery_url "
+            'is used if set; otherwise this value is stored there'
+        ),
+    )
+    parser.add_argument(
+        '--admin-username',
+        dest='admin_username',
+        default=None,
+        help='Keycloak admin username, else LOOM_IDP_ADMIN_USERNAME or a prompt',
+    )
+    parser.add_argument(
+        '--admin-password',
+        dest='admin_password',
+        default=None,
+        help='Keycloak admin password, else LOOM_IDP_ADMIN_PASSWORD or a prompt',
+    )
+    parser.add_argument(
+        '--admin-client-id',
+        dest='admin_client_id',
+        default='admin-cli',
+        help='Public client used for the admin login grant',
+    )
+
+
+def add_idp_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """Register the `idp` command group."""
+    idp_parser = subparsers.add_parser(
+        'idp', help='Identity provider bootstrap commands'
+    )
+    idp_subparser = idp_parser.add_subparsers(required=True)
+
+    idp_register_parser = idp_subparser.add_parser(
+        'register',
+        help=(
+            'Register all four Catalog OAuth clients (RESTful API, MCP '
+            'server, Swagger UI, CLI) and declare the role vocabulary, '
+            'in one run'
+        ),
+    )
+    add_admin_login_args(idp_register_parser)
+    idp_register_parser.add_argument(
+        '--client-id',
+        dest='client_id',
+        required=True,
+        help='OAuth client ID to register for the RESTful API',
+    )
+    idp_register_parser.add_argument(
+        '--client-name',
+        dest='client_name',
+        default=None,
+        help="Human-readable API client name, defaults to 'Loom :: REST'",
+    )
+    idp_register_parser.add_argument(
+        '--api-base-url',
+        dest='api_base_url',
+        required=True,
+        help=(
+            'Public base URL the Catalog API is served from, e.g. '
+            'https://catalog.example.com (Swagger UI redirect URI is '
+            '{api-base-url}/docs/oauth2-redirect)'
+        ),
+    )
+    idp_register_parser.add_argument(
+        '--mcp-client-id',
+        dest='mcp_client_id',
+        default=None,
+        help='OAuth client ID for the MCP server, defaults to {client-id}-mcp',
+    )
+    idp_register_parser.add_argument(
+        '--mcp-client-name',
+        dest='mcp_client_name',
+        default=None,
+        help="Human-readable MCP client name, defaults to 'Loom :: MCP'",
+    )
+    idp_register_parser.add_argument(
+        '--swagger-client-id',
+        dest='swagger_client_id',
+        default=None,
+        help=('OAuth client ID for Swagger UI, defaults to {client-id}-swagger'),
+    )
+    idp_register_parser.add_argument(
+        '--swagger-client-name',
+        dest='swagger_client_name',
+        default=None,
+        help="Human-readable Swagger UI client name, defaults to 'Loom :: Swagger UI'",
+    )
+    idp_register_parser.add_argument(
+        '--cli-client-id',
+        dest='cli_client_id',
+        default=None,
+        help=f'OAuth client ID for the CLI, defaults to {DEFAULT_CLI_CLIENT_ID}',
+    )
+    idp_register_parser.add_argument(
+        '--cli-client-name',
+        dest='cli_client_name',
+        default=None,
+        help="Human-readable CLI client name, defaults to 'Loom :: CLI'",
+    )
+    idp_register_parser.add_argument(
+        '--access-token-lifespan',
+        dest='access_token_lifespan',
+        type=int,
+        default=None,
+        help=(
+            "Override the CLI client's access-token lifespan in seconds "
+            '(else LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN, else the realm '
+            'default applies unmodified). Safe to re-run against an '
+            'already-registered client to change it later.'
+        ),
+    )
+    idp_register_parser.set_defaults(func=idp_register)
+
+    idp_unregister_parser = idp_subparser.add_parser(
+        'unregister',
+        help=(
+            'Delete the four Catalog OAuth clients `register` created '
+            '(RESTful API, MCP server, Swagger UI, CLI) and clear the '
+            'local config fields it set'
+        ),
+    )
+    add_admin_login_args(idp_unregister_parser)
+    idp_unregister_parser.add_argument(
+        '--client-id',
+        dest='client_id',
+        default=None,
+        help=('OAuth client ID for the RESTful API, defaults to config.auth.audience'),
+    )
+    idp_unregister_parser.add_argument(
+        '--mcp-client-id',
+        dest='mcp_client_id',
+        default=None,
+        help=(
+            'OAuth client ID for the MCP server, defaults to '
+            'config.auth.mcp_audience, else {client-id}-mcp'
+        ),
+    )
+    idp_unregister_parser.add_argument(
+        '--swagger-client-id',
+        dest='swagger_client_id',
+        default=None,
+        help=(
+            'OAuth client ID for Swagger UI, defaults to '
+            'config.auth.swagger_client_id, else {client-id}-swagger'
+        ),
+    )
+    idp_unregister_parser.add_argument(
+        '--cli-client-id',
+        dest='cli_client_id',
+        default=None,
+        help=('OAuth client ID for the CLI, defaults to config.auth.cli_client_id'),
+    )
+    idp_unregister_parser.set_defaults(func=idp_unregister)

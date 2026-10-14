@@ -48,7 +48,7 @@ spec:
           image: loom:dev # CHANGEME -- set via `kustomize edit set image`, see kustomization.yaml
           # `args`, not `command` -- `command` would override the image's
           # ENTRYPOINT (docker/entrypoint.sh, which materializes
-          # $LOOM_CONFIG_PATH from the env vars below before running
+          # the config path from the env vars below before running
           # anything); `args` overrides only its default CMD
           # (loom-catalog-api).
           args: ['loom-catalog-mcp']

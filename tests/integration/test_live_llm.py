@@ -42,7 +42,7 @@ from loom.api.catalog.dependencies import (
 )
 from loom.api.catalog.main import create_app
 from loom.api.catalog.security import AuthenticatedPrincipal
-from loom.config import RootConfig
+from loom.config import ApiServerConfig
 from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
 from loom.persistence import (
@@ -122,7 +122,7 @@ async def api_client(
     """The real Catalog FastAPI app (real routers/Services/repositories),
     talked to in-process over `ASGITransport` -- only auth is bypassed
     (see module docstring). Mirrors `tests/api/conftest.py::api_client`."""
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(ApiServerConfig(config_path='/dev/null'))
 
     async def _override_session() -> AsyncGenerator[AsyncSession]:
         async with async_session_factory() as session:

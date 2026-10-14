@@ -3,17 +3,16 @@ import argparse
 import pytest
 
 from loom.cli.idp import idp_register
-from loom.config import RootConfig
+from loom.config import AdminConfig
 
 from .fake_keycloak import FakeKeycloakAdminClient
 
 
 def _base_args(**overrides):
     defaults = {
-        'issuer_url': 'https://idp.example/realms/loom',
+        'discovery_url': 'https://idp.example/realms/loom/.well-known/openid-configuration',
         'admin_username': 'admin',
         'admin_password': 'hunter2',
-        'admin_realm': 'master',
         'admin_client_id': 'admin-cli',
         'client_id': 'loom-catalog-api',
         'client_name': None,
@@ -25,6 +24,7 @@ def _base_args(**overrides):
         'cli_client_id': None,
         'cli_client_name': None,
         'access_token_lifespan': None,
+        'grant_operator': None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -36,7 +36,7 @@ async def test_swagger_client_derives_its_default_id_from_client_id(
 ):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     assert config.auth.swagger_client_id == 'loom-catalog-api-swagger'
@@ -46,7 +46,7 @@ async def test_swagger_client_derives_its_default_id_from_client_id(
 async def test_swagger_client_id_override_is_honored(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(swagger_client_id='custom-swagger'))
 
     assert config.auth.swagger_client_id == 'custom-swagger'
@@ -68,7 +68,7 @@ async def test_swagger_client_wires_standard_flow_and_redirect_uri(
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     assert captured['flow_kwargs']['standard_flow'] is True
@@ -94,7 +94,7 @@ async def test_swagger_client_strips_trailing_slash_from_api_base_url(
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(api_base_url='https://catalog.example.com/'))
 
     assert captured['flow_kwargs']['redirect_uris'] == (
@@ -107,22 +107,22 @@ async def test_swagger_client_strips_trailing_slash_from_api_base_url(
 async def test_cli_client_derives_its_default_id_from_client_id(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
-    assert config.auth.cli_client_id == 'loom-catalog-api-cli'
+    assert config.auth.cli_client_id == 'loom-cli'
 
 
 @pytest.mark.asyncio
 async def test_cli_client_id_override_is_honored(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(cli_client_id='loom-cli'))
 
     assert config.auth.cli_client_id == 'loom-cli'
 
-    reloaded = RootConfig.load(config_path=config.config_path)
+    reloaded = AdminConfig.load(config_path=config.config_path)
     assert reloaded.auth.cli_client_id == 'loom-cli'
 
 
@@ -140,7 +140,7 @@ async def test_cli_client_wires_device_flow(monkeypatch, tmp_path):
 
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', _SpyKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     result = await idp_register(config, _base_args())
     assert result == 0
 
@@ -153,7 +153,7 @@ async def test_mcp_client_derives_its_default_id_and_sets_mcp_audience(
 ):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     assert config.auth.mcp_audience == 'loom-catalog-api-mcp'
@@ -163,7 +163,7 @@ async def test_mcp_client_derives_its_default_id_and_sets_mcp_audience(
 async def test_mcp_client_id_override_is_honored(monkeypatch, tmp_path):
     monkeypatch.setattr('loom.cli.idp.KeycloakAdminClient', FakeKeycloakAdminClient)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(mcp_client_id='loom-mcp'))
 
     assert config.auth.mcp_audience == 'loom-mcp'
@@ -189,14 +189,14 @@ async def test_public_clients_each_get_two_audience_mappers_one_per_resource_ser
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     fake = captured['client']
     api_client_id = 'loom-catalog-api'
     mcp_client_id = 'loom-catalog-api-mcp'
     swagger_ref = FakeKeycloakAdminClient._internal_ref('loom-catalog-api-swagger')
-    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-catalog-api-cli')
+    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-cli')
 
     assert set(fake.audience_mappers) == {
         (swagger_ref, api_client_id),
@@ -233,7 +233,7 @@ async def test_leaves_lifespan_alone_by_default(monkeypatch, tmp_path):
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
     assert captured['client'].access_token_lifespan is None
@@ -255,10 +255,10 @@ async def test_applies_access_token_lifespan_flag(monkeypatch, tmp_path):
         'loom.cli.idp.KeycloakAdminClient', _CapturingKeycloakAdminClient
     )
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(access_token_lifespan=1800))
 
-    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-catalog-api-cli')
+    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-cli')
     assert captured['client'].access_token_lifespan == (cli_ref, 1800)
 
 
@@ -279,10 +279,10 @@ async def test_applies_access_token_lifespan_env_var(monkeypatch, tmp_path):
     )
     monkeypatch.setenv('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN', '1800')
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args())
 
-    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-catalog-api-cli')
+    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-cli')
     assert captured['client'].access_token_lifespan == (cli_ref, 1800)
 
 
@@ -305,8 +305,8 @@ async def test_access_token_lifespan_flag_takes_precedence_over_env_var(
     )
     monkeypatch.setenv('LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN', '1800')
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     await idp_register(config, _base_args(access_token_lifespan=3600))
 
-    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-catalog-api-cli')
+    cli_ref = FakeKeycloakAdminClient._internal_ref('loom-cli')
     assert captured['client'].access_token_lifespan == (cli_ref, 3600)

@@ -57,7 +57,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=404, content=content)
 
     @app.exception_handler(ValidationError)
-    async def _domain_validation(request: Request, exc: ValidationError) -> JSONResponse:
+    async def _domain_validation(
+        request: Request, exc: ValidationError
+    ) -> JSONResponse:
         del request
         content = {'error_code': 'validation_error', 'message': str(exc)}
         return JSONResponse(status_code=422, content=content)

@@ -26,7 +26,7 @@ async def create_environment(
     tenant_id: uuid.UUID,
     body: EnvironmentCreate,
     service: EnvironmentService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:environment:write')),
+    _scopes: None = Depends(require_scopes('platform:environment:write')),
 ):
     return await service.create(tenant_id, body)
 
@@ -36,7 +36,7 @@ async def list_environments(
     tenant_id: uuid.UUID,
     pagination: PaginationParams = Depends(),
     service: EnvironmentService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:environment:read')),
+    _scopes: None = Depends(require_scopes('platform:environment:read')),
 ):
     items, total = await service.list_by_tenant(
         tenant_id, limit=pagination.limit, offset=pagination.offset
@@ -51,7 +51,7 @@ async def get_environment(
     tenant_id: uuid.UUID,
     environment_id: uuid.UUID,
     service: EnvironmentService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:environment:read')),
+    _scopes: None = Depends(require_scopes('platform:environment:read')),
 ):
     return await service.get(tenant_id, environment_id)
 
@@ -62,6 +62,6 @@ async def update_environment(
     environment_id: uuid.UUID,
     body: EnvironmentUpdate,
     service: EnvironmentService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:environment:write')),
+    _scopes: None = Depends(require_scopes('platform:environment:write')),
 ):
     return await service.update(tenant_id, environment_id, body)

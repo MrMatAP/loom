@@ -16,7 +16,8 @@ from loom.cli.auth import (
     auth_status,
     auth_whoami,
 )
-from loom.config import RootConfig
+from loom.config import UserConfig
+from loom.config.auth_config import DEFAULT_CLI_CLIENT_ID
 from loom.idp.device_flow import DeviceAuthorization, DeviceCodeError, DeviceTokens
 from loom.idp.discovery import DiscoveryError, OidcDiscoveryDocument
 
@@ -28,14 +29,13 @@ def _token_with_claims(**claims: typing.Any) -> str:
 
 
 def _base_args(**overrides):
-    defaults = {'discovery_url': _DISCOVERY_URL, 'client_id': None}
+    defaults = {'discovery_url': _DISCOVERY_URL, 'client_id': None, 'server': None}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
 def _configured_root_config(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    config.auth.cli_client_id = 'loom-cli'
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     return config
 
 
@@ -130,7 +130,7 @@ async def test_auth_login_caches_session_tokens(monkeypatch, tmp_path):
     assert config.auth.session.refresh_token.get_secret_value() == 'refresh-tok'
     assert config.auth.session.expires_at >= before + 300
 
-    reloaded = RootConfig.load(config_path=config.config_path)
+    reloaded = UserConfig.load(config_path=config.config_path)
     assert reloaded.auth.session.access_token.get_secret_value() == 'access-tok'
 
 
@@ -307,11 +307,29 @@ async def test_auth_login_fails_on_a_tenant_listing_connection_error(
     assert config.auth.session.tenant_id is None
 
 
-def _device_code_client_with_token(token: str):
-    """Like `_FakeDeviceCodeClient`, but `poll()` returns a given access
-    token verbatim instead of the plain opaque `'access-tok'` string --
-    needed wherever a test must exercise claims read off the token itself
-    (`_register_platform_admin_in_default_tenant` reads `scope`/`sub`)."""
+def _fake_catalog_client_recording_posts(post_calls: list):
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def get(self, path, params=None):
+            del path, params
+            tenants = [{'id': str(uuid.uuid4()), 'slug': 'default', 'name': 'Default'}]
+            return {'items': tenants, 'total': 1, 'limit': 50, 'offset': 0}
+
+        async def post(self, path, payload):
+            post_calls.append((path, payload))
+            return {}
+
+    return _Client
+
+
+@pytest.mark.asyncio
+async def test_auth_login_never_registers_a_principal(monkeypatch, tmp_path):
+    """Creating Principals is an explicit Platform Operator action
+    (`loom principal create`), not a side effect of logging in -- even for
+    an identity holding `platform:principal:write`."""
+    token = _token_with_claims(sub='operator', scope='platform:principal:write')
 
     class _Client(_FakeDeviceCodeClient):
         async def poll(self, authorization):
@@ -320,202 +338,25 @@ def _device_code_client_with_token(token: str):
                 access_token=token, refresh_token='refresh-tok', expires_in=300
             )
 
-    return _Client
-
-
-def _fake_catalog_client_with_principal_post(
-    *, items=(), post_error: Exception | None = None, post_calls: list | None = None
-):
-    """Extends `_fake_catalog_client` with `POST` support, for tests that
-    exercise `_register_platform_admin_in_default_tenant`'s self-
-    registration call. Records every `post()` call into `post_calls` (if
-    given) so a test can assert on the path/payload without a real API."""
-
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            del args, kwargs
-
-        async def get(self, path, params=None):
-            del path, params
-            return {'items': list(items), 'total': len(items), 'limit': 50, 'offset': 0}
-
-        async def post(self, path, payload):
-            if post_calls is not None:
-                post_calls.append((path, payload))
-            if post_error is not None:
-                raise post_error
-            return {'id': str(uuid.uuid4()), **payload}
-
-    return _Client
-
-
-@pytest.mark.asyncio
-async def test_auth_login_registers_platform_admin_in_default_tenant(
-    monkeypatch, tmp_path, capsys
-):
-    """A fresh platform-admin login (full catalog-wide scope, no Principal
-    row anywhere yet) auto-provisions itself into the `default` Tenant --
-    see `_register_platform_admin_in_default_tenant`."""
-    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
-    monkeypatch.setattr(
-        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
-    )
-    tenant_id = uuid.uuid4()
     post_calls: list = []
+    monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _Client)
     monkeypatch.setattr(
-        'loom.cli.auth.CatalogClient',
-        _fake_catalog_client_with_principal_post(
-            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
-            post_calls=post_calls,
-        ),
+        'loom.cli.auth.CatalogClient', _fake_catalog_client_recording_posts(post_calls)
     )
-
-    config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args())
-
-    assert result == 0
-    assert post_calls == [
-        (
-            f'/api/v1/tenants/{tenant_id}/principals',
-            {'kind': 'user', 'external_id': 'admin-user'},
-        )
-    ]
-    assert (
-        'Registered a Principal for you in the default Tenant'
-        in capsys.readouterr().out
-    )
-
-
-@pytest.mark.asyncio
-async def test_auth_login_does_not_register_a_non_admin_identity(monkeypatch, tmp_path):
-    """A caller without `catalog:principal:write` (an ordinary Tenant user,
-    not a platform admin) must never trigger the self-registration POST --
-    it isn't theirs to make, and the server would 403 it anyway."""
-    token = _token_with_claims(sub='ordinary-user', scope='catalog:capability:read')
     monkeypatch.setattr(
-        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
-    )
-    tenant_id = uuid.uuid4()
-    post_calls: list = []
-    monkeypatch.setattr(
-        'loom.cli.auth.CatalogClient',
-        _fake_catalog_client_with_principal_post(
-            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
-            post_calls=post_calls,
-        ),
+        'loom.cli.auth.discover_oidc', lambda discovery_url: _fake_discovery()
     )
 
-    config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args())
+    result = await auth_login(_configured_root_config(tmp_path), _base_args())
 
     assert result == 0
     assert post_calls == []
-
-
-@pytest.mark.asyncio
-async def test_auth_login_skips_registration_without_a_default_tenant(
-    monkeypatch, tmp_path
-):
-    """A platform admin still self-registers nowhere if there's no `slug ==
-    'default'` Tenant to target -- this step only ever targets that one
-    Tenant, never guesses among others."""
-    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
-    monkeypatch.setattr(
-        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
-    )
-    post_calls: list = []
-    monkeypatch.setattr(
-        'loom.cli.auth.CatalogClient',
-        _fake_catalog_client_with_principal_post(
-            items=[{'id': str(uuid.uuid4()), 'slug': 'acme', 'name': 'Acme'}],
-            post_calls=post_calls,
-        ),
-    )
-
-    config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args())
-
-    assert result == 0
-    assert post_calls == []
-
-
-@pytest.mark.asyncio
-async def test_auth_login_treats_a_duplicate_principal_as_already_registered(
-    monkeypatch, tmp_path, capsys
-):
-    """A second login for the same platform admin hits the Tenant's
-    uniqueness constraint on `(tenant_id, external_id)` -- surfaced as a
-    422 -- and that must be silently treated as already-registered, not
-    reported as a failure. Uses sqlite's own wording here; production runs
-    Postgres, whose message is `duplicate key value violates unique
-    constraint "uq_principal_tenant_external_id"` instead -- the
-    `'duplicate key' in detail` arm in `_register_platform_admin_in_
-    default_tenant` is what covers that phrasing, not this test, so don't
-    "simplify" that check down to only the sqlite wording asserted here."""
-    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
-    monkeypatch.setattr(
-        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
-    )
-    tenant_id = uuid.uuid4()
-    monkeypatch.setattr(
-        'loom.cli.auth.CatalogClient',
-        _fake_catalog_client_with_principal_post(
-            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
-            post_error=CatalogApiError(
-                422,
-                'UNIQUE constraint failed: principal.tenant_id, principal.external_id',
-            ),
-        ),
-    )
-
-    config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args())
-
-    out = capsys.readouterr().out
-    assert result == 0
-    assert 'Could not auto-register' not in out
-
-
-@pytest.mark.asyncio
-async def test_auth_login_warns_when_registration_fails_for_another_reason(
-    monkeypatch, tmp_path, capsys
-):
-    """Any other failure (e.g. this scope guess turning out to be wrong
-    server-side, or a network error) is a soft warning that still names
-    the manual fallback -- never a reason to fail the login."""
-    token = _token_with_claims(sub='admin-user', scope='catalog:principal:write')
-    monkeypatch.setattr(
-        'loom.cli.auth.DeviceCodeClient', _device_code_client_with_token(token)
-    )
-    tenant_id = uuid.uuid4()
-    monkeypatch.setattr(
-        'loom.cli.auth.CatalogClient',
-        _fake_catalog_client_with_principal_post(
-            items=[{'id': str(tenant_id), 'slug': 'default', 'name': 'Default'}],
-            post_error=CatalogApiError(403, 'Forbidden'),
-        ),
-    )
-
-    config = _configured_root_config(tmp_path)
-    result = await auth_login(config, _base_args())
-
-    out = capsys.readouterr().out
-    assert result == 0
-    assert 'Could not auto-register a Principal' in out
-    assert 'loom principal create' in out
 
 
 @pytest.mark.asyncio
 async def test_auth_login_requires_discovery_url(tmp_path):
     config = _configured_root_config(tmp_path)
     result = await auth_login(config, _base_args(discovery_url=None))
-    assert result == 1
-
-
-@pytest.mark.asyncio
-async def test_auth_login_requires_client_id(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    result = await auth_login(config, _base_args())
     assert result == 1
 
 
@@ -598,7 +439,7 @@ async def test_auth_logout_clears_cached_session(tmp_path):
     assert config.auth.session.expires_at is None
     assert config.auth.session.tenant_id is None
 
-    reloaded = RootConfig.load(config_path=config.config_path)
+    reloaded = UserConfig.load(config_path=config.config_path)
     assert reloaded.auth.session.access_token is None
 
 
@@ -701,7 +542,7 @@ async def test_auth_set_tenant_persists_across_a_reload(tmp_path):
     tenant_id = uuid.uuid4()
     await auth_set_tenant(config, _set_tenant_args(tenant_id=tenant_id))
 
-    reloaded = RootConfig.load(config_path=config.config_path)
+    reloaded = UserConfig.load(config_path=config.config_path)
     assert reloaded.auth.session.tenant_id == tenant_id
 
 
@@ -753,3 +594,86 @@ async def test_auth_whoami_shows_the_locally_selected_tenant(tmp_path, capsys):
 
     assert result == 0
     assert str(tenant_id) in capsys.readouterr().out
+
+
+def _bootstrap_response(**overrides):
+    body = {
+        'discovery_url': _DISCOVERY_URL,
+        'cli_client_id': 'server-cli',
+        'api_base_url': 'https://loom.example.com',
+    }
+    body.update(overrides)
+    return httpx.Response(200, json=body, request=httpx.Request('GET', 'http://x'))
+
+
+@pytest.mark.asyncio
+async def test_auth_login_server_caches_what_the_server_advertises(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        'loom.cli.auth.httpx.get', lambda url, **kw: _bootstrap_response()
+    )
+    monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _FakeDeviceCodeClient)
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient', _fake_catalog_client_recording_posts([])
+    )
+    monkeypatch.setattr(
+        'loom.cli.auth.discover_oidc', lambda discovery_url: _fake_discovery()
+    )
+
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
+    result = await auth_login(
+        config, _base_args(server='https://loom.example.com', discovery_url=None)
+    )
+
+    assert result == 0
+    reloaded = UserConfig.load(config_path=config.config_path)
+    assert reloaded.auth.discovery_url == _DISCOVERY_URL
+    assert reloaded.auth.discovery_cli_client_id == 'server-cli'
+    assert reloaded.auth.cli_client_id == DEFAULT_CLI_CLIENT_ID
+    assert reloaded.auth.effective_cli_client_id() == DEFAULT_CLI_CLIENT_ID
+    assert reloaded.catalog.api_base_url == 'https://loom.example.com'
+
+
+@pytest.mark.asyncio
+async def test_auth_login_server_warns_and_keeps_a_differing_local_client_id(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(
+        'loom.cli.auth.httpx.get', lambda url, **kw: _bootstrap_response()
+    )
+    monkeypatch.setattr('loom.cli.auth.DeviceCodeClient', _FakeDeviceCodeClient)
+    monkeypatch.setattr(
+        'loom.cli.auth.CatalogClient', _fake_catalog_client_recording_posts([])
+    )
+    monkeypatch.setattr(
+        'loom.cli.auth.discover_oidc', lambda discovery_url: _fake_discovery()
+    )
+
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
+    config.auth.cli_client_id = 'my-local-cli'
+    result = await auth_login(
+        config, _base_args(server='https://loom.example.com', discovery_url=None)
+    )
+
+    assert result == 0
+    assert 'differs' in capsys.readouterr().out
+    assert config.auth.effective_cli_client_id() == 'my-local-cli'
+
+
+@pytest.mark.asyncio
+async def test_auth_login_server_unreachable_fails(monkeypatch, tmp_path):
+    def _boom(url, **kw):
+        raise httpx.ConnectError('nope')
+
+    monkeypatch.setattr('loom.cli.auth.httpx.get', _boom)
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
+    result = await auth_login(
+        config, _base_args(server='https://loom.example.com', discovery_url=None)
+    )
+    assert result == 1
+
+
+def test_effective_cli_client_id_defaults_to_loom_cli(tmp_path):
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
+    assert config.auth.effective_cli_client_id() == 'loom-cli'

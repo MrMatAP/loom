@@ -34,3 +34,14 @@ Owns the transaction boundary for one logical operation and exposes one Reposito
 
 **Opaque leaf**:
 How an Aggregate treats a reference to another Aggregate it doesn't own: by that other Aggregate's own already-stored attributes only, never by reaching into its internals. E.g. a Skill graph node referencing another Skill uses that Skill's own stored `layer` for descent-checking; `Tool` is always an opaque, unconditionally-legal (unlayered) leaf. Keeps an Aggregate's invariants checkable without loading another Aggregate's full state.
+
+**Platform Administrator**:
+The person who sets up and manages the infrastructure Loom runs on: the database (creation, schema upgrades) and the IdP configuration. Holds infrastructure credentials, not catalog roles. Uses `loom-admin`.
+_Avoid_: Operator (that's a different role, below), "platform admin" as shorthand for either.
+
+**Platform Operator**:
+The person who manages Tenants and Principals through the authenticated API, above the level of database and IdP. Holds the `platform-operator` role (scopes `platform:{tenant,principal,environment}:{read,write}`) and, by default, `catalog-maintainer` too. The first Platform Operator is bootstrapped by the Platform Administrator granting those roles to their own IdP account. Uses `loom`.
+_Avoid_: Administrator, `catalog-operator`/`catalog-admin` (retired role names).
+
+**Platform User**:
+Anyone holding one or more of the catalog content roles: `catalog-viewer`, `catalog-editor`, `catalog-approver`, `catalog-maintainer` (the union of the other three). `catalog-maintainer` is a content role, not a Platform Operator role. Uses `loom`.

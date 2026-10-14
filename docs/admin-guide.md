@@ -18,22 +18,28 @@ and a `metrics-server` if you want the HorizontalPodAutoscalers to scale.
 docker build --build-arg VERSION=1.4.2 -t ghcr.io/your-org/loom:1.4.2 .
 docker push ghcr.io/your-org/loom:1.4.2
 
-# 2. Migrate the database (creates a `default` Tenant on an empty DB)
-loom config set database.host db.example.com
-loom config set database.username loom
-loom config set database.password <secret>
-loom db upgrade
+# 2. Migrate the database (creates a `default` Tenant on an empty DB).
+#    `loom-admin` reads ~/.config/loom/admin.yaml (or $LOOM_ADMIN_CONFIG_PATH);
+#    the plain `loom` CLI never needs these settings.
+loom-admin config set database.host db.example.com
+loom-admin config set database.username loom
+loom-admin config set database.password <secret>
+loom-admin db upgrade
 
 # 3. Register the four OAuth clients with your IdP
-loom idp register --issuer-url https://idp.example/realms/loom \
+loom-admin idp register --discovery-url https://idp.example/realms/loom/.well-known/openid-configuration \
   --client-id loom-catalog-api --api-base-url https://api.example.com
 
 # 4. Deploy (pick one)
 docker compose up --build                    # local / trial
 kubectl apply -k deploy/kubernetes            # production, see "Operate" below
 
-# 5. Grant one human the catalog-platform-admin role in your IdP,
-#    then provision their Principal -- see "Authorization model" below.
+# 5. Make one existing IdP account the first Platform Operator (also creates
+#    their Principal in the default Tenant)
+loom-admin operator grant alice
+
+# 6. As that person: log in
+loom auth login --server https://api.example.com
 ```
 
 See "Operate" and "Reference" below for the detail behind each step.
@@ -42,13 +48,13 @@ See "Operate" and "Reference" below for the detail behind each step.
 
 ### Running locally with Docker Compose
 
-`docker-compose.yaml` at the repo root runs Postgres, a one-shot `loom db
+`docker-compose.yaml` at the repo root runs Postgres, a one-shot `loom-admin db
 upgrade` migration, and single instances of both services -- useful for
 trying the Catalog out on a single machine, not a horizontal-scaling
 story (that's Kubernetes below).
 
 ```
-cp .env.example .env   # fill in LOOM_DB_PASSWORD, LOOM_AUTH_ISSUER, LOOM_AUTH_AUDIENCE
+cp .env.example .env   # fill in LOOM_DB_PASSWORD, LOOM_AUTH_DISCOVERY_URL, LOOM_AUTH_AUDIENCE
 docker compose up --build
 ```
 
@@ -72,7 +78,7 @@ fill them in; **never commit a filled-in copy**.
 
 2. **Edit `configmap.yaml`** -- every `CHANGEME` must be replaced, in
    particular `LOOM_DB_HOST` (no Postgres ships in this manifest set) and
-   `LOOM_AUTH_ISSUER`.
+   `LOOM_AUTH_DISCOVERY_URL`.
 
 3. **Create the database credential Secret**:
 
@@ -94,7 +100,7 @@ fill them in; **never commit a filled-in copy**.
      --namespace loom-catalog --timeout=120s
    ```
 
-   `loom-db-migrate` runs `loom db upgrade` exactly once, as a dedicated
+   `loom-db-migrate` runs `loom-admin db upgrade` exactly once, as a dedicated
    Job rather than a per-pod initContainer -- running that command
    concurrently from multiple starting replicas races on a shared Postgres
    enum type. `kubectl apply -k` gives no ordering guarantee between a Job
@@ -141,20 +147,30 @@ through it, must also match the `--api-base-url` you registered via `loom
 idp register` -- a mismatch here is the most common reason that login
 redirect fails.
 
-### Platform administrator
+### Platform Administrator, Platform Operator, Platform User
 
-Every other identity the Catalog knows about -- a Tenant's own users,
-agents, service accounts -- is a `Principal` row scoped to one Tenant. The
-**platform administrator** is the one exception: an IdP account holding
-`catalog-platform-admin` and no Tenant scope, used to create and manage
-Tenants and Principals across the whole deployment. It's what onboards the
-very first Tenant, so it can't itself depend on one existing yet. See
-"Authorization model" below for how to grant this role, and for the
-one-time bootstrap sequence.
+Three kinds of people touch a deployment (see `CONTEXT.md`):
+
+- The **Platform Administrator** sets up the database and the IdP with
+  `loom-admin`. They hold infrastructure credentials (database DSN, IdP
+  admin login), not catalog roles.
+- The **Platform Operator** manages Tenants and Principals through the
+  authenticated API with `loom`. Every other identity the Catalog knows
+  about -- a Tenant's own users, agents, service accounts -- is a
+  `Principal` row scoped to one Tenant; the Operator is the exception: an
+  IdP account holding `platform-operator` and no Tenant scope, which
+  onboards the very first Tenant, so it can't itself depend on one existing.
+- A **Platform User** holds one or more catalog content roles
+  (`catalog-viewer`, `-editor`, `-approver`, `-maintainer`) and works
+  inside a Tenant.
+
+`loom` needs none of the Administrator's settings: it only needs the
+server's URL (`loom auth login --server`) and an IdP login. See "Authorization
+model" below for the roles and the one-time bootstrap sequence.
 
 ### TLS trust for the IdP connection
 
-Every outbound call to the IdP (`loom idp ...`, `loom auth login`, JWKS
+Every outbound call to the IdP (`loom-admin idp ...`, `loom auth login`, JWKS
 resolution, OIDC discovery) trusts the OS-native certificate store by
 default. If your IdP's certificate is
 issued by a CA that's trusted system-wide but isn't visible to that
@@ -164,7 +180,7 @@ System roots), set an explicit override instead of fighting the OS store:
 
 ```
 export LOOM_IDP_CA_BUNDLE=/path/to/ca-bundle.pem
-loom idp register ...
+loom-admin idp register ...
 ```
 
 Inside a container this affects JWKS resolution at request-validation
@@ -202,16 +218,6 @@ failure back on `/docs`.
   URL is reachable from inside the cluster (not just your laptop) and that
   `LOOM_IDP_CA_BUNDLE` is set if the IdP's CA isn't in the image's trust
   store.
-- **Pod crashes on boot with "does not match the issuer published by its
-  own OIDC discovery document"** -- a stored `auth.issuer` disagrees with
-  what `auth.discovery_url` now reports (e.g. the IdP moved, or
-  `LOOM_AUTH_ISSUER` was set to the wrong value). `issuer` is the trust
-  anchor every token's `iss` claim is checked against, so this refuses to
-  start rather than picking a side. Fix it with `loom config set
-  auth.issuer <value>` (rerun the container after), or clear it (`loom
-  config set auth.issuer ''`) to let it re-derive from discovery on next
-  startup -- and stop pinning `LOOM_AUTH_ISSUER` explicitly if you don't
-  need to.
 - **HPA shows `<unknown>` for CPU** -- metrics-server isn't installed, or
   the container has no `resources.requests.cpu` set (both Deployments here
   do, by default).
@@ -236,8 +242,9 @@ failure back on `/docs`.
 ## Authorization model
 
 Access is governed by OAuth2 scopes of the form
-`catalog:{resource}:{action}`, bundled into five composite roles your IdP
-assigns. `loom idp register` declares all of it under the RESTful API
+`catalog:{resource}:{action}` (content) and `platform:{resource}:{action}`
+(tenancy and identity), bundled into five composite roles your IdP
+assigns. `loom-admin idp register` declares all of it under the RESTful API
 client. See
 [docs/architecture.md](architecture.md#authorization-scopes-and-roles) for
 the vocabulary's single source of truth and how a token's scopes are
@@ -248,17 +255,19 @@ resolved and checked at request time.
 | `catalog-viewer` | Read Capability/Agent/Skill/Tool/DataSource/DataProduct/ModelEndpoint |
 | `catalog-editor` | ...plus create/update (write) them |
 | `catalog-approver` | Read, plus lifecycle transitions (approve/publish/deprecate/retire) |
-| `catalog-admin` | Read, write, and transition -- full content-tier access |
-| `catalog-platform-admin` | Everything `catalog-admin` has, plus read/write on Tenant, Principal, and Environment |
+| `catalog-maintainer` | Read, write, and transition -- full content-tier access |
+| `platform-operator` | Read/write on Tenant, Principal, and Environment (platform scopes only; grant `catalog-maintainer` as well for content access) |
 
-Only `catalog-platform-admin` can create Tenants or provision Principals;
+Only `platform-operator` can create Tenants or provision Principals;
 every other role operates strictly within whichever Tenant a Principal has
 already been provisioned into.
 
 ### Assigning a role
 
-Roles and permissions are assigned entirely in the IdP -- there is no
-`loom` command for this. In Keycloak: **Users** → select or **Add user** →
+Content roles and permissions are assigned in the IdP. (The one exception
+is `loom-admin operator grant <username>`, which assigns the Platform
+Operator pair -- `platform-operator` and `catalog-maintainer` -- to an
+existing account.) In Keycloak: **Users** → select or **Add user** →
 **Role mapping** → **Assign role** → **Filter by clients** → find the role
 (e.g. `catalog-viewer`) under your API client (`loom-catalog-api` by
 default) → **Assign**. Nothing else to configure on the account -- no IdP
@@ -277,19 +286,24 @@ loom principal create --tenant-id <id> --kind {user,agent,service_account} \
 
 ### Bootstrapping the first Tenant and Principal
 
-`loom db upgrade` already creates one Tenant (slug `default`) on an empty
-database, so a single-Tenant deployment needs nothing beyond the platform
-administrator's own login:
+`loom-admin db upgrade` already creates one Tenant (slug `default`) on an empty
+database, so a single-Tenant deployment needs nothing beyond the first
+Operator's own Principal:
 
-1. Grant one human's IdP account the `catalog-platform-admin` role (see
-   "Assigning a role" above) -- this requires `loom idp register` to have
-   already run, since that's what creates the role.
-2. `loom auth login` as that person. `POST /tenants/{tenant_id}/principals`
-   only requires the `catalog:principal:write` scope
-   `catalog-platform-admin` grants -- not an already-provisioned
-   `Principal` -- so the CLI auto-registers one for this identity in the
-   `default` Tenant on first login (best-effort; `loom principal create`
-   below remains available if it can't reach the API).
+1. As the Platform Administrator, run `loom-admin operator grant
+   <username>` for an existing IdP account (this requires `loom-admin idp
+   register` to have already run, since that's what creates the roles).
+   It assigns `platform-operator` and `catalog-maintainer` in the IdP and
+   creates that person's Principal in the `default` Tenant (`--tenant
+   <slug-or-id>` picks another one). It's idempotent, and writes the same
+   `principal.create` audit event the API would, attributed to
+   `loom-admin`. To take away that person's content access later, remove
+   `catalog-maintainer` from them in the IdP. `loom-admin operator list`
+   shows every Operator with the Tenants they have a Principal in.
+2. As that person, `loom auth login --server <api-url>`. Nothing else is
+   needed -- their Principal already exists. Login deliberately doesn't
+   create Principals for anyone else: that stays an Operator action
+   (`loom principal create`), not a side effect of logging in.
 3. Only if `default` isn't enough:
 
    ```
@@ -298,65 +312,108 @@ administrator's own login:
      --external-id <sub from `loom auth whoami`>
    ```
 
-Every subsequent Tenant/Principal goes through the same two commands --
-there's no separate bootstrap-only code path, so it's always
-policy-checked normally and audited (see
+Every subsequent Tenant/Principal goes through the same two commands, so
+it's policy-checked normally and audited. The one exception is `loom-admin
+operator grant`, which writes the Operator's Principal straight to the
+database (the Platform Administrator has no API login) -- it still writes
+the audit event (see
 [docs/architecture.md](architecture.md#audit-trail)).
 
 ## Reference
 
 ### Configuration
 
-Every container reads its configuration from a YAML file at
-`$LOOM_CONFIG_PATH`. `docker/entrypoint.sh` builds that file from plain
-environment variables at container start, then execs the real command --
-so in practice you configure the container via environment variables, not
-by hand-editing YAML.
+Three separate files, one per trust domain (see
+[ADR 0002](adr/0002-split-cli-and-config-by-trust-domain.md)):
+
+| File | Read by | Holds | Path (override) |
+|---|---|---|---|
+| user config | `loom` | API URL, cached IdP discovery URL, CLI client id, login session | `~/.config/loom/config.yaml` (`LOOM_CONFIG_PATH`) |
+| admin config | `loom-admin` | privileged database connection, record of what `idp register` created | `~/.config/loom/admin.yaml` (`LOOM_ADMIN_CONFIG_PATH`) |
+| API config | `loom-catalog-api` | runtime database connection, IdP settings and the API/Swagger/CLI client ids, public API URL | `~/.config/loom/api.yaml` (`LOOM_API_CONFIG_PATH`) |
+| MCP config | `loom-catalog-mcp` | runtime database connection, IdP discovery URL, the MCP client id (audience) | `~/.config/loom/mcp.yaml` (`LOOM_MCP_CONFIG_PATH`) |
+
+After `idp register`, generate each server's file and its database role:
+
+```
+loom-admin api config --api-base-url https://api.example.com
+loom-admin mcp config
+```
+
+`config` writes the file from what `idp register` recorded (`--output
+<path>` overrides `$LOOM_API_CONFIG_PATH`/`$LOOM_MCP_CONFIG_PATH`).
+By default `config` also creates the server's dedicated Postgres role
+(`loom_api`/`loom_mcp`, or `--db-username`/`--db-user`; password generated
+unless `--db-password`) and writes its credentials into the file. If you
+pass **both** `--db-username` and `--db-password`, that role is assumed to
+exist already: nothing is created and the credentials are written as-is.
+`loom-admin api db-role` / `loom-admin mcp db-role` create just the role,
+printing a generated password once; re-running rotates it.
+
+**Prerequisite for automatic role creation:** the role `loom-admin`
+connects as (`database.username` in the admin config) must have `LOGIN` and
+`CREATEROLE`, e.g. `ALTER ROLE migrator CREATEROLE;` as a superuser.
+Without `CREATEROLE`, role creation fails; create the roles yourself and
+pass `--db-username`/`--db-password` instead.
+
+The database stays owned by the `loom-admin` connection, which holds full
+DDL rights because it runs the migrations. The server roles are DML-only:
+`SELECT/INSERT/UPDATE/DELETE` on the tables and `USAGE/SELECT` on sequences
+in `public`, no schema changes, no access to `alembic_version`. Default
+privileges are set for tables the admin role creates later, so the grants
+survive `loom-admin db upgrade` without being re-run. The old single `~/.loom`
+file is ignored.
+
+In containers, `docker/entrypoint.sh` builds the admin or server file from
+plain environment variables at start, then execs the real command -- so in
+practice you configure the container via environment variables, not by
+hand-editing YAML.
 
 | Environment variable | Config key | Required |
 |---|---|---|
-| `LOOM_CONFIG_PATH` | *(where the file is written)* | yes for Kubernetes (must point inside the writable `config` `emptyDir` mount); optional for Compose/plain `docker run` |
+| `LOOM_API_CONFIG_PATH` / `LOOM_MCP_CONFIG_PATH` / `LOOM_ADMIN_CONFIG_PATH` | *(where the file is written)* | yes for Kubernetes (must point inside the writable `config` `emptyDir` mount); optional for Compose/plain `docker run` |
 | `LOOM_DB_HOST` | `database.host` | yes |
 | `LOOM_DB_PORT` | `database.port` | no (default `5432`) |
 | `LOOM_DB_NAME` | `database.database` | no (default `loom`) |
 | `LOOM_DB_USERNAME` | `database.username` | no (default `loom`) |
 | `LOOM_DB_PASSWORD` | `database.password` | yes -- entrypoint.sh refuses to start without it (or `LOOM_ALLOW_NO_DB_PASSWORD=1` for trust-auth Postgres) |
-| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | yes -- the primary, stored value; startup fetches it and fails immediately if it doesn't respond |
+| `LOOM_AUTH_DISCOVERY_URL` | `auth.discovery_url` | yes -- the single source of the IdP's issuer, signing algorithms and endpoints; startup fetches it and fails immediately if it doesn't respond |
 | `LOOM_AUTH_AUDIENCE` | `auth.audience` | yes |
-| `LOOM_AUTH_ISSUER` | `auth.issuer` | no -- auto-populated from `auth.discovery_url`'s own `issuer` field on first startup and persisted from then on; setting it explicitly only matters to pin a *specific* value startup then verifies against (see "Issuer mismatch" below) |
-| `LOOM_AUTH_MCP_AUDIENCE` | `auth.mcp_audience` | yes for catalog-mcp -- it validates tokens against this, not `auth.audience` |
+| `LOOM_AUTH_MCP_AUDIENCE` | `auth.audience` in the MCP config | yes for catalog-mcp -- its own client id, separate from `LOOM_AUTH_AUDIENCE` |
 | `LOOM_AUTH_SWAGGER_CLIENT_ID` | `auth.swagger_client_id` | no -- only if exposing `/docs` (catalog-api only) |
-| `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no -- unused by the servers themselves |
-| `LOOM_CATALOG_API_BASE_URL` | `catalog.api_base_url` | no -- only matters running `loom` CLI commands inside the container |
+| `LOOM_AUTH_CLI_CLIENT_ID` | `auth.cli_client_id` | no (default `loom-cli`) -- advertised to the CLI via `/.well-known/loom-client` |
+| `LOOM_CATALOG_API_BASE_URL` | `api_base_url` | no -- advertised to clients via `/.well-known/loom-client`; derived from the request if unset |
 | `LOOM_IDP_CA_BUNDLE` | *(read directly by `loom.tls.build_ssl_context`)* | only if your IdP's CA isn't in the image's trust store |
 
-**Why a writable path, not a mounted Secret file, for config**: `loom`
-tightens the permissions on its config file on every invocation, not just
-`config set` -- so `$LOOM_CONFIG_PATH` can't point at a read-only-mounted
+**Why a writable path, not a mounted Secret file, for config**: the CLIs
+tighten the permissions on their config file on every invocation, not just
+`config set` -- so the config path can't point at a read-only-mounted
 Secret. Instead, secrets arrive as plain environment variables and the
 container writes them into a path it owns itself (a small `emptyDir`, so
 this still works under `readOnlyRootFilesystem: true`). See
 [docs/architecture.md](architecture.md#configuration-and-secrets) for the
 implementation detail behind this.
 
-**Hand-authoring a config YAML directly**: a file written by `loom config
-set` is always valid; a hand-authored one usually isn't (see
-[docs/architecture.md](architecture.md#configuration-and-secrets) for why).
-Generate it with `loom config set` once and reuse that file instead.
+**Hand-authoring a config YAML directly** is fine -- the loader fills in
+`config_path` itself -- but note the CLIs rewrite the file on every
+invocation, so don't expect comments to survive.
 
-### `loom idp register` reference
+### `loom-admin idp register` reference
 
 ```
-loom idp register --issuer-url https://idp.example/realms/loom \
+loom-admin idp register --discovery-url https://idp.example/realms/loom/.well-known/openid-configuration \
   --client-id loom-catalog-api --api-base-url https://api.example.com
 ```
 
-Prompts for the Keycloak admin username/password (the standard superadmin
-realm is `master`). To avoid the prompt, set
+`--discovery-url` is only needed the first time: `auth.discovery_url` from
+the config is used if set, otherwise the given value is stored there once
+the document has been fetched. The issuer is read from that document.
+
+Prompts for the Keycloak admin username/password (authenticated against the
+`master` realm). To avoid the prompt, set
 `LOOM_IDP_ADMIN_USERNAME`/`LOOM_IDP_ADMIN_PASSWORD`, or pass
 `--admin-username`/`--admin-password` (flags > env vars > prompt). If the
-admin account lives in a different realm or client, pass
-`--admin-realm`/`--admin-client-id`.
+admin account uses a different client, pass `--admin-client-id`.
 
 Registers all four clients described in
 [docs/architecture.md](architecture.md#oauth-client-topology) in one run.
@@ -372,7 +429,8 @@ human-readable Keycloak "Name" is separate (`Loom :: REST`, `Loom
 :: MCP`, `Loom :: Swagger UI`, `Loom :: CLI` by default) -- override with
 `--client-name`/`--mcp-client-name`/`--swagger-client-name`/
 `--cli-client-name`. `--mcp-client-id`/`--swagger-client-id`/
-`--cli-client-id` default to `{client-id}-mcp`/`-swagger`/`-cli`.
+`--cli-client-id` default to `{client-id}-mcp`/`-swagger` and `loom-cli`
+(the CLI id is a fixed default so `loom` can find it without being told).
 
 **Session length**: how long a CLI login lasts is Keycloak's realm/client
 "Access Token Lifespan" (commonly a few minutes by default); `loom`
@@ -382,7 +440,7 @@ again. Override it for just the CLI client at registration time (safe to
 re-run against an already-registered client to change later):
 
 ```
-loom idp register --issuer-url https://idp.example/realms/loom \
+loom-admin idp register --discovery-url https://idp.example/realms/loom/.well-known/openid-configuration \
   --client-id loom-catalog-api --api-base-url https://api.example.com \
   --access-token-lifespan 1800
 ```
@@ -390,25 +448,25 @@ loom idp register --issuer-url https://idp.example/realms/loom \
 (seconds; also settable via `LOOM_IDP_CLI_ACCESS_TOKEN_LIFESPAN`, flag
 takes precedence.)
 
-### `loom idp unregister` reference
+### `loom-admin idp unregister` reference
 
 The inverse of `register`: deletes the four clients it created and clears
-the `auth.*` fields it set (`issuer`, `audience`, `discovery_url`,
+the `auth.*` fields it set (`audience`, `discovery_url`,
 `mcp_audience`, `swagger_client_id`, `cli_client_id`).
 
 ```
-loom idp unregister --issuer-url https://idp.example/realms/loom
+loom-admin idp unregister --discovery-url https://idp.example/realms/loom/.well-known/openid-configuration
 ```
 
 Takes the same admin-login flags as `register`
-(`--admin-username`/`--admin-password`/`--admin-realm`/`--admin-client-id`).
+(`--discovery-url`/`--admin-username`/`--admin-password`/`--admin-client-id`).
 No `--client-id` is required if `config.auth.audience` is already set (the
 common case -- you're unregistering what a prior `register` on this same
 config just created); pass it explicitly to unregister a different
 environment's clients than the ones currently configured locally.
 `--mcp-client-id`/`--swagger-client-id`/`--cli-client-id` likewise default
 to whatever's stored in `config.auth`, falling back to the
-`{client-id}-mcp`/`-swagger`/`-cli` convention only if nothing is stored.
+`{client-id}-mcp`/`-swagger` convention (and `loom-cli`) only if nothing is stored.
 
 Every deletion is idempotent (a client already gone, or never registered,
 is reported and skipped, not an error), so this is safe to re-run. Does
@@ -416,14 +474,14 @@ is reported and skipped, not an error), so this is safe to re-run. Does
 -- run `loom auth logout` separately if the identity that login belongs to
 has nowhere left to authenticate against.
 
-### `loom db` reference
+### `loom-admin db` reference
 
 ```
-loom db upgrade [<revision>]     # apply migrations; head if omitted
-loom db downgrade <revision>
-loom db current
-loom db history
-loom db revision -m "message" [--autogenerate]
+loom-admin db upgrade [<revision>]     # apply migrations; head if omitted
+loom-admin db downgrade <revision>
+loom-admin db current
+loom-admin db history
+loom-admin db revision -m "message" [--autogenerate]
 ```
 
 `upgrade` on an empty database also creates one Tenant (slug `default`) --

@@ -646,3 +646,57 @@ async def test_delete_client_still_raises_on_server_error():
 
     with pytest.raises(httpx.HTTPStatusError):
         await client.delete_client(client_id='loom-catalog-api-cli')
+
+
+def _grant_client(handler):
+    return KeycloakAdminClient(
+        issuer='https://idp.example/realms/loom',
+        token='t',
+        transport=httpx.MockTransport(handler),
+    )
+
+
+@pytest.mark.asyncio
+async def test_grant_client_roles_maps_the_roles_onto_the_user():
+    posted: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == '/admin/realms/loom/users':
+            assert dict(request.url.params) == {'username': 'alice', 'exact': 'true'}
+            return httpx.Response(200, json=[{'id': 'user-1'}])
+        if path == '/admin/realms/loom/clients':
+            return httpx.Response(200, json=[{'id': 'client-ref'}])
+        if path.startswith('/admin/realms/loom/clients/client-ref/roles/'):
+            name = path.rsplit('/', 1)[-1]
+            return httpx.Response(200, json={'id': f'role-{name}', 'name': name})
+        if (
+            path == '/admin/realms/loom/users/user-1/role-mappings/clients/client-ref'
+            and request.method == 'POST'
+        ):
+            posted.extend(json.loads(request.read()))
+            return httpx.Response(204)
+        raise AssertionError(f'Unexpected request: {request.method} {path}')
+
+    user_id = await _grant_client(handler).grant_client_roles(
+        username='alice',
+        client_id='loom-catalog-api',
+        role_names=['platform-operator', 'catalog-maintainer'],
+    )
+
+    assert user_id == 'user-1'
+    assert [r['name'] for r in posted] == ['platform-operator', 'catalog-maintainer']
+
+
+@pytest.mark.asyncio
+async def test_grant_client_roles_returns_none_for_an_unknown_user():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == '/admin/realms/loom/users'
+        return httpx.Response(200, json=[])
+
+    user_id = await _grant_client(handler).grant_client_roles(
+        username='nobody',
+        client_id='loom-catalog-api',
+        role_names=['platform-operator'],
+    )
+    assert user_id is None

@@ -31,15 +31,17 @@ class OidcDiscoveryDocument:
     # IdP's discovery document. Callers that need the Device Authorization
     # Grant must handle its absence themselves (see `cli/auth.py`).
     device_authorization_endpoint: str | None = None
+    # Required by OIDC Discovery 1.0 and always containing RS256, but
+    # defaulted rather than required so a sloppy IdP doesn't fail startup.
+    # Describes ID tokens, which is the closest the discovery document
+    # gets to the access tokens `TokenValidator` actually verifies.
+    signing_algorithms: tuple[str, ...] = ('RS256',)
 
 
 def default_discovery_url(issuer: str) -> str:
     """The spec-defined discovery document location for an OIDC issuer
     (OpenID Connect Discovery 1.0) -- used to locate a discovery document
-    when only a (previously-stored) issuer is known, e.g. an `auth.issuer`
-    set before `auth.discovery_url` was. Once resolved, `discovery_url`
-    stays the primary, stored value going forward; this is a bootstrap
-    convenience, not a fallback the steady-state code depends on."""
+    when only an issuer URL is known (e.g. the live integration tests)."""
     return f'{issuer.rstrip("/")}/.well-known/openid-configuration'
 
 
@@ -72,6 +74,12 @@ def discover_oidc(discovery_url: str) -> OidcDiscoveryDocument:
             token_endpoint=doc['token_endpoint'],
             jwks_uri=doc['jwks_uri'],
             device_authorization_endpoint=doc.get('device_authorization_endpoint'),
+            signing_algorithms=tuple(
+                alg
+                for alg in doc.get('id_token_signing_alg_values_supported', ['RS256'])
+                if alg.lower() != 'none'
+            )
+            or ('RS256',),
         )
     except KeyError as exc:
         raise DiscoveryError(

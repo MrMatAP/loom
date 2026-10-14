@@ -25,7 +25,7 @@ async def create_principal(
     session: AsyncSession = Depends(get_session),
     service: PrincipalService = Depends(_service),
     actor: AuditActor = Depends(get_audit_actor),
-    _scopes: None = Depends(require_scopes('catalog:principal:write')),
+    _scopes: None = Depends(require_scopes('platform:principal:write')),
 ):
     principal = await service.create(tenant_id, body)
     await record_audit_event(
@@ -44,7 +44,7 @@ async def list_principals(
     tenant_id: uuid.UUID,
     pagination: PaginationParams = Depends(),
     service: PrincipalService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:principal:read')),
+    _scopes: None = Depends(require_scopes('platform:principal:read')),
 ):
     items, total = await service.list_by_tenant(
         tenant_id, limit=pagination.limit, offset=pagination.offset
@@ -59,6 +59,6 @@ async def get_principal(
     tenant_id: uuid.UUID,
     principal_id: uuid.UUID,
     service: PrincipalService = Depends(_service),
-    _scopes: None = Depends(require_scopes('catalog:principal:read')),
+    _scopes: None = Depends(require_scopes('platform:principal:read')),
 ):
     return await service.get(tenant_id, principal_id)

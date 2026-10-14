@@ -7,7 +7,7 @@ offers, regardless of which step a given test is actually interested in --
 hence one shared, fully-featured fake rather than a partial one per file.
 """
 
-from loom.idp.client import ClientRegistrationResult
+from loom.idp.client import ClientRegistrationResult, RoleMember
 
 
 class FakeKeycloakAdminClient:
@@ -21,6 +21,8 @@ class FakeKeycloakAdminClient:
         self.client_roles_mappers: list[tuple[str, str]] = []
         self.access_token_lifespan: tuple[str, int] | None = None
         self.deleted_clients: list[str] = []
+        self.known_users: dict[str, str] = {}
+        self.granted_roles: list[tuple[str, str, list[str]]] = []
         self._existing_client_ids: set[str] = set()
 
     @classmethod
@@ -79,3 +81,18 @@ class FakeKeycloakAdminClient:
         existed = client_id in self._existing_client_ids
         self._existing_client_ids.discard(client_id)
         return existed
+
+    async def grant_client_roles(self, *, username, client_id, role_names):
+        user_id = self.known_users.get(username)
+        if user_id is None:
+            return None
+        self.granted_roles.append((username, client_id, list(role_names)))
+        return user_id
+
+    async def list_client_role_members(self, *, client_id, role_name):
+        del client_id
+        return [
+            RoleMember(user_id=self.known_users[username], username=username)
+            for username, _, roles in self.granted_roles
+            if role_name in roles
+        ]

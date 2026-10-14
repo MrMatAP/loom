@@ -16,7 +16,11 @@ class AgentApplicationService(VersionedApplicationService[DomainAgent, AgentRead
         super().__init__(uow, repository_attr='agents')
 
     async def create(
-        self, *, tenant_id: uuid.UUID, created_by_id: uuid.UUID, data: AgentCreateRequest
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        created_by_id: uuid.UUID,
+        data: AgentCreateRequest,
     ) -> AgentRead:
         await self._repo.assert_model_binding_is_current_in_tenant(
             tenant_id, data.model_binding_id

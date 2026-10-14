@@ -517,7 +517,10 @@ def _register_skill_tools(mcp: FastMCP, state: McpState) -> None:
 
     @mcp.tool(description='Transition a Skill in tenant_id to a new lifecycle state.')
     async def transition_skill(
-        tenant_id: uuid.UUID, entity_id: uuid.UUID, version: int, to_state: LifecycleState
+        tenant_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        version: int,
+        to_state: LifecycleState,
     ) -> SkillRead:
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
@@ -754,7 +757,7 @@ def _register_environment_tools(mcp: FastMCP, state: McpState) -> None:
     async def create_environment(
         tenant_id: uuid.UUID, data: EnvironmentCreate
     ) -> EnvironmentRead:
-        await _require_scope('catalog:environment:write')
+        await _require_scope('platform:environment:write')
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
             service = EnvironmentService(EnvironmentRepository(session))
@@ -766,7 +769,7 @@ def _register_environment_tools(mcp: FastMCP, state: McpState) -> None:
     async def get_environment(
         tenant_id: uuid.UUID, environment_id: uuid.UUID
     ) -> EnvironmentRead:
-        await _require_scope('catalog:environment:read')
+        await _require_scope('platform:environment:read')
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
             service = EnvironmentService(EnvironmentRepository(session))
@@ -777,7 +780,7 @@ def _register_environment_tools(mcp: FastMCP, state: McpState) -> None:
     async def list_environments(
         tenant_id: uuid.UUID, limit: int = 50, offset: int = 0
     ) -> Page[EnvironmentRead]:
-        await _require_scope('catalog:environment:read')
+        await _require_scope('platform:environment:read')
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
             service = EnvironmentService(EnvironmentRepository(session))
@@ -801,7 +804,7 @@ def _register_environment_tools(mcp: FastMCP, state: McpState) -> None:
     async def update_environment(
         tenant_id: uuid.UUID, environment_id: uuid.UUID, data: EnvironmentUpdate
     ) -> EnvironmentRead:
-        await _require_scope('catalog:environment:write')
+        await _require_scope('platform:environment:write')
         session_factory = _require_session_factory(state)
         async with session_factory() as session:
             service = EnvironmentService(EnvironmentRepository(session))

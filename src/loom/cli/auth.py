@@ -7,10 +7,11 @@ import jwt
 import pydantic
 
 from loom.catalog_client import CatalogApiError, CatalogClient
-from loom.config import RootConfig
-from loom.idp.catalog_roles import expand_claims_to_scopes
+from loom.config import UserConfig
 from loom.idp.device_flow import DeviceCodeClient, DeviceCodeError, DeviceFlowEndpoints
 from loom.idp.discovery import DiscoveryError, discover_oidc
+from loom.schemas.client_bootstrap import ClientBootstrap
+from loom.tls import build_ssl_context
 
 # Claims worth calling out by name in `whoami` -- everything else in the
 # token still gets printed, just without a caption. `sub` is first since
@@ -35,7 +36,7 @@ _HEADLINE_CLAIMS = (
 )
 
 
-def decode_cached_claims(config: RootConfig) -> dict | None:
+def decode_cached_claims(config: UserConfig) -> dict | None:
     """The cached access token's claims, decoded without verifying the
     signature -- or None if there's no cached token at all.
 
@@ -52,32 +53,53 @@ def decode_cached_claims(config: RootConfig) -> dict | None:
     return jwt.decode(token, options={'verify_signature': False})
 
 
-async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
+def _apply_server_bootstrap(config: UserConfig, server: str) -> None:
+    """Fetch `/.well-known/loom-client` from `server` and cache what it
+    advertises. An explicitly configured local `cli_client_id` wins over the
+    server's, but a mismatch is worth a warning."""
+    response = httpx.get(
+        f'{server.rstrip("/")}/.well-known/loom-client',
+        timeout=10.0,
+        verify=build_ssl_context(),
+    )
+    response.raise_for_status()
+    bootstrap = ClientBootstrap.model_validate(response.json())
+    config.auth.discovery_url = bootstrap.discovery_url
+    config.auth.discovery_cli_client_id = bootstrap.cli_client_id
+    config.catalog.api_base_url = bootstrap.api_base_url
+    local = config.auth.cli_client_id
+    if local and local != bootstrap.cli_client_id:
+        print(
+            f'Warning: locally configured auth.cli_client_id {local!r} differs '
+            f'from the {bootstrap.cli_client_id!r} advertised by {server}; '
+            'using the local value.'
+        )
+    config.save()
+
+
+async def auth_login(config: UserConfig, args: argparse.Namespace) -> int:
     """Log in interactively via the IDP's OAuth2 Device Authorization Grant.
 
     The resulting access/refresh tokens are cached in the local config so
     later authenticated commands (e.g. `loom capability create`) can reuse
     the session without logging in again.
     """
-    # No `auth.issuer` fallback here, deliberately: unlike the server (see
-    # `security.discover_and_resolve_issuer`), the CLI has no reason to
-    # cache an issuer at all -- it isn't a trust anchor client-side, and a
-    # discovery fetch on every login is cheap. `discovery_url` is the only
-    # thing this command reads from config.
+    # `discovery_url` is the only IdP reference this command reads from
+    # config; a discovery fetch on every login is cheap.
+    if args.server:
+        try:
+            _apply_server_bootstrap(config, args.server)
+        except (httpx.HTTPError, pydantic.ValidationError) as exc:
+            print(f'Could not fetch login settings from {args.server}: {exc}')
+            return 1
     discovery_url = args.discovery_url or config.auth.discovery_url
     if not discovery_url:
         print(
-            'No --discovery-url given and config.auth.discovery_url is unset; '
-            'run `loom idp register` first, or pass one explicitly.'
+            'No --server or --discovery-url given and config.auth.discovery_url '
+            'is unset; run `loom auth login --server <url>` first.'
         )
         return 1
-    client_id = args.client_id or config.auth.cli_client_id
-    if not client_id:
-        print(
-            'No --client-id given and config.auth.cli_client_id is unset; run '
-            '`loom idp register` first.'
-        )
-        return 1
+    client_id = args.client_id or config.auth.effective_cli_client_id()
 
     try:
         discovery = discover_oidc(discovery_url)
@@ -139,7 +161,7 @@ async def auth_login(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def _select_tenant(config: RootConfig, access_token: str) -> bool:
+async def _select_tenant(config: UserConfig, access_token: str) -> bool:
     """Resolve `config.auth.session.tenant_id` right after a fresh login,
     instead of leaving it unset until either an ambiguous request 401s or
     someone remembers to run `loom auth set-tenant` -- see
@@ -165,8 +187,6 @@ async def _select_tenant(config: RootConfig, access_token: str) -> bool:
         return False
 
     tenants = page['items']
-    await _register_platform_admin_in_default_tenant(client, tenants, access_token)
-
     if not tenants:
         print(
             'No Tenant is available to this identity yet -- ask your admin to '
@@ -205,74 +225,7 @@ async def _select_tenant(config: RootConfig, access_token: str) -> bool:
         print(f'Invalid selection {choice!r}, try again.')
 
 
-async def _register_platform_admin_in_default_tenant(
-    client: CatalogClient, tenants: list[dict], access_token: str
-) -> None:
-    """First-login convenience for a platform administrator (see
-    docs/admin-guide.md's "Platform administrator" section): that identity
-    has full catalog-wide scope but, by definition, starts with no
-    Principal row of its own anywhere -- every content-tier route
-    (Capability/Agent/Skill/Tool/DataSource/DataProduct/ModelEndpoint)
-    still requires one in whichever Tenant the request path names (see
-    `get_current_principal`). Rather than requiring a manual `loom
-    principal create --tenant-id <default> --kind user --external-id <sub>`
-    right after every platform admin's very first login, do it here
-    automatically, targeting the `default` Tenant `loom db upgrade` already
-    seeds (`_seed_default_tenant`, `src/loom/cli/db.py`) -- the only Tenant
-    this can target without asking which one.
-
-    `POST /tenants/{tenant_id}/principals` only requires
-    `catalog:principal:write` (`get_audit_actor`, not `get_current_
-    principal`, backs its audit attribution -- see
-    `src/loom/api/catalog/audit.py`), which is exactly what makes this
-    work before any Principal exists.
-
-    Idempotent and best-effort: a second login for the same identity hits
-    the Tenant's `uq_principal_tenant_external_id` unique constraint
-    (surfaced as a 422 by `flush_or_raise`) and is silently treated as
-    already-registered; anything else (no `default` Tenant, the scope
-    guess below being wrong, a network error) is a soft warning, never a
-    reason to fail the login -- `loom principal create` remains available
-    to run by hand regardless."""
-    try:
-        claims = jwt.decode(access_token, options={'verify_signature': False})
-    except jwt.PyJWTError:
-        # Not a decodable JWT (e.g. an opaque token from an IDP that issues
-        # one) -- there's no scope claim to read here either way, so
-        # there's nothing this step can safely act on.
-        return
-    if 'catalog:principal:write' not in expand_claims_to_scopes(claims):
-        return
-    default_tenant = next((t for t in tenants if t['slug'] == 'default'), None)
-    if default_tenant is None:
-        return
-    sub = claims.get('sub')
-    if not isinstance(sub, str) or not sub:
-        return
-
-    try:
-        await client.post(
-            f'/api/v1/tenants/{default_tenant["id"]}/principals',
-            {'kind': 'user', 'external_id': sub},
-        )
-    except CatalogApiError as exc:
-        detail = exc.detail.lower()
-        if exc.status_code == 422 and ('unique' in detail or 'duplicate key' in detail):
-            return  # already registered from a prior login
-        print(
-            f'Could not auto-register a Principal for you in the default '
-            f'Tenant ({exc}); run `loom principal create --tenant-id '
-            f'{default_tenant["id"]} --kind user --external-id {sub}` '
-            'yourself if you need content-tier access there.'
-        )
-    else:
-        # No UUID here -- the tenant-selection step right after this one
-        # (still to run when this is the only available Tenant) prints the
-        # same id on the very next line; repeating it would just be noise.
-        print('Registered a Principal for you in the default Tenant.')
-
-
-async def auth_logout(config: RootConfig, args: argparse.Namespace) -> int:
+async def auth_logout(config: UserConfig, args: argparse.Namespace) -> int:
     """Clear the cached CLI session, including any locally-selected Tenant
     (see `auth_set_tenant`) -- a fresh login might resolve to a different
     identity, so a stale selection shouldn't carry over silently."""
@@ -286,7 +239,7 @@ async def auth_logout(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def auth_set_tenant(config: RootConfig, args: argparse.Namespace) -> int:
+async def auth_set_tenant(config: UserConfig, args: argparse.Namespace) -> int:
     """Set, clear, or show the locally-selected Tenant used when this
     identity is provisioned in more than one Tenant (see
     docs/admin-guide.md's "How a caller's Tenant is resolved" section).
@@ -317,7 +270,7 @@ async def auth_set_tenant(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def auth_status(config: RootConfig, args: argparse.Namespace) -> int:
+async def auth_status(config: UserConfig, args: argparse.Namespace) -> int:
     """Report whether the CLI has a live cached session."""
     del args
     if config.auth.session.access_token is None:
@@ -331,7 +284,7 @@ async def auth_status(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def auth_whoami(config: RootConfig, args: argparse.Namespace) -> int:
+async def auth_whoami(config: UserConfig, args: argparse.Namespace) -> int:
     """Print the cached access token's claims -- who the server thinks you
     are, not just whether the CLI thinks you're logged in (that's `status`).
     Existed as a gap: diagnosing "why does the API 401/403 me" previously
@@ -371,3 +324,80 @@ async def auth_whoami(config: RootConfig, args: argparse.Namespace) -> int:
         )
 
     return 0
+
+
+def add_auth_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """Register the `auth` command group."""
+    auth_parser = subparsers.add_parser('auth', help='CLI login/session commands')
+    auth_subparser = auth_parser.add_subparsers(required=True)
+
+    auth_login_parser = auth_subparser.add_parser(
+        'login', help="Log in interactively via the IDP's device-code flow"
+    )
+    auth_login_parser.add_argument(
+        '--server',
+        dest='server',
+        default=None,
+        help=(
+            'Base URL of the Loom API; fetches the IdP discovery URL and CLI '
+            'client id from its /.well-known/loom-client and caches them'
+        ),
+    )
+    auth_login_parser.add_argument(
+        '--discovery-url',
+        dest='discovery_url',
+        default=None,
+        help=('OIDC discovery document URL, defaults to config.auth.discovery_url'),
+    )
+    auth_login_parser.add_argument(
+        '--client-id',
+        dest='client_id',
+        default=None,
+        help=(
+            'Public device-flow OAuth client ID, defaults to config.auth.cli_client_id'
+        ),
+    )
+    auth_login_parser.set_defaults(func=auth_login)
+
+    auth_logout_parser = auth_subparser.add_parser(
+        'logout', help='Clear the cached CLI session'
+    )
+    auth_logout_parser.set_defaults(func=auth_logout)
+
+    auth_status_parser = auth_subparser.add_parser(
+        'status', help='Show the current CLI session status'
+    )
+    auth_status_parser.set_defaults(func=auth_status)
+
+    auth_whoami_parser = auth_subparser.add_parser(
+        'whoami',
+        help=(
+            "Show the cached access token's claims (sub, name, "
+            'scopes, ...) -- for diagnosing 401/403s, not just whether '
+            'the session is live'
+        ),
+    )
+    auth_whoami_parser.set_defaults(func=auth_whoami)
+
+    auth_set_tenant_parser = auth_subparser.add_parser(
+        'set-tenant',
+        help=(
+            'Set/clear/show the locally-selected Tenant -- only needed '
+            'when this identity is provisioned in more than one Tenant '
+            '(see docs/admin-guide.md)'
+        ),
+    )
+    auth_set_tenant_parser.add_argument(
+        'tenant_id',
+        type=uuid.UUID,
+        nargs='?',
+        default=None,
+        help='Omit to show the current selection',
+    )
+    auth_set_tenant_parser.add_argument(
+        '--clear',
+        action='store_true',
+        default=False,
+        help='Clear the current selection instead of setting one',
+    )
+    auth_set_tenant_parser.set_defaults(func=auth_set_tenant)

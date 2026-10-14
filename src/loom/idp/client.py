@@ -23,6 +23,14 @@ class RoleDefinition:
     composite_of: tuple[str, ...] = ()
 
 
+@dataclasses.dataclass(frozen=True)
+class RoleMember:
+    """A user holding a client role: `user_id` is their token `sub`."""
+
+    user_id: str
+    username: str
+
+
 class IdpAdminClient(Protocol):
     """Provider-agnostic admin operations: client registration, roles."""
 
@@ -54,6 +62,14 @@ class IdpAdminClient(Protocol):
     ) -> None: ...
 
     async def delete_client(self, *, client_id: str) -> bool: ...
+
+    async def grant_client_roles(
+        self, *, username: str, client_id: str, role_names: list[str]
+    ) -> str | None: ...
+
+    async def list_client_role_members(
+        self, *, client_id: str, role_name: str
+    ) -> list[RoleMember]: ...
 
 
 def catalog_role_definitions() -> list[RoleDefinition]:

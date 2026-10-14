@@ -1,5 +1,5 @@
 # Local, single-node run of the full Catalog stack (Postgres + the
-# `loom db upgrade` migration + the REST API + the MCP server) built from
+# `loom-admin db upgrade` migration + the REST API + the MCP server) built from
 # the same image as the Kubernetes manifests under deploy/kubernetes/ --
 # useful for trying the Catalog out or developing against it without a
 # cluster. It is NOT the horizontal-scaling story (that's Kubernetes'
@@ -9,7 +9,7 @@
 # Needs an OIDC issuer reachable from the containers -- this stack doesn't
 # run one itself, same as the plain `loom-catalog-api` story in README.md.
 # Copy .env.example to .env and fill in at least LOOM_DB_PASSWORD and
-# LOOM_AUTH_ISSUER/LOOM_AUTH_AUDIENCE before `docker compose up`.
+# LOOM_AUTH_DISCOVERY_URL/LOOM_AUTH_AUDIENCE before `docker compose up`.
 
 services:
   postgres:
@@ -34,22 +34,23 @@ services:
   # wait on that exit via `service_completed_successfully` rather than
   # racing a still-migrating database. See docs/admin-guide.md's note on
   # why this stays a dedicated one-shot step rather than an entrypoint
-  # check inside catalog-api/catalog-mcp: running `loom db upgrade`
+  # check inside catalog-api/catalog-mcp: running `loom-admin db upgrade`
   # concurrently from more than one replica is exactly the race
   # (`DuplicateObject` on a shared Postgres enum type) fixed in this
   # project's history -- one runner, always.
   migrate:
     build: .
     image: loom:${LOOM_IMAGE_TAG:-dev}
-    command: ['loom', 'db', 'upgrade']
+    command: ['loom-admin', 'db', 'upgrade']
     environment: &loom-env
       LOOM_DB_HOST: postgres
       LOOM_DB_PORT: '5432'
       LOOM_DB_NAME: ${LOOM_DB_NAME:-loom}
       LOOM_DB_USERNAME: ${LOOM_DB_USERNAME:-loom}
       LOOM_DB_PASSWORD: ${LOOM_DB_PASSWORD:?set LOOM_DB_PASSWORD in .env}
-      LOOM_AUTH_ISSUER: ${LOOM_AUTH_ISSUER:?set LOOM_AUTH_ISSUER in .env}
+      LOOM_AUTH_DISCOVERY_URL: ${LOOM_AUTH_DISCOVERY_URL:?set LOOM_AUTH_DISCOVERY_URL in .env}
       LOOM_AUTH_AUDIENCE: ${LOOM_AUTH_AUDIENCE:-loom-catalog-api}
+      LOOM_AUTH_MCP_AUDIENCE: ${LOOM_AUTH_MCP_AUDIENCE:-loom-catalog-api-mcp}
     depends_on:
       postgres:
         condition: service_healthy

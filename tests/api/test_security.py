@@ -8,13 +8,12 @@ from jwt.algorithms import RSAAlgorithm
 
 from loom.api.catalog import security as security_module
 from loom.api.catalog.security import (
-    IssuerMismatchError,
     OidcDiscoveryDocument,
     TokenValidator,
-    discover_and_resolve_issuer,
+    discover_auth,
     expand_claims_to_scopes,
 )
-from loom.config import RootConfig
+from loom.config import ApiServerConfig
 from loom.config.auth_config import AuthConfig
 from loom.idp.discovery import DiscoveryError
 
@@ -31,9 +30,7 @@ def test_token_validator_decodes_valid_token(monkeypatch):
     jwk['alg'] = 'RS256'
     monkeypatch.setattr('jwt.PyJWKClient.fetch_data', lambda self: {'keys': [jwk]})
 
-    config = AuthConfig(
-        issuer='https://idp.example/realms/loom', audience='loom-catalog-api'
-    )
+    config = AuthConfig(audience='loom-catalog-api')
     # Discovery passed in directly rather than pinning `config.discovery_url`
     # -- `TokenValidator` only reads `jwks_uri` off it, and passing it
     # explicitly (same as `main.py`'s lifespan does) skips the network
@@ -51,7 +48,7 @@ def test_token_validator_decodes_valid_token(monkeypatch):
             'sub': 'user-123',
             'tenant_id': str(uuid.uuid4()),
             'scope': 'catalog:agent:read',
-            'iss': config.issuer,
+            'iss': discovery.issuer,
             'aud': config.audience,
             'exp': int(time.time()) + 300,
         },
@@ -75,8 +72,8 @@ def test_expand_claims_to_scopes_merges_scope_and_role_claims():
 def test_token_validator_rejects_no_discovery():
     """No self-fetch fallback anymore -- a caller that can't supply a
     resolved `OidcDiscoveryDocument` gets a clear error, not a broken-URL
-    network attempt against an empty issuer."""
-    config = AuthConfig(issuer='https://idp.example/realms/loom')
+    network attempt against an empty URL."""
+    config = AuthConfig()
     with pytest.raises(ValueError, match='requires a resolved OidcDiscoveryDocument'):
         TokenValidator(config, None)
 
@@ -94,38 +91,14 @@ def _fake_discovery(**overrides) -> OidcDiscoveryDocument:
     return OidcDiscoveryDocument(**defaults)
 
 
-def test_discover_and_resolve_issuer_skips_when_entirely_unconfigured(tmp_path):
-    """Neither `discovery_url` nor `issuer` set is "auth not configured
-    yet", not an error -- e.g. local/test runs."""
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    assert discover_and_resolve_issuer(config) is None
+def test_discover_auth_skips_when_unconfigured(tmp_path):
+    """No `discovery_url` is "auth not configured yet", not an error --
+    e.g. local/test runs."""
+    config = ApiServerConfig(config_path=tmp_path / 'config.yaml')
+    assert discover_auth(config.auth) is None
 
 
-def test_discover_and_resolve_issuer_populates_and_persists_an_unset_issuer(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(security_module, 'discover_oidc', lambda url: _fake_discovery())
-
-    config_path = tmp_path / 'config.yaml'
-    config = RootConfig(config_path=config_path)
-    config.auth.discovery_url = (
-        'https://idp.example/realms/loom/.well-known/openid-configuration'
-    )
-
-    discovery = discover_and_resolve_issuer(config)
-
-    assert discovery.issuer == 'https://idp.example/realms/loom'
-    assert config.auth.issuer == 'https://idp.example/realms/loom'
-    reloaded = RootConfig.load(config_path=config_path)
-    assert reloaded.auth.issuer == 'https://idp.example/realms/loom'
-
-
-def test_discover_and_resolve_issuer_derives_discovery_url_from_a_stored_issuer(
-    monkeypatch, tmp_path
-):
-    """A legacy config with only `issuer` set (no `discovery_url`) still
-    works -- the discovery URL is derived from it, same as before this
-    became the primary stored value."""
+def test_discover_auth_fetches_the_configured_discovery_url(monkeypatch, tmp_path):
     captured = {}
 
     def _fake_discover(url):
@@ -134,35 +107,35 @@ def test_discover_and_resolve_issuer_derives_discovery_url_from_a_stored_issuer(
 
     monkeypatch.setattr(security_module, 'discover_oidc', _fake_discover)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
-    config.auth.issuer = 'https://idp.example/realms/loom'
-
-    discover_and_resolve_issuer(config)
-
-    assert captured['url'] == (
-        'https://idp.example/realms/loom/.well-known/openid-configuration'
-    )
-
-
-def test_discover_and_resolve_issuer_raises_on_mismatch(monkeypatch, tmp_path):
-    """A stored issuer that disagrees with what discovery now reports must
-    stop startup -- `issuer` is the trust anchor `TokenValidator.decode`
-    checks every token's `iss` claim against."""
-    monkeypatch.setattr(security_module, 'discover_oidc', lambda url: _fake_discovery())
-
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = ApiServerConfig(config_path=tmp_path / 'config.yaml')
     config.auth.discovery_url = (
         'https://idp.example/realms/loom/.well-known/openid-configuration'
     )
-    config.auth.issuer = 'https://old-idp.example/realms/old'
 
-    with pytest.raises(IssuerMismatchError, match='does not match'):
-        discover_and_resolve_issuer(config)
+    discovery = discover_auth(config.auth)
+
+    assert captured['url'] == config.auth.discovery_url
+    assert discovery.issuer == 'https://idp.example/realms/loom'
 
 
-def test_discover_and_resolve_issuer_fails_immediately_when_unreachable(
-    monkeypatch, tmp_path
-):
+def test_token_validator_rejects_a_token_from_another_issuer(monkeypatch):
+    """The issuer is the discovery document's, not anything configured."""
+    private_key, public_key = _make_rsa_keypair()
+    jwk = RSAAlgorithm.to_jwk(public_key, as_dict=True)
+    jwk['kid'] = 'test-key'
+    monkeypatch.setattr('jwt.PyJWKClient.fetch_data', lambda self: {'keys': [jwk]})
+    validator = TokenValidator(AuthConfig(audience='a'), _fake_discovery())
+    token = jwt.encode(
+        {'iss': 'https://evil.example', 'aud': 'a', 'exp': int(time.time()) + 300},
+        private_key,
+        algorithm='RS256',
+        headers={'kid': 'test-key'},
+    )
+    with pytest.raises(jwt.InvalidIssuerError):
+        validator.decode(token)
+
+
+def test_discover_auth_fails_immediately_when_unreachable(monkeypatch, tmp_path):
     """No response from the discovery endpoint must fail startup outright,
     not silently skip auth wiring."""
 
@@ -171,10 +144,10 @@ def test_discover_and_resolve_issuer_fails_immediately_when_unreachable(
 
     monkeypatch.setattr(security_module, 'discover_oidc', _raise)
 
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = ApiServerConfig(config_path=tmp_path / 'config.yaml')
     config.auth.discovery_url = (
         'https://idp.example/realms/loom/.well-known/openid-configuration'
     )
 
     with pytest.raises(DiscoveryError):
-        discover_and_resolve_issuer(config)
+        discover_auth(config.auth)

@@ -1,11 +1,11 @@
 import uuid
 
-from pydantic import Field, SecretStr, SerializationInfo, field_serializer
+from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
-from .base import RootConfigAware
+DEFAULT_CLI_CLIENT_ID = 'loom-cli'
 
 
-class CliSessionConfig(RootConfigAware):
+class CliSessionConfig(BaseModel):
     """This CLI's own cached login state from a prior `loom auth login`."""
 
     access_token: SecretStr | None = Field(
@@ -41,26 +41,70 @@ class CliSessionConfig(RootConfigAware):
         return '**********'
 
 
-class AuthConfig(RootConfigAware):
-    """OIDC settings for validating bearer tokens presented to the API."""
+class ServerAuthConfig(BaseModel):
+    """What a resource-server process (API or MCP) needs to validate bearer
+    tokens: where the IdP's discovery document is and which audience its
+    tokens must carry."""
 
-    issuer: str = Field(default='', description='OIDC issuer URL')
-    audience: str = Field(default='', description='Expected token audience')
-    algorithms: list[str] = Field(
-        default=['RS256'], description='Accepted JWT algorithms'
+    audience: str = Field(
+        default='',
+        description=(
+            "Expected token audience: this server's own resource-server "
+            'client id in the IdP (the API and MCP server are registered '
+            'as separate clients, so their audiences differ)'
+        ),
     )
     discovery_url: str | None = Field(
         default=None,
         description=(
             "IdP's OIDC discovery document URL (OpenID Connect Discovery "
-            "1.0's `.well-known/openid-configuration`), derived from "
-            '`issuer` if unset. `authorization_endpoint`/`token_endpoint`/'
-            "`jwks_uri` are all read from this one document -- there's no "
-            'per-endpoint override anymore. Only needed as an override when '
-            "the issuer used for token validation isn't also where the "
-            'IdP serves its metadata (e.g. an internal issuer URL behind a '
-            'proxy with a different externally-reachable discovery '
-            'document).'
+            "1.0's `.well-known/openid-configuration`). The single source "
+            'for everything else about the IdP: `issuer`, '
+            '`authorization_endpoint`/`token_endpoint`/`jwks_uri` and the '
+            'accepted signing algorithms are all read from this one '
+            'document, none are configured separately. Auth is '
+            'unconfigured while this is unset.'
+        ),
+    )
+
+
+class ApiAuthConfig(ServerAuthConfig):
+    """`ServerAuthConfig` plus the public clients the REST API advertises:
+    Swagger UI's login and the CLI's device-flow login."""
+
+    swagger_client_id: str = Field(
+        default='',
+        description=(
+            'Public OAuth client id used by Swagger UI to perform an '
+            'interactive Authorization Code + PKCE login against the IDP'
+        ),
+    )
+    cli_client_id: str = Field(
+        default=DEFAULT_CLI_CLIENT_ID,
+        description=(
+            'Public OAuth client id used by `loom auth login` to perform an '
+            'interactive Device Authorization Grant login against the IDP. '
+            'Advertised to the CLI via /.well-known/loom-client.'
+        ),
+    )
+
+
+class AuthConfig(BaseModel):
+    """What `loom-admin idp register` created in the IdP -- every client id
+    in one place. `ApiServerConfig.from_admin` and
+    `McpServerConfig.from_admin` each derive their own server's slice."""
+
+    audience: str = Field(default='', description='Expected token audience')
+    discovery_url: str | None = Field(
+        default=None,
+        description=(
+            "IdP's OIDC discovery document URL (OpenID Connect Discovery "
+            "1.0's `.well-known/openid-configuration`). The single source "
+            'for everything else about the IdP: `issuer`, '
+            '`authorization_endpoint`/`token_endpoint`/`jwks_uri` and the '
+            'accepted signing algorithms are all read from this one '
+            'document, none are configured separately. Auth is '
+            'unconfigured while this is unset.'
         ),
     )
     swagger_client_id: str = Field(
@@ -71,10 +115,11 @@ class AuthConfig(RootConfigAware):
         ),
     )
     cli_client_id: str = Field(
-        default='',
+        default=DEFAULT_CLI_CLIENT_ID,
         description=(
             'Public OAuth client id used by `loom auth login` to perform an '
-            'interactive Device Authorization Grant login against the IDP'
+            'interactive Device Authorization Grant login against the IDP. '
+            'Advertised to the CLI via /.well-known/loom-client.'
         ),
     )
     mcp_audience: str = Field(
@@ -86,4 +131,38 @@ class AuthConfig(RootConfigAware):
             "the API's"
         ),
     )
+
+
+class ClientAuthConfig(BaseModel):
+    """What `loom` needs to log in: where the IdP's discovery document is,
+    which public client to use, and the cached session itself."""
+
+    discovery_url: str | None = Field(
+        default=None,
+        description=(
+            "IdP's OIDC discovery document URL. Cached from the server's "
+            '/.well-known/loom-client by `loom auth login --server`.'
+        ),
+    )
+    cli_client_id: str | None = Field(
+        default=DEFAULT_CLI_CLIENT_ID,
+        description=(
+            'Override for the public OAuth client id used for login. Unset '
+            f'means the server-advertised value, else {DEFAULT_CLI_CLIENT_ID!r}.'
+        ),
+    )
+    discovery_cli_client_id: str | None = Field(
+        default=None,
+        description=(
+            'The client id the server advertised on the last `loom auth '
+            'login --server`. Kept apart from `cli_client_id` so a local '
+            'override stays distinguishable from a cached server value.'
+        ),
+    )
     session: CliSessionConfig = Field(default_factory=CliSessionConfig)
+
+    def effective_cli_client_id(self) -> str:
+        """Local override, else the server-advertised id, else the default."""
+        return (
+            self.cli_client_id or self.discovery_cli_client_id or DEFAULT_CLI_CLIENT_ID
+        )

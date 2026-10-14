@@ -56,7 +56,9 @@ class SkillRepository:
         graph (list/get endpoints return `SkillRead`, which has no
         nodes/edges field; `create_new_version`/`transition` only touch
         scalar fields)."""
-        return skill_mapper.to_domain(row, node_rows=[], edge_rows=[], resolved_layers={})
+        return skill_mapper.to_domain(
+            row, node_rows=[], edge_rows=[], resolved_layers={}
+        )
 
     async def _hydrate_with_graph(self, row: SkillRow) -> DomainSkill:
         node_rows = await self.list_node_rows(row.id)
@@ -72,7 +74,10 @@ class SkillRepository:
             for node_row in node_rows
         }
         return skill_mapper.to_domain(
-            row, node_rows=node_rows, edge_rows=edge_rows, resolved_layers=resolved_layers
+            row,
+            node_rows=node_rows,
+            edge_rows=edge_rows,
+            resolved_layers=resolved_layers,
         )
 
     async def get_current(
@@ -200,7 +205,9 @@ class SkillRepository:
                 skill_ref_id=row.skill_ref_id,
                 tool_id=row.tool_id,
             )
-            nodes.append(skill_mapper.node_to_domain(row, resolved_layer=resolved_layer))
+            nodes.append(
+                skill_mapper.node_to_domain(row, resolved_layer=resolved_layer)
+            )
         return nodes
 
     async def list_edges(self, skill_row_id: uuid.UUID) -> list[DomainEdge]:

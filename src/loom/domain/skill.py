@@ -138,7 +138,9 @@ class Skill(AggregateRoot):
 
     # -- versioning ---------------------------------------------------
 
-    def new_version(self, *, created_by_id: uuid.UUID, **content_fields: object) -> Skill:
+    def new_version(
+        self, *, created_by_id: uuid.UUID, **content_fields: object
+    ) -> Skill:
         """Same as `AggregateRoot.new_version`, except a fresh version
         always starts with an empty graph -- nodes/edges belong to one
         specific version, never carried forward. `dataclasses.replace`
@@ -166,7 +168,9 @@ class Skill(AggregateRoot):
         self.nodes.append(node)
         return node
 
-    def add_edge(self, from_node_id: uuid.UUID, to_node_id: uuid.UUID) -> SkillGraphEdge:
+    def add_edge(
+        self, from_node_id: uuid.UUID, to_node_id: uuid.UUID
+    ) -> SkillGraphEdge:
         """The invariant this whole pilot exists to enforce: layer-descent
         (may call same layer or lower; Tool is always legal) and
         acyclicity, checked independently (CLAUDE.md: "cycle detection is

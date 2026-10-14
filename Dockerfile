@@ -4,7 +4,7 @@
 # `command` time rather than by building three images:
 #   loom-catalog-api   REST API   (port 8000)
 #   loom-catalog-mcp   MCP server (port 8100)
-#   loom               CLI, e.g. `loom db upgrade` as a migration Job
+#   loom-admin         Admin CLI, e.g. `loom-admin db upgrade` as a migration Job
 # All three come from the same `loom` package (see pyproject.toml's
 # [project.scripts]), so one reproducible build covers every role.
 #

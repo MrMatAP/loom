@@ -41,7 +41,9 @@ class CapabilityRepository(VersionedRepository):
             (ToolRow, realizing_tool_id),
         ):
             if referenced_id is not None:
-                await assert_same_tenant(self._session, tenant_id, row_cls, referenced_id)
+                await assert_same_tenant(
+                    self._session, tenant_id, row_cls, referenced_id
+                )
 
     async def add_realization(
         self, capability_row_id: uuid.UUID, realization: DomainRealization

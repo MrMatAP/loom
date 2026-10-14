@@ -86,9 +86,9 @@ async def api_client(
     async_session_factory, fake_principal
 ) -> AsyncGenerator[AsyncClient]:
     from loom.api.catalog.main import create_app
-    from loom.config import RootConfig
+    from loom.config import ApiServerConfig
 
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(ApiServerConfig(config_path='/dev/null'))
 
     async def _override_session() -> AsyncGenerator[AsyncSession]:
         async with async_session_factory() as session:

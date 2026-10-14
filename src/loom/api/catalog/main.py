@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 
-from loom import __version__, default_config_path
-from loom.config import RootConfig
+from loom import __version__, default_api_config_path
+from loom.config import ApiServerConfig
 from loom.persistence.engine import get_async_session_factory
+from loom.schemas.client_bootstrap import ClientBootstrap
 
 from .agent.router import router as agent_router
 from .capability.router import router as capability_router
@@ -16,7 +17,7 @@ from .environment.router import router as environment_router
 from .exceptions import register_exception_handlers
 from .model_endpoint.router import router as model_endpoint_router
 from .principal.router import router as principal_router
-from .security import TokenValidator, discover_and_resolve_issuer
+from .security import TokenValidator, discover_auth
 from .skill.router import router as skill_router
 from .tenant.router import router as tenant_router
 from .tool.router import router as tool_router
@@ -35,7 +36,7 @@ ROUTERS = (
 )
 
 
-def create_app(config: RootConfig) -> FastAPI:
+def create_app(config: ApiServerConfig) -> FastAPI:
     """Build the Catalog FastAPI application from configuration."""
 
     @asynccontextmanager
@@ -52,17 +53,13 @@ def create_app(config: RootConfig) -> FastAPI:
     # Resolved once, here, rather than separately in the lifespan too:
     # `discovery` is also what `TokenValidator` above reads its `jwks_uri`
     # from, so a configured issuer costs exactly one discovery-document
-    # fetch, not two. `discover_and_resolve_issuer` also reconciles
-    # `config.auth.issuer` against what the discovery document reports --
-    # see its docstring -- and raises immediately (failing this whole
-    # import, before `run()` ever calls `uvicorn.run`) if the discovery
-    # endpoint doesn't respond or the stored issuer disagrees with it. An
-    # entirely unconfigured issuer/discovery_url (e.g. tests that never
-    # intend to exercise auth) must still let the app construct, so this
-    # stays `None` -- and the flow URLs stay unset -- rather than fetching
-    # against an empty base URL.
+    # fetch, not two. `discover_auth` raises immediately (failing this
+    # whole import, before `run()` ever calls `uvicorn.run`) if the
+    # discovery endpoint doesn't respond. An unset discovery_url (e.g.
+    # tests that never intend to exercise auth) must still let the app
+    # construct, so this stays `None` -- and the flow URLs stay unset.
     flow = oauth2_scheme.model.flows.authorizationCode
-    discovery = discover_and_resolve_issuer(config)
+    discovery = discover_auth(config.auth)
     if discovery is not None:
         flow.authorizationUrl = discovery.authorization_endpoint
         flow.tokenUrl = discovery.token_endpoint
@@ -78,9 +75,21 @@ def create_app(config: RootConfig) -> FastAPI:
         title='Loom Catalog Service',
         lifespan=lifespan,
         swagger_ui_init_oauth=swagger_ui_init_oauth,
-        version=__version__
+        version=__version__,
     )
     register_exception_handlers(app)
+
+    @app.get('/.well-known/loom-client', response_model=ClientBootstrap)
+    async def loom_client(request: Request) -> ClientBootstrap:
+        """Unauthenticated bootstrap for `loom auth login --server`."""
+        discovery_url = config.auth.discovery_url
+        if not discovery_url:
+            raise HTTPException(503, 'The IdP has not been configured on this server')
+        return ClientBootstrap(
+            discovery_url=discovery_url,
+            cli_client_id=config.auth.cli_client_id,
+            api_base_url=config.api_base_url or str(request.base_url).rstrip('/'),
+        )
 
     @app.get('/healthz')
     async def healthz() -> dict:
@@ -103,5 +112,9 @@ def run() -> None:
     string (`uvicorn.run` below is passed the object directly), so
     deferring construction to here is free.
     """
-    app = create_app(RootConfig.load(config_path=default_config_path()))
+    app = create_app(ApiServerConfig.load(config_path=default_api_config_path()))
     uvicorn.run(app, host='0.0.0.0', port=8000)
+
+
+if __name__ == '__main__':
+    run()

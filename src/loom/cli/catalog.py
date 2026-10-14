@@ -12,7 +12,7 @@ import rich.console
 import rich.table
 
 from loom.catalog_client import CatalogApiError, CatalogClient
-from loom.config import RootConfig
+from loom.config import UserConfig
 from loom.domain.enums import (
     DataBindingAccessMode,
     DataSourceKind,
@@ -32,7 +32,7 @@ console = rich.console.Console()
 # --- Shared plumbing ---------------------------------------------------
 
 
-def _access_token(config: RootConfig) -> str | None:
+def _access_token(config: UserConfig) -> str | None:
     """The cached CLI session's access token, or None (after printing why)
     if there isn't a usable one -- the same "not logged in"/"expired" story
     as `loom auth status`, so a command fails with an actionable message
@@ -119,7 +119,7 @@ def _print_detail(item: dict) -> None:
 
 
 def _resolve_tenant_id(
-    config: RootConfig, args: argparse.Namespace
+    config: UserConfig, args: argparse.Namespace
 ) -> uuid.UUID | None:
     """The Tenant a resource command targets -- every resource but Tenant
     itself is nested under one (`/api/v1/tenants/{tenant_id}/...`), since
@@ -140,7 +140,7 @@ def _resolve_tenant_id(
 
 
 async def _post_and_show(
-    config: RootConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
+    config: UserConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
 ) -> int:
     """Shared POST-and-render for every create/update/transition command
     whose path is nested under a Tenant -- i.e. everything but `tenant
@@ -158,7 +158,7 @@ async def _post_and_show(
     return 0
 
 
-async def _post_and_show_flat(config: RootConfig, path: str, payload: dict) -> int:
+async def _post_and_show_flat(config: UserConfig, path: str, payload: dict) -> int:
     """Shared POST-and-render for `tenant create` -- the one route with no
     Tenant of its own to nest under (it's creating one), so `path` is
     already the full API path, not a Tenant-relative suffix."""
@@ -175,7 +175,7 @@ async def _post_and_show_flat(config: RootConfig, path: str, payload: dict) -> i
 
 
 async def _patch_and_show(
-    config: RootConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
+    config: UserConfig, tenant_id: uuid.UUID, suffix: str, payload: dict
 ) -> int:
     """Shared PATCH-and-render for Tenant-nested in-place updates (e.g.
     `environment update`) -- unlike `_patch_and_show_flat` (Tenant itself),
@@ -198,7 +198,7 @@ async def _patch_and_show(
     return 0
 
 
-async def _patch_and_show_flat(config: RootConfig, path: str, payload: dict) -> int:
+async def _patch_and_show_flat(config: UserConfig, path: str, payload: dict) -> int:
     """Shared PATCH-and-render for `tenant update` -- unlike Capability/
     ModelEndpoint/Agent's `update`, which POSTs a new version, Tenant
     mutates in place, and (like `tenant create`) has no Tenant of its own
@@ -273,7 +273,7 @@ RESOURCES: dict[str, ResourceSpec] = {
 
 
 async def resource_list(
-    spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
+    spec: ResourceSpec, config: UserConfig, args: argparse.Namespace
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -300,7 +300,7 @@ async def resource_list(
 
 
 async def resource_show(
-    spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
+    spec: ResourceSpec, config: UserConfig, args: argparse.Namespace
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -321,7 +321,7 @@ async def resource_show(
 
 
 async def resource_versions(
-    spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
+    spec: ResourceSpec, config: UserConfig, args: argparse.Namespace
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -342,7 +342,7 @@ async def resource_versions(
 
 
 async def resource_transition(
-    spec: ResourceSpec, config: RootConfig, args: argparse.Namespace
+    spec: ResourceSpec, config: UserConfig, args: argparse.Namespace
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -354,7 +354,7 @@ async def resource_transition(
 async def resource_create(
     spec: ResourceSpec,
     payload_fn: typing.Callable[[argparse.Namespace], dict | None],
-    config: RootConfig,
+    config: UserConfig,
     args: argparse.Namespace,
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
@@ -369,7 +369,7 @@ async def resource_create(
 async def resource_update(
     spec: ResourceSpec,
     payload_fn: typing.Callable[[argparse.Namespace], dict | None],
-    config: RootConfig,
+    config: UserConfig,
     args: argparse.Namespace,
 ) -> int:
     tenant_id = _resolve_tenant_id(config, args)
@@ -497,7 +497,7 @@ _SKILL_NODE_COLUMNS = (
 _SKILL_EDGE_COLUMNS = ('id', 'from_node_id', 'to_node_id')
 
 
-async def skill_node_add(config: RootConfig, args: argparse.Namespace) -> int:
+async def skill_node_add(config: UserConfig, args: argparse.Namespace) -> int:
     """Add a node to one version of a Skill's graph via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -525,7 +525,7 @@ async def skill_node_add(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show(config, tenant_id, suffix, payload)
 
 
-async def skill_node_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def skill_node_list(config: UserConfig, args: argparse.Namespace) -> int:
     """List the nodes of one version of a Skill's graph via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -546,7 +546,7 @@ async def skill_node_list(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def skill_edge_add(config: RootConfig, args: argparse.Namespace) -> int:
+async def skill_edge_add(config: UserConfig, args: argparse.Namespace) -> int:
     """Add an edge to one version of a Skill's graph via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -561,7 +561,7 @@ async def skill_edge_add(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show(config, tenant_id, suffix, payload)
 
 
-async def skill_edge_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def skill_edge_list(config: UserConfig, args: argparse.Namespace) -> int:
     """List the edges of one version of a Skill's graph via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -609,7 +609,7 @@ tool_update = functools.partial(resource_update, RESOURCES['tool'], _tool_payloa
 _TOOL_BINDING_COLUMNS = ('id', 'datasource_id', 'dataproduct_id', 'access_mode')
 
 
-async def tool_binding_add(config: RootConfig, args: argparse.Namespace) -> int:
+async def tool_binding_add(config: UserConfig, args: argparse.Namespace) -> int:
     """Add a data binding to one version of a Tool via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -626,7 +626,7 @@ async def tool_binding_add(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show(config, tenant_id, suffix, payload)
 
 
-async def tool_binding_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def tool_binding_list(config: UserConfig, args: argparse.Namespace) -> int:
     """List the data bindings of one version of a Tool via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -700,7 +700,7 @@ _DATAPRODUCT_LINEAGE_COLUMNS = (
 )
 
 
-async def dataproduct_lineage_add(config: RootConfig, args: argparse.Namespace) -> int:
+async def dataproduct_lineage_add(config: UserConfig, args: argparse.Namespace) -> int:
     """Add a lineage edge to one version of a DataProduct via the Catalog
     API."""
     tenant_id = _resolve_tenant_id(config, args)
@@ -717,7 +717,7 @@ async def dataproduct_lineage_add(config: RootConfig, args: argparse.Namespace) 
     return await _post_and_show(config, tenant_id, suffix, payload)
 
 
-async def dataproduct_lineage_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def dataproduct_lineage_list(config: UserConfig, args: argparse.Namespace) -> int:
     """List the lineage edges of one version of a DataProduct via the
     Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
@@ -752,7 +752,7 @@ _ENVIRONMENT_API_PATH = '/environments'
 _ENVIRONMENT_LIST_COLUMNS = ('id', 'name', 'kind', 'compute_boundary_ref')
 
 
-async def environment_create(config: RootConfig, args: argparse.Namespace) -> int:
+async def environment_create(config: UserConfig, args: argparse.Namespace) -> int:
     """Create an Environment via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -766,7 +766,7 @@ async def environment_create(config: RootConfig, args: argparse.Namespace) -> in
     return await _post_and_show(config, tenant_id, _ENVIRONMENT_API_PATH, payload)
 
 
-async def environment_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def environment_list(config: UserConfig, args: argparse.Namespace) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
         return 1
@@ -789,7 +789,7 @@ async def environment_list(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def environment_show(config: RootConfig, args: argparse.Namespace) -> int:
+async def environment_show(config: UserConfig, args: argparse.Namespace) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
         return 1
@@ -807,7 +807,7 @@ async def environment_show(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def environment_update(config: RootConfig, args: argparse.Namespace) -> int:
+async def environment_update(config: UserConfig, args: argparse.Namespace) -> int:
     """Update an Environment's boundary refs in place via the Catalog API."""
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
@@ -833,8 +833,8 @@ async def environment_update(config: RootConfig, args: argparse.Namespace) -> in
 #
 # Bootstrapping the very first Tenant/Principal in a fresh deployment does
 # go through these: POST /tenants and POST /principals only require the
-# caller's token to carry `catalog:tenant:write`/`catalog:principal:write`
-# (granted by the `catalog-platform-admin` role -- see `loom idp register`
+# caller's token to carry `platform:tenant:write`/`platform:principal:write`
+# (granted by the `platform-operator` role -- see `loom idp register`
 # and docs/admin-guide.md's "Platform administrator" section), not an
 # already-provisioned Principal. The platform administrator's own account
 # never needs a Principal row for this; one is only needed once they (or
@@ -846,7 +846,7 @@ _PRINCIPAL_API_PATH = '/principals'
 _PRINCIPAL_LIST_COLUMNS = ('id', 'tenant_id', 'kind', 'external_id')
 
 
-async def tenant_create(config: RootConfig, args: argparse.Namespace) -> int:
+async def tenant_create(config: UserConfig, args: argparse.Namespace) -> int:
     """Create a Tenant via the Catalog API. Not nested under a Tenant path
     -- it's the one resource this doesn't apply to (see
     `_post_and_show_flat`)."""
@@ -854,7 +854,7 @@ async def tenant_create(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show_flat(config, _TENANT_API_PATH, payload)
 
 
-async def tenant_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def tenant_list(config: UserConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
@@ -872,7 +872,7 @@ async def tenant_list(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
+async def tenant_show(config: UserConfig, args: argparse.Namespace) -> int:
     token = _access_token(config)
     if token is None:
         return 1
@@ -885,13 +885,13 @@ async def tenant_show(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def tenant_update(config: RootConfig, args: argparse.Namespace) -> int:
+async def tenant_update(config: UserConfig, args: argparse.Namespace) -> int:
     """Update a Tenant's name via the Catalog API."""
     path = f'{_TENANT_API_PATH}/{args.tenant_id}'
     return await _patch_and_show_flat(config, path, {'name': args.name})
 
 
-async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
+async def principal_create(config: UserConfig, args: argparse.Namespace) -> int:
     """Create a Principal via the Catalog API, in the Tenant named by
     --tenant-id (always required, no session default -- creating a
     Principal is a durable write, a worse case for silently defaulting to
@@ -901,7 +901,7 @@ async def principal_create(config: RootConfig, args: argparse.Namespace) -> int:
     return await _post_and_show(config, args.tenant_id, _PRINCIPAL_API_PATH, payload)
 
 
-async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
+async def principal_list(config: UserConfig, args: argparse.Namespace) -> int:
     """List Principals in a Tenant via the Catalog API. `--tenant-id`
     defaults to the locally-selected Tenant (`loom auth set-tenant`,
     normally set automatically by `loom auth login`) -- explicit
@@ -927,7 +927,7 @@ async def principal_list(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def principal_show(config: RootConfig, args: argparse.Namespace) -> int:
+async def principal_show(config: UserConfig, args: argparse.Namespace) -> int:
     tenant_id = _resolve_tenant_id(config, args)
     if tenant_id is None:
         return 1

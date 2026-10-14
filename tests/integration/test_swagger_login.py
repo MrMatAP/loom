@@ -12,7 +12,8 @@ import httpx
 import pytest
 
 from loom.api.catalog.main import create_app
-from loom.config import RootConfig
+from loom.config import ApiServerConfig
+from loom.idp.discovery import default_discovery_url
 from loom.tls import build_ssl_context
 
 from .live import (
@@ -61,8 +62,8 @@ def test_swagger_ui_oauth_config_matches_the_live_discovery_document(
     builds, and confirm they point at this instance's real endpoints --
     the part of a browser login that's ours, not Keycloak's login form."""
     client_id, _ = swagger_client
-    config = RootConfig(config_path='/dev/null')
-    config.auth.issuer = live_issuer
+    config = ApiServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = default_discovery_url(live_issuer)
     config.auth.swagger_client_id = client_id
 
     app = create_app(config)

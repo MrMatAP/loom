@@ -26,10 +26,10 @@ async def test_missing_token_returns_401(api_client):
     from httpx import ASGITransport, AsyncClient
 
     from loom.api.catalog.main import create_app
-    from loom.config import RootConfig
+    from loom.config import ApiServerConfig
     from loom.persistence.engine import get_async_session_factory
 
-    config = RootConfig(config_path='/dev/null')
+    config = ApiServerConfig(config_path='/dev/null')
     real_app = create_app(config)
     # Populate only what an unauthenticated request path touches: the OAuth2
     # scheme rejects the missing Authorization header before token_validator
@@ -52,14 +52,14 @@ def test_openapi_advertises_interactive_idp_login(monkeypatch):
     from loom.api.catalog import security as security_module
     from loom.api.catalog.main import create_app
     from loom.api.catalog.security import OidcDiscoveryDocument
-    from loom.config import RootConfig
+    from loom.config import ApiServerConfig
 
     # `create_app` resolves the discovery document synchronously (the live
     # `test_swagger_login.py` integration test relies on that -- it checks
     # `app.openapi()` right after `create_app()`, no lifespan run), so a
     # fake issuer needs the network call faked out too, not just left to
     # fail against `idp.example`. Patched on `security_module` (where
-    # `discover_and_resolve_issuer` actually calls it), not `main_module` --
+    # `discover_auth` actually calls it), not `main_module` --
     # `main.py` no longer imports `discover_oidc` directly.
     fake_discovery = OidcDiscoveryDocument(
         issuer='https://idp.example/realms/loom',
@@ -71,8 +71,10 @@ def test_openapi_advertises_interactive_idp_login(monkeypatch):
         security_module, 'discover_oidc', lambda discovery_url: fake_discovery
     )
 
-    config = RootConfig(config_path='/dev/null')
-    config.auth.issuer = 'https://idp.example/realms/loom'
+    config = ApiServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = (
+        'https://idp.example/realms/loom/.well-known/openid-configuration'
+    )
     config.auth.swagger_client_id = 'loom-catalog-api-swagger'
     app = create_app(config)
 
@@ -101,9 +103,9 @@ def test_openapi_omits_swagger_login_when_swagger_client_unset():
     """An unconfigured Swagger client disables the button rather than
     breaking it."""
     from loom.api.catalog.main import create_app
-    from loom.config import RootConfig
+    from loom.config import ApiServerConfig
 
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(ApiServerConfig(config_path='/dev/null'))
     assert app.swagger_ui_init_oauth is None
 
 
@@ -114,7 +116,37 @@ def test_docs_redirect_path_matches_what_the_cli_registers():
     drift and fail as `invalid_redirect_uri` at the IDP instead of a caught
     test."""
     from loom.api.catalog.main import create_app
-    from loom.config import RootConfig
+    from loom.config import ApiServerConfig
 
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(ApiServerConfig(config_path='/dev/null'))
     assert app.swagger_ui_oauth2_redirect_url == '/docs/oauth2-redirect'
+
+
+@pytest.mark.asyncio
+async def test_well_known_loom_client_is_public_and_advertises_login_settings():
+    from httpx import ASGITransport, AsyncClient
+
+    from loom.api.catalog.main import create_app
+    from loom.config import ApiServerConfig
+
+    config = ApiServerConfig(config_path='/dev/null')
+    config.auth.discovery_url = None
+    app = create_app(config)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://loom.test'
+    ) as client:
+        unconfigured = await client.get('/.well-known/loom-client')
+        assert unconfigured.status_code == 503
+
+        config.auth.discovery_url = (
+            'https://idp.example/.well-known/openid-configuration'
+        )
+        configured = await client.get('/.well-known/loom-client')
+
+    assert configured.status_code == 200
+    assert configured.json() == {
+        'discovery_url': 'https://idp.example/.well-known/openid-configuration',
+        'cli_client_id': 'loom-cli',
+        'api_base_url': 'http://loom.test',
+    }

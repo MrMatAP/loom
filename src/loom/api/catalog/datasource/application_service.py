@@ -8,7 +8,9 @@ from loom.schemas.datasource import DataSourceRead
 from .schemas import DataSourceCreateRequest
 
 
-class DataSourceApplicationService(VersionedApplicationService[DomainDataSource, DataSourceRead]):
+class DataSourceApplicationService(
+    VersionedApplicationService[DomainDataSource, DataSourceRead]
+):
     label = 'DataSource'
     read_cls = DataSourceRead
 

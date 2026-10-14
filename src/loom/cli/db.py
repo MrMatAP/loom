@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 
-from loom.config import RootConfig
+from loom.config import AdminConfig
 from loom.persistence import (  # noqa: F401  (imported for side effect: table registration)
     agent,
     capability,
@@ -22,16 +22,16 @@ from loom.persistence.engine import get_session_factory
 from loom.persistence.tenant import Tenant
 
 
-def _alembic_config(root_config: RootConfig) -> Config:
+def _alembic_config(admin_config: AdminConfig) -> Config:
     """Build an Alembic Config for the packaged migrations and configured DSN."""
     script_location = importlib.resources.files('loom') / 'migrations'
     config = Config()
     config.set_main_option('script_location', str(script_location))
-    config.set_main_option('sqlalchemy.url', root_config.database.dsn)
+    config.set_main_option('sqlalchemy.url', admin_config.database.dsn)
     return config
 
 
-def _seed_default_tenant(config: RootConfig) -> tuple[str, str] | None:
+def _seed_default_tenant(config: AdminConfig) -> tuple[str, str] | None:
     """If no Tenant exists yet, create one -- most deployments only ever
     need a single Tenant, and this saves the platform administrator an
     explicit `loom tenant create` step for that common case (see
@@ -73,7 +73,7 @@ def _seed_default_tenant(config: RootConfig) -> tuple[str, str] | None:
         return result
 
 
-async def db_upgrade(config: RootConfig, args: argparse.Namespace) -> int:
+async def db_upgrade(config: AdminConfig, args: argparse.Namespace) -> int:
     command.upgrade(_alembic_config(config), getattr(args, 'revision', None) or 'head')
     created = _seed_default_tenant(config)
     if created is not None:
@@ -82,25 +82,72 @@ async def db_upgrade(config: RootConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-async def db_downgrade(config: RootConfig, args: argparse.Namespace) -> int:
+async def db_downgrade(config: AdminConfig, args: argparse.Namespace) -> int:
     command.downgrade(_alembic_config(config), args.revision)
     return 0
 
 
-async def db_current(config: RootConfig, args: argparse.Namespace) -> int:
+async def db_current(config: AdminConfig, args: argparse.Namespace) -> int:
     del args
     command.current(_alembic_config(config))
     return 0
 
 
-async def db_history(config: RootConfig, args: argparse.Namespace) -> int:
+async def db_history(config: AdminConfig, args: argparse.Namespace) -> int:
     del args
     command.history(_alembic_config(config))
     return 0
 
 
-async def db_revision(config: RootConfig, args: argparse.Namespace) -> int:
+async def db_revision(config: AdminConfig, args: argparse.Namespace) -> int:
     command.revision(
         _alembic_config(config), message=args.message, autogenerate=args.autogenerate
     )
     return 0
+
+
+def add_db_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """Register the `db` command group."""
+    db_parser = subparsers.add_parser('db', help='Database migration commands')
+    db_subparser = db_parser.add_subparsers(required=True)
+
+    db_upgrade_parser = db_subparser.add_parser(
+        'upgrade', help='Upgrade the database to a revision'
+    )
+    db_upgrade_parser.add_argument(
+        'revision',
+        nargs='?',
+        default='head',
+        help='Target revision, defaults to head',
+    )
+    db_upgrade_parser.set_defaults(func=db_upgrade)
+
+    db_downgrade_parser = db_subparser.add_parser(
+        'downgrade', help='Downgrade the database to a revision'
+    )
+    db_downgrade_parser.add_argument('revision', help='Target revision')
+    db_downgrade_parser.set_defaults(func=db_downgrade)
+
+    db_current_parser = db_subparser.add_parser(
+        'current', help='Show the current database revision'
+    )
+    db_current_parser.set_defaults(func=db_current)
+
+    db_history_parser = db_subparser.add_parser(
+        'history', help='Show migration history'
+    )
+    db_history_parser.set_defaults(func=db_history)
+
+    db_revision_parser = db_subparser.add_parser(
+        'revision', help='Create a new migration revision'
+    )
+    db_revision_parser.add_argument(
+        '-m', '--message', required=True, help='Revision message'
+    )
+    db_revision_parser.add_argument(
+        '--autogenerate',
+        action='store_true',
+        default=False,
+        help='Autogenerate from model changes',
+    )
+    db_revision_parser.set_defaults(func=db_revision)

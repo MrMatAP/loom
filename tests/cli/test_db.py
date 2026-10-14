@@ -14,12 +14,12 @@ from loom.cli.db import (
     db_revision,
     db_upgrade,
 )
-from loom.config import RootConfig
+from loom.config import AdminConfig
 
 
 @pytest.fixture
-def sqlite_root_config(tmp_path: pathlib.Path, monkeypatch) -> RootConfig:
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+def sqlite_root_config(tmp_path: pathlib.Path, monkeypatch) -> AdminConfig:
+    config = AdminConfig(config_path=tmp_path / 'config.yaml')
     db_path = tmp_path / 'loom_cli_test.db'
     monkeypatch.setattr(
         type(config.database), 'dsn', property(lambda self: f'sqlite:///{db_path}')

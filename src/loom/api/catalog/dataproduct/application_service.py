@@ -92,4 +92,6 @@ class DataProductApplicationService(
     ) -> list[DataProductLineageRead]:
         dataproduct = await self._get_version_or_raise(tenant_id, entity_id, version)
         lineage = await self._repo.list_lineage(dataproduct.id)
-        return [_lineage_read(entry, dataproduct_row_id=dataproduct.id) for entry in lineage]
+        return [
+            _lineage_read(entry, dataproduct_row_id=dataproduct.id) for entry in lineage
+        ]

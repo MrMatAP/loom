@@ -4,10 +4,10 @@ import pathlib
 import pytest
 import yaml
 
-from loom.cli import main as cli_main
-from loom.cli.main import config_get, config_list, config_set
+from loom.cli import config_cmds as cli_main
+from loom.cli.config_cmds import config_get, config_list, config_set
+from loom.config import ApiServerConfig
 from loom.config.database_config import DatabaseConfig
-from loom.config.root_config import RootConfig
 
 
 def test_default_dsn():
@@ -21,7 +21,7 @@ def test_dsn_includes_password_when_set():
 
 
 def test_root_config_has_database_section(tmp_path):
-    root = RootConfig(config_path=tmp_path / 'config.yaml')
+    root = ApiServerConfig(config_path=tmp_path / 'config.yaml')
     assert root.database.database == 'loom'
 
 
@@ -47,7 +47,7 @@ async def test_config_set_password_end_to_end(
     monkeypatch.setattr(cli_main.console, 'width', 400)
 
     config_path = tmp_path / 'e2e-test.yaml'
-    config = RootConfig(config_path=config_path)
+    config = ApiServerConfig(config_path=config_path)
 
     # (1) config_set must succeed without raising.
     set_args = argparse.Namespace(key='database.password', value='sup3rs3cret')
@@ -65,7 +65,7 @@ async def test_config_set_password_end_to_end(
     # mirror that here rather than reusing the in-memory `config` object
     # (which never went through `model_validate` and would trip
     # `exclude_unset` in `config_get`).
-    reloaded_for_display = RootConfig.load(config_path)
+    reloaded_for_display = ApiServerConfig.load(config_path)
 
     # (2) config_get masks the password in displayed output.
     capsys.readouterr()
@@ -93,7 +93,7 @@ async def test_config_set_password_end_to_end(
 
     # (4) A second save() (as happens on every CLI invocation) must not
     # overwrite the real on-disk password with the masked placeholder.
-    reloaded = RootConfig.load(config_path)
+    reloaded = ApiServerConfig.load(config_path)
     reloaded.save()
     on_disk_again = yaml.safe_load(config_path.read_text())
     assert on_disk_again['database']['password'] == 'sup3rs3cret'

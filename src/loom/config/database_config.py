@@ -1,9 +1,11 @@
-from pydantic import Field, SecretStr, SerializationInfo, field_serializer
+from __future__ import annotations
 
-from .base import RootConfigAware
+from collections.abc import Mapping
+
+from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
 
-class DatabaseConfig(RootConfigAware):
+class DatabaseConfig(BaseModel):
     """Connection settings for the Postgres-backed registry database."""
 
     host: str = Field(default='localhost', description='Database host')
@@ -22,6 +24,22 @@ class DatabaseConfig(RootConfigAware):
         if info.context and info.context.get('reveal_secrets'):
             return value.get_secret_value()
         return '**********'
+
+    @classmethod
+    def env_values(cls, environ: Mapping[str, str]) -> dict[str, str]:
+        """The `LOOM_DB_*` variables that are set, keyed by field name."""
+        names = {
+            'host': 'LOOM_DB_HOST',
+            'port': 'LOOM_DB_PORT',
+            'database': 'LOOM_DB_NAME',
+            'username': 'LOOM_DB_USERNAME',
+            'password': 'LOOM_DB_PASSWORD',
+        }
+        return {field: environ[var] for field, var in names.items() if environ.get(var)}
+
+    def location_only(self) -> DatabaseConfig:
+        """A copy carrying host/port/database but none of the credentials."""
+        return DatabaseConfig(host=self.host, port=self.port, database=self.database)
 
     @property
     def dsn(self) -> str:

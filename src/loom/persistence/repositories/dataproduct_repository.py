@@ -37,7 +37,9 @@ class DataProductRepository(VersionedRepository):
             (DataProductRow, source_dataproduct_id),
         ):
             if referenced_id is not None:
-                await assert_same_tenant(self._session, tenant_id, row_cls, referenced_id)
+                await assert_same_tenant(
+                    self._session, tenant_id, row_cls, referenced_id
+                )
 
     async def add_lineage(
         self, dataproduct_row_id: uuid.UUID, lineage: DomainLineage

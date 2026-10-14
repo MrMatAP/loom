@@ -14,7 +14,7 @@ from loom.persistence.tenant import Principal, Tenant
 async def test_platform_admin_bootstraps_without_a_provisioned_principal(
     api_client, async_session
 ):
-    """The whole point of the `catalog-platform-admin` role (see
+    """The whole point of the `platform-operator` role (see
     docs/admin-guide.md's "Platform administrator" section) is that it can
     create the very first Tenant/Principal in a fresh deployment, where by
     definition no Principal row -- for this caller or anyone else -- exists
@@ -143,24 +143,24 @@ async def test_list_my_tenants_returns_every_tenant_for_a_platform_admin(
 ):
     """`GET /tenants/mine` backs `loom auth login`'s tenant-selection step
     (`src/loom/cli/auth.py`'s `_select_tenant`). A platform admin
-    (`catalog:tenant:read` in scope) may have zero Principals of their own
+    (`platform:tenant:read` in scope) may have zero Principals of their own
     -- it must still show every Tenant, not just ones they happen to be
     provisioned in (see docs/admin-guide.md's "Platform administrator"
     section), and must work without `get_current_principal` ever running
     (`pop`, not override, so a bug that starts requiring principal
     resolution on this route fails this test).
 
-    The "sees every Tenant" branch is gated purely on `catalog:tenant:read`
-    being in scope, not on a `catalog-platform-admin`-specific check --
-    pin that only `catalog-platform-admin` currently carries it, so an
+    The "sees every Tenant" branch is gated purely on `platform:tenant:read`
+    being in scope, not on a `platform-operator`-specific check --
+    pin that only `platform-operator` currently carries it, so an
     edit to `ROLE_BUNDLES` that grants it to a narrower role fails *this*
     test (which names the endpoint it would silently widen) instead of
     going unnoticed."""
-    assert 'catalog:tenant:read' in ROLE_BUNDLES['catalog-platform-admin']
+    assert 'platform:tenant:read' in ROLE_BUNDLES['platform-operator']
     assert not any(
-        'catalog:tenant:read' in scopes
+        'platform:tenant:read' in scopes
         for role, scopes in ROLE_BUNDLES.items()
-        if role != 'catalog-platform-admin'
+        if role != 'platform-operator'
     )
 
     async with async_session_factory() as session:
@@ -185,7 +185,7 @@ async def test_list_my_tenants_returns_every_tenant_for_a_platform_admin(
 async def test_list_my_tenants_is_scoped_to_the_callers_own_tenants_for_a_regular_user(
     api_client, async_session_factory
 ):
-    """No `catalog:tenant:read` scope -- a regular (non-platform-admin)
+    """No `platform:tenant:read` scope -- a regular (non-platform-admin)
     caller sees only the Tenants where they already have a Principal,
     never another Tenant's, even one that exists in the same deployment."""
     async with async_session_factory() as session:

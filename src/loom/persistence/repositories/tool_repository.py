@@ -38,7 +38,9 @@ class ToolRepository(VersionedRepository):
             (DataProductRow, dataproduct_id),
         ):
             if referenced_id is not None:
-                await assert_same_tenant(self._session, tenant_id, row_cls, referenced_id)
+                await assert_same_tenant(
+                    self._session, tenant_id, row_cls, referenced_id
+                )
 
     async def add_data_binding(
         self, tool_row_id: uuid.UUID, binding: DomainBinding

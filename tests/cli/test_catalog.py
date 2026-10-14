@@ -50,11 +50,11 @@ from loom.cli.catalog import (
     tool_create,
     tool_update,
 )
-from loom.config import RootConfig
+from loom.config import UserConfig
 
 
-def _logged_in_config(tmp_path) -> RootConfig:
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+def _logged_in_config(tmp_path) -> UserConfig:
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     config.catalog.api_base_url = 'https://api.example.com'
     config.auth.session.access_token = pydantic.SecretStr('access-tok')
     config.auth.session.expires_at = int(time.time()) + 300
@@ -118,9 +118,7 @@ def _write_prompt_file(text: str = 'You are a helpful assistant.') -> str:
     there's no `tmp_path` fixture in scope at every call site; the file is
     left for the OS to clean up rather than threading a fixture through
     every test."""
-    with tempfile.NamedTemporaryFile(
-        mode='w', suffix='.txt', delete=False
-    ) as handle:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as handle:
         handle.write(text)
         return handle.name
 
@@ -1093,7 +1091,7 @@ async def test_resource_list_works_for_every_resource(tmp_path, label):
 
 @pytest.mark.asyncio
 async def test_create_requires_login(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     result = await agent_create(config, _agent_args())
     assert result == 1
     assert _FakeCatalogClient.last_call is None
@@ -1157,7 +1155,7 @@ async def test_create_reports_403_with_tenant_guidance(tmp_path, capsys):
 
 @pytest.mark.asyncio
 async def test_resource_list_requires_login(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     result = await resource_list(
         RESOURCES['capability'],
         config,
@@ -1340,7 +1338,7 @@ async def test_principal_show_gets_by_id(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tenant_create_requires_login(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     result = await tenant_create(config, argparse.Namespace(slug='acme', name='Acme'))
     assert result == 1
     assert _FakeCatalogClient.last_call is None
@@ -1348,7 +1346,7 @@ async def test_tenant_create_requires_login(tmp_path):
 
 @pytest.mark.asyncio
 async def test_principal_create_requires_login(tmp_path):
-    config = RootConfig(config_path=tmp_path / 'config.yaml')
+    config = UserConfig(config_path=tmp_path / 'config.yaml')
     result = await principal_create(
         config,
         argparse.Namespace(

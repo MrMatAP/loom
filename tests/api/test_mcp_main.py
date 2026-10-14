@@ -11,7 +11,7 @@ from starlette.routing import Mount
 
 from loom.api.catalog.mcp import main as mcp_main
 from loom.api.catalog.mcp.main import create_app
-from loom.config import RootConfig
+from loom.config import McpServerConfig
 from loom.domain.enums import PrincipalKind
 from loom.idp.catalog_roles import content_scopes, platform_scopes
 from loom.persistence.tenant import Principal, Tenant
@@ -35,7 +35,7 @@ class _FakeTokenValidator:
 
 
 def test_create_app_mounts_the_mcp_server_and_exposes_healthz():
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(McpServerConfig(config_path='/dev/null'))
 
     assert app.title == 'Loom Catalog MCP'
     assert any(isinstance(route, Mount) for route in app.routes)
@@ -53,7 +53,7 @@ def test_mcp_mount_runs_stateless_so_any_replica_can_serve_any_request():
     rather than the `stateless_http=True` kwarg itself, so this fails if a
     fastmcp upgrade ever changes what the flag does instead of just its
     name."""
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(McpServerConfig(config_path='/dev/null'))
     mount = next(route for route in app.routes if isinstance(route, Mount))
     mcp_route = next(r for r in mount.app.routes if getattr(r, 'path', None) == '/mcp')
 
@@ -65,7 +65,7 @@ async def test_healthz_does_not_require_the_lifespan_to_have_run():
     """`/healthz` doesn't touch McpState, so it must work even before the
     app's lifespan (which resolves the IDP's JWKS over the network) has
     ever run -- the same story as the REST app's own `/healthz`."""
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(McpServerConfig(config_path='/dev/null'))
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url='http://test') as client:
         response = await client.get('/healthz')
@@ -78,12 +78,12 @@ async def test_lifespan_builds_the_token_validator_against_the_mcp_audience(
     monkeypatch, async_session_factory
 ):
     """The load-bearing claim of collapsing `idp register` into four
-    clients: the MCP server must validate tokens against `auth.mcp_audience`,
-    not `auth.audience` -- otherwise it's silently still sharing the REST
-    API's resource server and registering it separately
-    (`idp.idp_register`'s MCP step) buys nothing. `TokenValidator` itself is
+    clients: the MCP server must validate tokens against its own
+    `McpServerConfig.auth.audience` (the MCP client), not the REST API's --
+    otherwise it's silently still sharing the REST API's resource server and
+    registering it separately (`idp.idp_register`'s MCP step) buys nothing. `TokenValidator` itself is
     still faked out (real JWKS resolution needs network), but the fake
-    captures the `AuthConfig` it was built with instead of discarding it,
+    captures the auth config it was built with instead of discarding it,
     so this fails if `mcp.main.create_app`'s lifespan ever goes back to
     sharing `config.auth` wholesale with the REST API."""
     captured: dict[str, object] = {}
@@ -98,16 +98,14 @@ async def test_lifespan_builds_the_token_validator_against_the_mcp_audience(
         mcp_main, 'get_async_session_factory', lambda config: async_session_factory
     )
 
-    config = RootConfig(config_path='/dev/null')
-    config.auth.audience = 'loom-catalog-api'
-    config.auth.mcp_audience = 'loom-catalog-api-mcp'
+    config = McpServerConfig(config_path='/dev/null')
+    config.auth.audience = 'loom-catalog-api-mcp'
     app = create_app(config)
 
     async with app.router.lifespan_context(app):
         pass
 
     assert captured['config'].audience == 'loom-catalog-api-mcp'
-    assert captured['config'].audience != config.auth.audience
 
 
 @pytest.mark.asyncio
@@ -139,7 +137,7 @@ async def test_mcp_tool_call_over_real_http_reads_the_authorization_header(
         mcp_main, 'get_async_session_factory', lambda config: async_session_factory
     )
 
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(McpServerConfig(config_path='/dev/null'))
     tenant_id = str(fake_principal.tenant_id)
 
     def _client_factory(*, headers, auth, follow_redirects, **kwargs):
@@ -223,7 +221,7 @@ async def test_mcp_tool_call_over_real_http_targets_the_given_tenant(
         mcp_main, 'get_async_session_factory', lambda config: async_session_factory
     )
 
-    app = create_app(RootConfig(config_path='/dev/null'))
+    app = create_app(McpServerConfig(config_path='/dev/null'))
 
     def _client_factory(*, headers, auth, follow_redirects, **kwargs):
         return httpx.AsyncClient(

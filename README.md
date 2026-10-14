@@ -68,7 +68,7 @@ otherwise baked into behavior.
 - **No silent session refresh.** `loom auth login` caches a
   `refresh_token`, but nothing yet uses it to renew an expired session --
   a lapsed CLI session means a full `loom auth login` again, not a quiet
-  refresh. See [docs/admin-guide.md](docs/admin-guide.md#loom-idp-register-reference)
+  refresh. See [docs/admin-guide.md](docs/admin-guide.md#loom-admin-idp-register-reference)
   for extending the token lifespan instead.
 - **The registry is append-only.** No resource supports delete; `update`
   always creates a new version rather than mutating in place.

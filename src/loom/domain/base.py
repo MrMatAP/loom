@@ -77,7 +77,9 @@ class AggregateRoot:
         for field, value in fields.items():
             setattr(self, field, value)
 
-    def new_version(self, *, created_by_id: uuid.UUID, **content_fields: object) -> Self:
+    def new_version(
+        self, *, created_by_id: uuid.UUID, **content_fields: object
+    ) -> Self:
         """Content changes always create a new, immutable version row --
         never an in-place edit (see CONTEXT.md / the registry data-model
         design doc). Marks `self` no-longer-current as bookkeeping on the

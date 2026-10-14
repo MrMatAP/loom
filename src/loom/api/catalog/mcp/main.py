@@ -3,15 +3,15 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from loom import default_config_path
-from loom.config import RootConfig
+from loom import default_mcp_config_path
+from loom.config import McpServerConfig
 from loom.persistence.engine import get_async_session_factory
 
-from ..security import TokenValidator, discover_and_resolve_issuer
+from ..security import TokenValidator, discover_auth
 from .server import McpState, create_mcp_server
 
 
-def create_app(config: RootConfig) -> FastAPI:
+def create_app(config: McpServerConfig) -> FastAPI:
     """Build the Catalog MCP FastAPI application from configuration -- an
     alternative interface onto the same Catalog use-cases `api.catalog.main`
     exposes over REST (see `mcp/server.py`)."""
@@ -36,25 +36,16 @@ def create_app(config: RootConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Deferred to lifespan, not built at create_app()/import time,
-        # because `discover_and_resolve_issuer` resolves the IdP's OIDC
-        # discovery document (and reconciles `config.auth.issuer` against
-        # it -- see that function's docstring) over the network -- same
-        # reasoning as api.catalog.main's own lifespan.
+        # because `discover_auth` resolves the IdP's OIDC discovery
+        # document over the network -- same reasoning as
+        # api.catalog.main's own lifespan.
         #
         # The MCP server is registered as its own resource-server client
         # (see `cli.idp.idp_register`), separate from the RESTful API's --
-        # tokens must carry `mcp_audience` in `aud`, not `audience`, so the
-        # validator is built off a copy of `config.auth` with `audience`
-        # overridden rather than sharing the REST API's `TokenValidator`.
-        # `discover_and_resolve_issuer` is called against the *original*
-        # `config`, not the copy below -- it persists `config.auth.issuer`
-        # via `config.save()`, which a `model_copy()` can't do.
+        # `config.auth.audience` is that client, not the API's.
         state.session_factory = get_async_session_factory(config.database)
-        discovery = discover_and_resolve_issuer(config)
-        mcp_auth_config = config.auth.model_copy(
-            update={'audience': config.auth.mcp_audience}
-        )
-        state.token_validator = TokenValidator(mcp_auth_config, discovery)
+        discovery = discover_auth(config.auth)
+        state.token_validator = TokenValidator(config.auth, discovery)
         # mcp_asgi_app's own lifespan starts its Streamable HTTP session
         # manager; without running it under the parent's lifespan here,
         # every tool call would fail with "Task group is not initialized".
@@ -82,5 +73,9 @@ def run() -> None:
     real app from the local machine's config as an import-time side effect
     is the same latent trap either way.
     """
-    app = create_app(RootConfig.load(config_path=default_config_path()))
+    app = create_app(McpServerConfig.load(config_path=default_mcp_config_path()))
     uvicorn.run(app, host='0.0.0.0', port=8100)
+
+
+if __name__ == '__main__':
+    run()

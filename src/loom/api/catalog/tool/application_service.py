@@ -9,7 +9,9 @@ from loom.schemas.tool import ToolDataBindingRead, ToolRead
 from .schemas import ToolCreateRequest, ToolDataBindingCreateRequest
 
 
-def _binding_read(binding: DomainBinding, *, tool_row_id: uuid.UUID) -> ToolDataBindingRead:
+def _binding_read(
+    binding: DomainBinding, *, tool_row_id: uuid.UUID
+) -> ToolDataBindingRead:
     return ToolDataBindingRead(
         id=binding.id,
         tool_id=tool_row_id,

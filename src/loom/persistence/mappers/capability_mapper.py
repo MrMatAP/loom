@@ -6,7 +6,9 @@ from loom.persistence.mappers.base import base_domain_kwargs, base_row_kwargs
 
 
 def to_domain(row: CapabilityRow) -> DomainCapability:
-    return DomainCapability(**base_domain_kwargs(row), target_metrics=row.target_metrics)
+    return DomainCapability(
+        **base_domain_kwargs(row), target_metrics=row.target_metrics
+    )
 
 
 def to_row(entity: DomainCapability) -> CapabilityRow:
